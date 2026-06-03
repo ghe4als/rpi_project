@@ -1,0 +1,51 @@
+#cloud-config
+# Trixie cloud-init first-boot config. Rendered from .env by provision.sh.
+#
+# Hostname comes from the CPU serial via bootcmd (runs in init stage,
+# BEFORE cc_set_hostname). We deliberately omit the top-level `hostname:`
+# key so cc_set_hostname has nothing to overwrite our value with. We also
+# leave preserve_hostname unset (default behaviour) - cloud-init will
+# preserve whatever we wrote.
+
+locale: ${LOCALE}
+timezone: ${TIMEZONE}
+
+keyboard:
+  model: pc105
+  layout: ${KEYMAP}
+
+ssh_pwauth: true
+chpasswd:
+  expire: false
+
+users:
+  - name: ${PI_USERNAME}
+    gecos: "Pi user"
+    groups: users,adm,dialout,audio,netdev,video,plugdev,cdrom,games,input,gpio,spi,i2c,render,sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    passwd: ${PI_PASSWORD_HASH}
+    ssh_authorized_keys:
+${SSH_AUTHORIZED_KEYS_INDENTED}
+
+bootcmd:
+  - |
+    if [ ! -f /etc/.rpi-hostname-set ]; then
+      SERIAL=$(awk '/^Serial/ {print $3}' /proc/cpuinfo)
+      SUFFIX=$(echo "${SERIAL:-unknown}" | tail -c 7)
+      NEW_HOST="rpi-${SUFFIX}"
+      echo "$NEW_HOST" > /etc/hostname
+      hostname "$NEW_HOST"
+      if grep -q '^127\.0\.1\.1' /etc/hosts; then
+        sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NEW_HOST/" /etc/hosts
+      else
+        echo -e "127.0.1.1\t$NEW_HOST" >> /etc/hosts
+      fi
+      touch /etc/.rpi-hostname-set
+    fi
+
+runcmd:
+  - install -m 0644 /boot/firmware/role-setup.service /etc/systemd/system/role-setup.service
+  - systemctl daemon-reload
+  - systemctl enable role-setup.service

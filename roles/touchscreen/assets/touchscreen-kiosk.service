@@ -1,0 +1,28 @@
+[Unit]
+Description=Touchscreen kiosk (cage + foot on SPI panel)
+After=systemd-user-sessions.service seatd.service multi-user.target
+Wants=seatd.service
+ConditionPathExists=/dev/dri/card0
+
+[Service]
+Type=simple
+User=__TARGET_USER__
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=XDG_SESSION_TYPE=wayland
+Environment=HOME=/home/__TARGET_USER__
+ExecStartPre=/usr/bin/install -d -m 0700 -o __TARGET_USER__ -g __TARGET_USER__ /run/user/%U
+ExecStart=/usr/local/bin/touchscreen-kiosk
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

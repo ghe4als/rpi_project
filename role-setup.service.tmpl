@@ -1,0 +1,16 @@
+[Unit]
+Description=One-shot role provisioning (post-network)
+Wants=network-online.target
+After=network-online.target time-sync.target
+ConditionPathExists=/boot/firmware/role/install.sh
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /boot/firmware/role/install.sh
+ExecStartPost=/bin/systemctl disable role-setup.service
+StandardOutput=append:/var/log/role-setup.log
+StandardError=append:/var/log/role-setup.log
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

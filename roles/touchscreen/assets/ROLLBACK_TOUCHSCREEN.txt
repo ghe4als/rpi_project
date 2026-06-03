@@ -1,0 +1,42 @@
+Touchscreen role rollback notes
+================================
+
+If the SPI display is dark, glitched, or the Pi won't boot:
+
+1. Pull the SD card and put it in your Mac. The "bootfs" volume mounts
+   automatically.
+
+2. Open `bootfs/config.txt` in a text editor. Look for the block
+   between these markers and DELETE it (or comment each line with #):
+
+       # BEGIN role-touchscreen
+       dtparam=spi=on
+       dtoverlay=piscreen,drm,...
+       dtoverlay=ads7846,...
+       # END role-touchscreen
+
+   Equivalent: copy `bootfs/config.txt.pre-touchscreen` over
+   `bootfs/config.txt`.
+
+3. Eject and boot. HDMI / SSH will work normally; only the SPI screen
+   is disabled.
+
+If the screen lights up but is the wrong rotation or touch is mirrored:
+  - Edit the `rotate=` value in the piscreen line: 0, 90, 180, or 270.
+  - Toggle `swapxy`, `invx`, `invy` on the ads7846 line.
+
+If the DRM card appears (`ls /dev/dri/`) but the panel is BLACK:
+  - Suspect backlight. Some clones tie the backlight to GPIO 18 or 12
+    and need a separate `dtoverlay=gpio-fan` / manual export to enable.
+  - Try toggling: `echo 1 | sudo tee /sys/class/backlight/*/bl_power`
+    (and 0). If `/sys/class/backlight` is empty, the overlay isn't
+    exposing it - try a different overlay (see overlay-candidates.txt).
+
+If the wrong overlay binds (no DRM card or kernel errors):
+  - See `overlay-candidates.txt` and try ONE alternative at a time.
+
+Logs to check after boot (via SSH):
+  sudo journalctl -b -u touchscreen-kiosk
+  sudo journalctl -b | grep -iE 'drm|spi|ili9486|ads7846|tinydrm'
+  ls /dev/dri/
+  sudo libinput list-devices

@@ -1,0 +1,37 @@
+Overlay candidates for SuziPi / MHS35-class 3.5" SPI displays
+=============================================================
+
+ONE display overlay at a time. They share GPIOs and will fight.
+
+Edit the BEGIN/END role-touchscreen block in /boot/firmware/config.txt:
+
+  # active default:
+  dtoverlay=piscreen,drm,rotate=90,speed=32000000
+
+  # alternatives, try one at a time if the default doesn't bind:
+  # dtoverlay=piscreen2r,drm,rotate=90,speed=32000000
+  # dtoverlay=waveshare35a,drm,rotate=90
+  # dtoverlay=tft35a,rotate=90              # legacy fbtft, NO ",drm"
+  # dtoverlay=mhs35,rotate=90               # vendor MHS35 overlay if shipped
+
+Touch overlay (ads7846 / XPT2046) - keep this line in addition to the
+display overlay above. Tweak swapxy/invx/invy after observing which way
+touch is rotated relative to the screen:
+
+  dtoverlay=ads7846,cs=1,penirq=17,speed=1000000,swapxy=1,invx=1
+
+Other clone IRQ pins seen in the wild (uncomment the line that matches your panel):
+  # dtoverlay=ads7846,cs=1,penirq=25,speed=1000000,swapxy=1,invx=1
+  # dtoverlay=ads7846,cs=1,penirq=24,speed=1000000
+
+Diagnostic commands (run via SSH):
+  ls /dev/dri/                                       # SPI panel = a 2nd cardN
+  cat /sys/class/drm/card*/device/uevent             # driver bound to each card
+  dmesg | grep -iE 'drm|tinydrm|ili9486|spi'         # kernel binding messages
+  sudo libinput list-devices | grep -A2 ADS7846      # touch device present?
+  sudo evtest                                        # raw touch events
+
+Note: the legacy `tft35a`/`mhs35` overlays without `,drm` use the OLD
+fbtft driver and put the screen on /dev/fb1. That breaks the cage
++ wlroots path; only use them if you intend to switch back to the
+fbcp/Xorg world (and even then, prefer the DRM versions).

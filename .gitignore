@@ -1,0 +1,4 @@
+.env
+inventory.yaml
+*.img
+*.img.xz

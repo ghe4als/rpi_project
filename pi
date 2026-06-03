@@ -1,0 +1,225 @@
+#!/bin/bash
+# pi - local Raspberry Pi inventory CLI
+#
+# Usage:
+#   pi list                       List every Pi in inventory.yaml
+#   pi show <serial|hostname>     Detail one Pi
+#   pi discover                   Scan LAN, update last_ip / last_seen for known Pis
+#   pi register <ip|hostname>     SSH to a Pi, learn its serial+MACs, bind any matching pending_flashes
+#   pi forget <serial|hostname>   Remove a Pi from inventory
+#   pi name <serial|hostname> "kitchen pi"   Set friendly_name
+#   pi record-flash               Internal: called by provision.sh after a successful flash
+#
+# Identity lookup accepts either the full 16-hex CPU serial or the rpi-XXXXXX hostname.
+# Inventory is at $REPO_ROOT/inventory.yaml (gitignored).
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+INV="$REPO/inventory.yaml"
+
+require_yq() {
+  if ! command -v yq >/dev/null; then
+    echo "ERROR: yq (https://github.com/mikefarah/yq) is required. brew install yq" >&2
+    exit 1
+  fi
+}
+
+ensure_inv() {
+  [[ -f "$INV" ]] || printf '# rpi inventory\n{}\n' > "$INV"
+}
+
+now_iso() { date +%Y-%m-%dT%H:%M:%S%z | sed 's/\([+-][0-9][0-9]\)\([0-9][0-9]\)$/\1:\2/'; }
+
+resolve_serial() {
+  local key="$1"
+  if [[ "$key" =~ ^[0-9a-f]{16}$ ]]; then
+    echo "$key"; return 0
+  fi
+  if [[ "$key" =~ ^rpi-[0-9a-f]{6}$ ]]; then
+    yq -r 'to_entries | map(select((.value | tag == "!!map") and .value.hostname == "'"$key"'")) | .[0].key // ""' "$INV"
+    return 0
+  fi
+  yq -r 'to_entries | map(select((.value | tag == "!!map") and .value.friendly_name == "'"$key"'")) | .[0].key // ""' "$INV"
+}
+
+cmd_list() {
+  ensure_inv
+  if [[ "$(yq -r 'keys | length' "$INV")" == "0" ]]; then
+    echo "(no Pis recorded yet)"
+    return
+  fi
+  printf '%-10s %-13s %-15s %-13s %-22s %s\n' \
+    "SERIAL" "HOSTNAME" "LAST_IP" "ROLE" "LAST_SEEN" "FRIENDLY_NAME"
+  yq -r '
+    to_entries[] |
+    select(.value | tag == "!!map") |
+    (.key | sub("^.{10}"; "")) + "|" +
+    (.value.hostname // "-") + "|" +
+    (.value.last_ip // "-") + "|" +
+    (.value.flashes[-1].role // "-") + "|" +
+    (.value.last_seen // "-") + "|" +
+    (.value.friendly_name // "-")
+  ' "$INV" | awk -F'|' '{
+    if ($6 == "") $6 = "-"
+    printf "%-10s %-13s %-15s %-13s %-22s %s\n", $1, $2, $3, $4, $5, $6
+  }'
+}
+
+cmd_show() {
+  local key="${1:-}"
+  [[ -n "$key" ]] || { echo "usage: pi show <serial|hostname|friendly_name>" >&2; exit 2; }
+  ensure_inv
+  local serial; serial="$(resolve_serial "$key")"
+  if [[ -z "$serial" || "$serial" == "null" ]]; then
+    echo "no Pi found matching: $key" >&2; exit 1
+  fi
+  yq -y ".[\"$serial\"]" "$INV" 2>/dev/null || yq ".[\"$serial\"]" "$INV"
+}
+
+cmd_discover() {
+  ensure_inv
+  if ! command -v arp-scan >/dev/null; then
+    echo "ERROR: arp-scan required. brew install arp-scan" >&2; exit 1
+  fi
+  local iface; iface="${IFACE:-en0}"
+  echo "scanning LAN on $iface..."
+  local scan; scan="$(sudo arp-scan -I "$iface" --localnet 2>/dev/null | awk '/^[0-9]+\./ {print $1, $2}')"
+
+  local mac ip serial
+  while read -r ip mac; do
+    [[ -z "$mac" ]] && continue
+    serial="$(yq -r 'to_entries | map(select((.value | tag == "!!map") and (.value.mac_eth == "'"$mac"'" or .value.mac_wifi == "'"$mac"'"))) | .[0].key // ""' "$INV")"
+    if [[ -n "$serial" && "$serial" != "null" ]]; then
+      yq -i ".[\"$serial\"].last_ip = \"$ip\" | .[\"$serial\"].last_seen = \"$(now_iso)\"" "$INV"
+      printf '  %-15s %s -> known: %s\n' "$ip" "$mac" "$(yq -r ".[\"$serial\"].hostname" "$INV")"
+    elif [[ "$mac" =~ ^(b8:27:eb|dc:a6:32|e4:5f:01|d8:3a:dd|2c:cf:67|28:cd:c1) ]]; then
+      printf '  %-15s %s -> UNKNOWN Pi (use `pi register %s %s` after SSH)\n' "$ip" "$mac" "$ip" "$mac"
+    fi
+  done <<< "$scan"
+}
+
+cmd_forget() {
+  local key="${1:-}"
+  [[ -n "$key" ]] || { echo "usage: pi forget <serial|hostname>" >&2; exit 2; }
+  ensure_inv
+  local serial; serial="$(resolve_serial "$key")"
+  [[ -n "$serial" && "$serial" != "null" ]] || { echo "no match: $key" >&2; exit 1; }
+  yq -i "del(.[\"$serial\"])" "$INV"
+  echo "removed $serial"
+}
+
+cmd_register() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || { echo "usage: pi register <ip|hostname>" >&2; exit 2; }
+  ensure_inv
+
+  local user="${PI_USER:-pi}"
+  local probe
+  probe="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$user@$target" '
+    SERIAL=$(awk "/^Serial/ {print \$3}" /proc/cpuinfo)
+    MODEL=$(awk -F": " "/^Model/ {print \$2; exit}" /proc/cpuinfo)
+    MAC_ETH=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+    MAC_WIFI=$(cat /sys/class/net/wlan0/address 2>/dev/null || echo "")
+    INSTANCE=$(awk "/^instance_id:/ {print \$2}" /boot/firmware/meta-data 2>/dev/null || echo "")
+    HOST=$(hostname)
+    IPS=$(hostname -I | awk "{print \$1}")
+    printf "SERIAL=%s\nMODEL=%s\nMAC_ETH=%s\nMAC_WIFI=%s\nINSTANCE=%s\nHOST=%s\nIP=%s\n" \
+      "$SERIAL" "$MODEL" "$MAC_ETH" "$MAC_WIFI" "$INSTANCE" "$HOST" "$IPS"
+  ' 2>/dev/null)" || { echo "ERROR: ssh $user@$target failed" >&2; exit 1; }
+
+  local serial model mac_eth mac_wifi instance host ip
+  serial="$(awk -F= '/^SERIAL=/  {print $2}' <<<"$probe")"
+  model="$(awk -F= '/^MODEL=/   {sub(/^MODEL=/,""); print}' <<<"$probe")"
+  mac_eth="$(awk -F= '/^MAC_ETH=/ {print $2}' <<<"$probe")"
+  mac_wifi="$(awk -F= '/^MAC_WIFI=/{print $2}' <<<"$probe")"
+  instance="$(awk -F= '/^INSTANCE=/{print $2}' <<<"$probe")"
+  host="$(awk -F= '/^HOST=/    {print $2}' <<<"$probe")"
+  ip="$(awk -F= '/^IP=/      {print $2}' <<<"$probe")"
+
+  [[ -n "$serial" ]] || { echo "ERROR: could not read CPU serial from $target" >&2; exit 1; }
+
+  local now; now="$(now_iso)"
+  local pending_match=""
+  if [[ -n "$instance" ]]; then
+    pending_match="$(yq -r '
+      .pending_flashes // [] |
+      to_entries | map(select(.value.instance_id == "'"$instance"'")) | .[0].key // ""
+    ' "$INV")"
+  fi
+
+  yq -i "
+    .[\"$serial\"].hostname     = \"$host\"      |
+    .[\"$serial\"].model        = \"$model\"     |
+    .[\"$serial\"].mac_eth      = \"$mac_eth\"   |
+    .[\"$serial\"].mac_wifi     = \"$mac_wifi\"  |
+    .[\"$serial\"].last_ip      = \"$ip\"        |
+    .[\"$serial\"].last_seen    = \"$now\"       |
+    .[\"$serial\"].friendly_name = (.[\"$serial\"].friendly_name // \"\")
+  " "$INV"
+
+  if [[ -n "$pending_match" && "$pending_match" != "null" ]]; then
+    yq -i "
+      .[\"$serial\"].flashes += [.pending_flashes[$pending_match]] |
+      del(.pending_flashes[$pending_match])
+    " "$INV"
+    echo "[register] bound pending flash (instance_id=$instance) -> $serial"
+  else
+    echo "[register] no matching pending flash (instance_id=$instance) - device recorded without flash history"
+  fi
+  echo "[register] $host  $ip  $serial  $mac_eth"
+}
+
+cmd_name() {
+  local key="${1:-}" name="${2:-}"
+  [[ -n "$key" && -n "$name" ]] || { echo "usage: pi name <serial|hostname> <friendly_name>" >&2; exit 2; }
+  ensure_inv
+  local serial; serial="$(resolve_serial "$key")"
+  [[ -n "$serial" && "$serial" != "null" ]] || { echo "no match: $key" >&2; exit 1; }
+  yq -i ".[\"$serial\"].friendly_name = \"$name\"" "$INV"
+  echo "set friendly_name on $serial -> $name"
+}
+
+cmd_record_flash() {
+  ensure_inv
+  : "${SERIAL:?SERIAL is required}" "${ROLE:?ROLE is required}"
+  local hostname="rpi-${SERIAL: -6}"
+  local ts; ts="$(now_iso)"
+  yq -i "
+    .[\"$SERIAL\"].hostname              = \"$hostname\"                              |
+    .[\"$SERIAL\"].model                 = (.[\"$SERIAL\"].model // \"${MODEL:-}\")    |
+    .[\"$SERIAL\"].friendly_name         = (.[\"$SERIAL\"].friendly_name // \"\")      |
+    .[\"$SERIAL\"].last_seen             = \"$ts\"                                    |
+    .[\"$SERIAL\"].flashes              += [{
+      \"flashed_at\":                  \"$ts\",
+      \"instance_id\":                 \"${INSTANCE_ID:-}\",
+      \"image\":                       \"${IMAGE:-}\",
+      \"disk\":                        \"${DISK:-}\",
+      \"role\":                        \"$ROLE\",
+      \"pi_username\":                 \"${PI_USERNAME:-}\",
+      \"wifi_ssid\":                   \"${WIFI_SSID:-}\",
+      \"touchscreen_overlay\":         \"${TOUCHSCREEN_OVERLAY:-}\",
+      \"touchscreen_overlay_params\":  \"${TOUCHSCREEN_OVERLAY_PARAMS:-}\",
+      \"success\":                     true
+    }]
+  " "$INV"
+  echo "[inventory] recorded flash: $hostname role=$ROLE"
+}
+
+cmd="${1:-list}"
+shift || true
+case "$cmd" in
+  list)         require_yq; cmd_list "$@" ;;
+  show)         require_yq; cmd_show "$@" ;;
+  discover)     require_yq; cmd_discover "$@" ;;
+  register)     require_yq; cmd_register "$@" ;;
+  forget)       require_yq; cmd_forget "$@" ;;
+  name)         require_yq; cmd_name "$@" ;;
+  record-flash) require_yq; cmd_record_flash "$@" ;;
+  -h|--help|help)
+    sed -n '2,15p' "$0" | sed 's|^# \?||'
+    ;;
+  *)
+    echo "unknown command: $cmd. try: pi help" >&2
+    exit 2
+    ;;
+esac
