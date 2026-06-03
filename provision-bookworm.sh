@@ -36,8 +36,21 @@ set -a; source "$REPO/.env"; set +a
   "${PI_USERNAME:?}" "${PI_PASSWORD:?}" "${TIMEZONE:?}" "${LOCALE:?}" "${KEYMAP:?}"
 
 ROLE="${ROLE_ARG:-${ROLE:-base}}"
-ROLE_SRC="$REPO/roles/$ROLE"
-[[ -x "$ROLE_SRC/install.sh" ]] || { echo "ERROR: role '$ROLE' not found." >&2; exit 1; }
+# ROLES_PATHS: colon-separated list of dirs to search for <role>/install.sh.
+# Defaults to $REPO/roles (backwards-compatible). External sibling repos can
+# extend this, e.g. ROLES_PATHS=/path/to/piChick/roles:./roles ./provision-bookworm.sh chicken-cam ...
+ROLES_PATHS="${ROLES_PATHS:-$REPO/roles}"
+ROLE_SRC=""
+for _path in ${ROLES_PATHS//:/ }; do
+  if [[ -x "$_path/$ROLE/install.sh" ]]; then
+    ROLE_SRC="$_path/$ROLE"
+    break
+  fi
+done
+if [[ -z "$ROLE_SRC" ]]; then
+  echo "ERROR: role '$ROLE' not found in ROLES_PATHS='$ROLES_PATHS' (looked for <path>/$ROLE/install.sh)" >&2
+  exit 1
+fi
 echo "Selected role: $ROLE (Bookworm/firstrun.sh path)"
 
 PI_PASSWORD_HASH=$(openssl passwd -6 "$PI_PASSWORD")
