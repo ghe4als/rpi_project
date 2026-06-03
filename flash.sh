@@ -36,8 +36,34 @@ for i in {1..30}; do
 done
 [[ -d /Volumes/bootfs ]] || { echo "bootfs did not mount" >&2; exit 1; }
 
-if [[ -n "$ROLE" ]]; then
-  "$REPO/provision.sh" "$ROLE" /Volumes/bootfs
+# Dispatch to the correct provisioner based on image filename.
+# - Bookworm images use provision-bookworm.sh (firstrun.sh mechanism); stock
+#   Bookworm has NO cloud-init, so provision.sh's user-data is silently ignored.
+# - Trixie images use provision.sh (cloud-init path).
+# - Unknown images default to provision-bookworm.sh (the currently-proven path)
+#   with a loud warning telling the user to set PROVISION_SCRIPT explicitly.
+# Override: PROVISION_SCRIPT=provision-bookworm.sh ./flash.sh ...
+IMG_BASENAME_LC="$(basename "$IMG" | tr '[:upper:]' '[:lower:]')"
+if [[ -n "${PROVISION_SCRIPT:-}" ]]; then
+  PROVISIONER="$PROVISION_SCRIPT"
+  echo "Using PROVISION_SCRIPT override: $PROVISIONER"
+elif [[ "$IMG_BASENAME_LC" == *bookworm* ]]; then
+  PROVISIONER="provision-bookworm.sh"
+  echo "Detected Bookworm image -> $PROVISIONER"
+elif [[ "$IMG_BASENAME_LC" == *trixie* ]]; then
+  PROVISIONER="provision.sh"
+  echo "Detected Trixie image -> $PROVISIONER"
 else
-  "$REPO/provision.sh" /Volumes/bootfs
+  PROVISIONER="provision-bookworm.sh"
+  echo "WARNING: cannot detect distro from image name '$(basename "$IMG")'." >&2
+  echo "WARNING: defaulting to $PROVISIONER (the currently-stable Bookworm path)." >&2
+  echo "WARNING: pass PROVISION_SCRIPT=provision.sh (or provision-bookworm.sh) to override." >&2
+fi
+
+[[ -x "$REPO/$PROVISIONER" ]] || { echo "Provisioner not found or not executable: $REPO/$PROVISIONER" >&2; exit 1; }
+
+if [[ -n "$ROLE" ]]; then
+  "$REPO/$PROVISIONER" "$ROLE" /Volumes/bootfs
+else
+  "$REPO/$PROVISIONER" /Volumes/bootfs
 fi
