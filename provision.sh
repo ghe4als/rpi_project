@@ -123,7 +123,7 @@ find "$BOOT/role" -name install.sh -exec chmod +x {} \;
 ROLE_ENV_FILE="$BOOT/role/role.env"
 {
   echo "ROLE=$ROLE"
-  for var in $(env | awk -F= '/^TOUCHSCREEN_/ {print $1}'); do
+  for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION)_/ {print $1}'); do
     val="${!var}"
     printf '%s=%q\n' "$var" "$val"
   done
