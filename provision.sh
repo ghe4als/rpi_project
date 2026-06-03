@@ -108,16 +108,70 @@ echo "instance_id bumped to: $NEW_INSTANCE_ID"
 # up alongside install.sh, both with execute bits, and bash on the Pi can
 # pick up the AppleDouble binary - which silently fails the role-setup
 # unit. Burned an hour of debugging on this one.
-echo "Staging role '$ROLE' (+ base) onto bootfs"
+echo "Staging role '$ROLE' (+ base + declared deps) onto bootfs"
 rm -rf "$BOOT/role"
 mkdir -p "$BOOT/role"
-COPYFILE_DISABLE=1 cp -R "$REPO/roles/base"   "$BOOT/role/base"
+
+# Resolve a role directory through ROLES_PATHS (same search as the selected role).
+find_role_src() {
+  local r="$1" p
+  for p in ${ROLES_PATHS//:/ }; do
+    if [[ -x "$p/$r/install.sh" ]]; then
+      echo "$p/$r"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Recursively collect a role's dependencies from its optional role.deps file
+# (one role name per line; blank lines and '#' comments ignored). Cycle-safe.
+declare -a STAGE_ORDER=()
+_seen_deps=""
+collect_deps() {
+  local r="$1" src deps_file dep
+  case " $_seen_deps " in *" $r "*) return 0;; esac
+  _seen_deps="$_seen_deps $r"
+  src="$(find_role_src "$r")" || { echo "ERROR: dependency role '$r' not found in ROLES_PATHS='$ROLES_PATHS'" >&2; exit 1; }
+  deps_file="$src/role.deps"
+  if [[ -f "$deps_file" ]]; then
+    while IFS= read -r dep; do
+      dep="${dep%%#*}"; dep="${dep//[[:space:]]/}"
+      [[ -n "$dep" ]] || continue
+      collect_deps "$dep"
+    done < "$deps_file"
+  fi
+  STAGE_ORDER+=("$r")
+}
+
+# base is always staged first; then the selected role's dep closure (deps before role).
+COPYFILE_DISABLE=1 cp -R "$REPO/roles/base" "$BOOT/role/base"
 if [[ "$ROLE" != "base" ]]; then
-  COPYFILE_DISABLE=1 cp -R "$ROLE_SRC"        "$BOOT/role/$ROLE"
-  COPYFILE_DISABLE=1 cp "$ROLE_SRC/install.sh" "$BOOT/role/install.sh"
-else
-  COPYFILE_DISABLE=1 cp "$REPO/roles/base/install.sh" "$BOOT/role/install.sh"
+  collect_deps "$ROLE"
+  for r in "${STAGE_ORDER[@]}"; do
+    [[ "$r" == "base" ]] && continue
+    rsrc="$(find_role_src "$r")"
+    echo "  staging role: $r"
+    COPYFILE_DISABLE=1 cp -R "$rsrc" "$BOOT/role/$r"
+  done
 fi
+
+# Generic dispatcher: role-setup.service runs THIS top-level install.sh, which
+# sources role.env and execs the selected role's REAL install.sh. This keeps
+# $0 (and therefore $ROLE_DIR/assets) correct inside the role script.
+cat > "$BOOT/role/install.sh" <<'DISPATCH'
+#!/bin/bash
+set -euo pipefail
+ROLE_ENV=/boot/firmware/role/role.env
+[[ -f "$ROLE_ENV" ]] || ROLE_ENV=/boot/role/role.env
+# shellcheck disable=SC1090
+[[ -f "$ROLE_ENV" ]] && source "$ROLE_ENV"
+: "${ROLE:?ERROR: ROLE not set in role.env}"
+ROLE_BASE="$(dirname "$0")"
+TARGET="$ROLE_BASE/$ROLE/install.sh"
+[[ -x "$TARGET" ]] || { echo "ERROR: role installer not found/executable: $TARGET" >&2; exit 1; }
+exec /bin/bash "$TARGET"
+DISPATCH
 find "$BOOT/role" -name install.sh -exec chmod +x {} \;
 
 ROLE_ENV_FILE="$BOOT/role/role.env"
