@@ -35,6 +35,9 @@ install -m 0644 "$ASSETS/motion.defaults" /etc/default/motion
 echo "[security-camera] preparing recordings dir"
 install -d -o motion -g motion -m 0755 /var/lib/motion
 
+echo "[security-camera] preparing log dir (motion 4.5+ does not auto-create)"
+install -d -o motion -g motion -m 0755 /var/log/motion
+
 echo "[security-camera] allowing 'pi' to view motion's recordings"
 usermod -a -G motion pi || true
 
