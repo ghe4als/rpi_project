@@ -1,0 +1,3 @@
+# Roles staged before this one by provision.sh (one name per line).
+# tailscale needs the common packages + NATS announcer from base.
+base

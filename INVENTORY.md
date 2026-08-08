@@ -83,6 +83,44 @@ pending_flashes:                              # top-level, written by provision.
 
 Identity lookup accepts: full 16-hex CPU serial, `rpi-XXXXXX` hostname, or friendly_name.
 
+## Roles
+
+A role is a directory under `roles/<name>/` with an `install.sh` that runs
+once on first boot via `role-setup.service`. Provisioning stages the role
+tree + `role.env` onto the SD card's bootfs partition.
+
+| Role | Purpose | Key env vars |
+|---|---|---|
+| `base` | Common packages + NATS node announcer. Always staged. | `NATS_URL` |
+| `security-camera` | Motion + UVC webcam streamer. | `MOTION_PORT` |
+| `touchscreen` | SPI 3.5" panel kiosk (cage + foot). | `TOUCHSCREEN_*` |
+| `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
+
+### Provisioning a Tailscale VPN node
+
+1. Generate a one-time auth key at
+   https://login.tailscale.com/admin/settings/keys
+   (reusable: off, ephemeral: off).
+2. Put it in `.env`:
+   ```
+   TAILSCALE_AUTH_KEY="tskey-auth-..."
+   TAILSCALE_SUBNET="192.168.0.0/24"   # your LAN subnet
+   ROLE="tailscale"
+   ```
+3. Flash + provision:
+   ```bash
+   ./flash.sh ~/Downloads/raspios-...img.xz /dev/disk4 tailscale
+   ```
+4. After the Pi boots and `tailscale-up.service` runs, approve the node AND
+   its advertised subnet route in the Tailscale admin console:
+   https://login.tailscale.com/admin/machines
+   (Machines -> the new node -> "Approve" + "Edit route settings" -> enable
+   the `192.168.0.0/24` subnet).
+5. From any device on your tailnet, you can now reach LAN hosts at
+   `192.168.0.x` and SSH to the Pi at its Tailscale hostname/IP.
+
+Logs: `journalctl -u tailscale-up.service` or `/var/log/role-setup.log`.
+
 ## Why pending_flashes?
 
 `provision.sh` runs on the Mac. The CPU serial is only readable on the Pi after first boot. So at flash time we record everything we DO know (image, disk, role, env snapshot, instance_id) into `pending_flashes`, then `pi register` later matches by `instance_id` (which lives in `/boot/firmware/meta-data` on the Pi) and promotes the pending entry into the Pi's `flashes` history.

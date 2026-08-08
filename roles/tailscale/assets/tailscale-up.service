@@ -1,0 +1,15 @@
+[Unit]
+Description=Tailscale first-boot bring-up (subnet router + SSH)
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+ConditionPathExists=!/run/tailscale-up.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tailscale-up
+StandardOutput=append:/var/log/role-setup.log
+StandardError=append:/var/log/role-setup.log
+TimeoutStartSec=__TIMEOUT__
+
+[Install]
+WantedBy=multi-user.target
