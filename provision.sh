@@ -51,7 +51,17 @@ if [[ -z "$ROLE_SRC" ]]; then
 fi
 echo "Selected role: $ROLE"
 
-PI_PASSWORD_HASH=$(openssl passwd -6 "$PI_PASSWORD")
+# macOS ships LibreSSL, whose `openssl passwd` doesn't support -6 (SHA-512
+# crypt). Try the system openssl first, fall back to Homebrew's openssl@3,
+# then python3's crypt module. All three produce a $6$... hash glibc accepts.
+hash_password() {
+  local pw="$1"
+  if openssl passwd -6 "$pw" 2>/dev/null; then return 0; fi
+  local brew_ssl="/opt/homebrew/opt/openssl@3/bin/openssl"
+  [[ -x "$brew_ssl" ]] && "$brew_ssl" passwd -6 "$pw" 2>/dev/null && return 0
+  python3 -c "import crypt,sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA512)))" "$pw"
+}
+PI_PASSWORD_HASH=$(hash_password "$PI_PASSWORD")
 export PI_PASSWORD_HASH
 
 SSH_KEYS_DIR="${SSH_KEYS_DIR:-$HOME/.ssh}"
