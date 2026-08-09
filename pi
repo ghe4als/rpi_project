@@ -4,7 +4,10 @@
 # Usage:
 #   pi list                       List every Pi in inventory.yaml
 #   pi show <serial|hostname>     Detail one Pi
-#   pi discover                   Scan LAN, update last_ip / last_seen for known Pis
+#   pi discover [--all|-a]        Scan LAN, update last_ip / last_seen for known Pis.
+#                                With --all, also print non-Pi-MAC devices (catches a
+#                                Pi using a USB ethernet adapter, which inherits the
+#                                adapter's manufacturer MAC instead of a Pi OUI).
 #   pi register <ip|hostname>     SSH to a Pi, learn its serial+MACs, bind any matching pending_flashes
 #   pi forget <serial|hostname>   Remove a Pi from inventory
 #   pi name <serial|hostname> "kitchen pi"   Set friendly_name
@@ -82,7 +85,14 @@ cmd_discover() {
     echo "ERROR: arp-scan required. brew install arp-scan" >&2; exit 1
   fi
   local iface; iface="${IFACE:-en0}"
-  echo "scanning LAN on $iface..."
+  # PI_OUI_REGEX: known Raspberry Pi Foundation OUI prefixes (eth0 + wlan0).
+  # NOTE: a Pi using a USB ethernet adapter will NOT match this - its MAC is
+  # the adapter's (Realtek/ASIX/etc.). Use --all to see every device on the
+  # LAN so USB-ethernet Pis aren't missed.
+  local PI_OUI_REGEX='^(b8:27:eb|dc:a6:32|e4:5f:01|d8:3a:dd|2c:cf:67|28:cd:c1)'
+  local show_all=0
+  [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]] && show_all=1
+  echo "scanning LAN on $iface${show_all:+ (showing all unknown devices)}..."
   local scan; scan="$(sudo arp-scan -I "$iface" --localnet 2>/dev/null | awk '/^[0-9]+\./ {print $1, $2}')"
 
   local mac ip serial
@@ -92,8 +102,12 @@ cmd_discover() {
     if [[ -n "$serial" && "$serial" != "null" ]]; then
       yq -i ".[\"$serial\"].last_ip = \"$ip\" | .[\"$serial\"].last_seen = \"$(now_iso)\"" "$INV"
       printf '  %-15s %s -> known: %s\n' "$ip" "$mac" "$(yq -r ".[\"$serial\"].hostname" "$INV")"
-    elif [[ "$mac" =~ ^(b8:27:eb|dc:a6:32|e4:5f:01|d8:3a:dd|2c:cf:67|28:cd:c1) ]]; then
+    elif [[ "$mac" =~ $PI_OUI_REGEX ]]; then
       printf '  %-15s %s -> UNKNOWN Pi (use `pi register %s %s` after SSH)\n' "$ip" "$mac" "$ip" "$mac"
+    elif [[ $show_all -eq 1 ]]; then
+      # Non-Pi MAC. With --all, print it so a Pi using a USB ethernet adapter
+      # (which inherits the adapter's manufacturer MAC) is still visible.
+      printf '  %-15s %s -> unknown device (non-Pi OUI; could be a Pi with USB ethernet)\n' "$ip" "$mac"
     fi
   done <<< "$scan"
 }
