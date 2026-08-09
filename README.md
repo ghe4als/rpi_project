@@ -147,6 +147,8 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `security-camera` | Motion + UVC webcam streamer (`http://<host>:8081`). | `MOTION_PORT` |
 | `touchscreen` | SPI 3.5" panel kiosk (cage + foot on the SPI DRM panel). | `TOUCHSCREEN_*` |
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
+| `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent dashboard. For an always-on Pi 4. | `NATS_URL`, `NETDATA_STREAM_API_KEY` |
+| `netdata-child` | Netdata agent that streams this Pi's metrics to the monitor Pi. Add to a fleet Pi's `role.deps`. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
 
 ### Provisioning a Tailscale VPN node
 
@@ -173,6 +175,51 @@ tree + `role.env` onto the SD card's bootfs partition.
 
 Logs on the Pi: `journalctl -u tailscale-up.service` or
 `/var/log/role-setup.log`.
+
+### Provisioning the monitor Pi (NATS + Netdata parent) and fleet monitoring
+
+The `monitor` role turns a always-on Pi 4 into the LAN's NATS broker **and**
+a Netdata parent dashboard. The `netdata-child` role goes on every fleet Pi
+you want to monitor; it streams metrics to the parent over HTTP.
+
+1. **Generate a shared Netdata stream API key** (a UUID). Use the same value
+   on the monitor Pi and every fleet Pi:
+   ```bash
+   uuidgen | pbcopy        # macOS
+   ```
+   Paste into `.env`:
+   ```
+   NETDATA_STREAM_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   NATS_URL="nats://192.168.0.76:4222"          # the monitor Pi's IP
+   # NETDATA_PARENT_HOST is optional - defaults to the host in NATS_URL.
+   ```
+
+2. **Flash the monitor Pi 4**:
+   ```bash
+   ./flash.sh ~/Downloads/raspios-...img.xz /dev/disk4 monitor
+   ```
+   After boot it runs:
+   - `nats-server` on `:4222` (JetStream on, no auth) + monitoring on `:8222`
+   - `netdata` parent on `:19999` accepting child streams with the shared key
+
+3. **Flash a fleet Pi with monitoring**. Either use `netdata-child` directly,
+   or (recommended) add `netdata-child` to that role's `role.deps` so it
+   streams automatically:
+   ```bash
+   # Standalone (Pi whose only job is to be monitored):
+   ./flash.sh ~/Downloads/raspios-...img.xz /dev/disk5 netdata-child
+
+   # Or, to monitor a Pi running another role, add to its role.deps:
+   #   echo netdata-child >> roles/<that-role>/role.deps
+   ```
+
+4. **Open the dashboards**:
+   ```bash
+   open http://192.168.0.76:19999        # Netdata (all Pis streaming in)
+   open http://192.168.0.76:8222/varz     # NATS broker status
+   ```
+   Every fleet Pi appears as a menu entry in the Netdata dashboard's
+   top-right host selector once it has streamed its first metric.
 
 ## How it works
 

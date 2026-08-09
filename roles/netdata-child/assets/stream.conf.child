@@ -1,0 +1,22 @@
+# Netdata child stream.conf — streams this Pi's metrics to the parent.
+# Installed to /etc/netdata/stream.conf by netdata-child role's install.sh.
+#
+# __PARENT_HOST__ and __API_KEY__ are substituted by install.sh from
+# NETDATA_PARENT_HOST and NETDATA_STREAM_API_KEY in role.env. If
+# NETDATA_PARENT_HOST is unset, install.sh derives it from NATS_URL (the
+# monitor Pi runs both, so they're the same host).
+
+[stream]
+    enabled = yes
+    destination = http://__PARENT_HOST__:19999
+    api key = __API_KEY__
+    timeout seconds = 60
+    default port = 19999
+    send charts matching = *
+    buffer size bytes = 1048576
+    reconnect delay seconds = 5
+
+# The child keeps no local dashboard database by default (memory mode =
+# ram) so SD card writes are minimised. The parent stores everything.
+[global]
+    memory mode = ram

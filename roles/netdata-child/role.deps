@@ -1,0 +1,4 @@
+# Roles staged before this one by provision.sh (one name per line).
+# netdata-child also runs base so the Pi announces itself over NATS to the
+# monitor Pi (nice symmetry: every monitored Pi is also a NATS publisher).
+base

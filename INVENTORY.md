@@ -95,6 +95,8 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `security-camera` | Motion + UVC webcam streamer. | `MOTION_PORT` |
 | `touchscreen` | SPI 3.5" panel kiosk (cage + foot). | `TOUCHSCREEN_*` |
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
+| `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent. | `NETDATA_STREAM_API_KEY`, `NATS_URL` |
+| `netdata-child` | Netdata agent streaming to the monitor Pi's parent. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
 
 ### Provisioning a Tailscale VPN node
 
@@ -120,6 +122,21 @@ tree + `role.env` onto the SD card's bootfs partition.
    `192.168.0.x` and SSH to the Pi at its Tailscale hostname/IP.
 
 Logs: `journalctl -u tailscale-up.service` or `/var/log/role-setup.log`.
+
+### Provisioning the monitor Pi + fleet monitoring
+
+1. Generate a shared Netdata stream API key (UUID) and put it in `.env`:
+   ```bash
+   uuidgen | pbcopy
+   ```
+   ```
+   NETDATA_STREAM_API_KEY="..."
+   NATS_URL="nats://192.168.0.76:4222"   # the monitor Pi's IP
+   ```
+2. Flash the monitor Pi 4 with the `monitor` role (NATS broker + Netdata parent).
+3. Flash fleet Pis with `netdata-child` (standalone, or added to a role's `role.deps`).
+4. Open `http://<monitor-ip>:19999` (Netdata) and `http://<monitor-ip>:8222/varz` (NATS).
+See `README.md` for the full walkthrough.
 
 ## Why pending_flashes?
 

@@ -1,0 +1,20 @@
+# Netdata parent stream.conf — accepts connections from child agents.
+# Installed to /etc/netdata/stream.conf by monitor role's install.sh.
+#
+# The [stream] block ENABLES this node as a parent: with `enabled = no`
+# here, the parent does NOT itself stream upward (we are the top of the
+# tree). The [API KEY] sections declare which API keys children may use
+# to authenticate, and that their metrics should be saved locally.
+#
+# NETDATA_STREAM_API_KEY is substituted by install.sh (__API_KEY__).
+
+[stream]
+    enabled = no
+
+[__API_KEY__]
+    enabled = yes
+    allow from = *
+    default history = 3600
+    default memory mode = db
+    health enabled by default = auto
+    default postpone alarms on connect = 5m

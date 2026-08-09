@@ -1,0 +1,18 @@
+[Unit]
+Description=NATS messaging server (JetStream + monitoring)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats-server.conf
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+# Run as a dedicated nats user (created by install.sh) so JetStream
+# files under /var/lib/nats aren't owned by root.
+User=nats
+Group=nats
+
+[Install]
+WantedBy=multi-user.target
