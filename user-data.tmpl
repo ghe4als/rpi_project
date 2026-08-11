@@ -49,3 +49,26 @@ runcmd:
   - install -m 0644 /boot/firmware/role-setup.service /etc/systemd/system/role-setup.service
   - systemctl daemon-reload
   - systemctl enable role-setup.service
+  # Diagnostics: write cloud-init status + recent logs to the FAT bootfs
+  # partition so they're readable from macOS when the card is re-inserted.
+  # Helps diagnose why SSH/WiFi didn't come up on Lite images.
+  - |
+    (
+      echo "=== cloud-init status ==="
+      cloud-init status --long 2>&1
+      echo
+      echo "=== cloud-init services ==="
+      systemctl status cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service --no-pager 2>&1
+      echo
+      echo "=== ssh service ==="
+      systemctl status ssh --no-pager 2>&1
+      echo
+      echo "=== network interfaces ==="
+      ip -br addr 2>&1
+      echo
+      echo "=== cloud-init log tail ==="
+      tail -100 /var/log/cloud-init.log 2>&1
+      echo
+      echo "=== cloud-init-output log tail ==="
+      tail -100 /var/log/cloud-init-output.log 2>&1
+    ) > /boot/firmware/cloud-init-debug.log 2>&1 || true

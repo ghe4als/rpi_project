@@ -197,7 +197,14 @@ chmod 0644 "$ROLE_ENV_FILE"
 COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
 
 rm -f "$BOOT/custom.toml" "$BOOT/firstrun.sh" "$BOOT/firstrun.log" \
-      "$BOOT/ssh" "$BOOT/wpa_supplicant.conf"
+      "$BOOT/wpa_supplicant.conf"
+
+# Touch $BOOT/ssh so the Raspberry Pi OS legacy "enable SSH on first boot"
+# mechanism fires regardless of whether cloud-init's cc_ssh module runs.
+# cloud-init should still configure SSH (user/pubkey/etc.), but on Lite
+# images cc_ssh can fail silently; without this flag there's no fallback
+# and the Pi is unreachable headless.
+touch "$BOOT/ssh"
 
 find "$BOOT" \( -name '._*' -o -name '.DS_Store' -o -name '.Spotlight-V100' -o -name '.Trashes' -o -name '.fseventsd' \) -print -exec rm -rf {} + 2>/dev/null || true
 
