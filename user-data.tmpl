@@ -49,6 +49,7 @@ runcmd:
   - install -m 0644 /boot/firmware/role-setup.service /etc/systemd/system/role-setup.service
   - systemctl daemon-reload
   - systemctl enable role-setup.service
+  - systemctl start role-setup.service
   # Diagnostics: write cloud-init status + recent logs to the FAT bootfs
   # partition so they're readable from macOS when the card is re-inserted.
   # Helps diagnose why SSH/WiFi didn't come up on Lite images.
