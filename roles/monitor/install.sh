@@ -46,19 +46,19 @@ case "$ARCH" in
   *) log "ERROR: unsupported arch for nats-server: $ARCH"; exit 1 ;;
 esac
 
-NATS_VERSION="2.10.27"
+: "${NATS_VERSION:=2.14.4}"
 NATS_BIN="/usr/local/bin/nats-server"
-NATS_URL="https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-${NATS_ARCH}.zip"
+NATS_URL="https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-${NATS_ARCH}.tar.gz"
 
 if [[ -x "$NATS_BIN" ]] && "$NATS_BIN" -v 2>/dev/null | grep -q "^nats-server v${NATS_VERSION}"; then
   log "nats-server $NATS_VERSION already installed"
 else
   log "downloading nats-server v${NATS_VERSION} ($NATS_ARCH)"
   apt-get update -y
-  apt-get install -y --no-install-recommends unzip
+  apt-get install -y --no-install-recommends tar
   tmp="$(mktemp -d)"
-  curl -fsSL "$NATS_URL" -o "$tmp/nats.zip"
-  unzip -o "$tmp/nats.zip" -d "$tmp" >/dev/null
+  curl -fsSL "$NATS_URL" -o "$tmp/nats.tar.gz"
+  tar -xzf "$tmp/nats.tar.gz" -C "$tmp"
   install -m 0755 "$tmp/nats-server-v${NATS_VERSION}-linux-${NATS_ARCH}/nats-server" "$NATS_BIN"
   rm -rf "$tmp"
   log "nats-server $("$NATS_BIN" -v)"
