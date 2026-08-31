@@ -1,0 +1,17 @@
+[Unit]
+Description=Announce this Raspberry Pi on NATS
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/run/rpi-nats-announce.sent
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/rpi-project/nats-announce.env
+ExecStart=/usr/local/bin/rpi-nats-announce
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

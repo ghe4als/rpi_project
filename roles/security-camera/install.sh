@@ -32,6 +32,13 @@ install -m 0644 "$ASSETS/motion.conf" /etc/motion/motion.conf
 echo "[security-camera] enabling motion daemon"
 install -m 0644 "$ASSETS/motion.defaults" /etc/default/motion
 
+echo "[security-camera] waiting for camera device before motion starts"
+install -d -m 0755 /etc/systemd/system/motion.service.d
+cat > /etc/systemd/system/motion.service.d/10-wait-for-video0.conf <<'EOF'
+[Service]
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 90); do [ -e /dev/video0 ] && exit 0; sleep 1; done; exit 1'
+EOF
+
 echo "[security-camera] preparing recordings dir"
 install -d -o motion -g motion -m 0755 /var/lib/motion
 

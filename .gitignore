@@ -2,3 +2,4 @@
 inventory.yaml
 *.img
 *.img.xz
+.omo/
