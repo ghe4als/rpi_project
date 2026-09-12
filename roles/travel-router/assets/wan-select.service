@@ -1,0 +1,13 @@
+[Unit]
+Description=Travel-router WAN auto-detection (USB adapter -> WAN, nftables render)
+After=network-online.target
+Wants=network-online.target
+Before=hostapd-travel.service dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/travel-router/wan-select.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+# Travel-router: enable IPv4 forwarding so the travel LAN can route to the WAN.
+# Installed as /etc/sysctl.d/90-travel-router.conf (the .sysctl suffix is a
+# repo convention dropped at install time).
+net.ipv4.ip_forward=1

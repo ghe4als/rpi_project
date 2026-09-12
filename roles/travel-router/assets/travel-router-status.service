@@ -1,0 +1,12 @@
+[Unit]
+Description=Travel-router read-only LAN status page
+After=network.target wan-select.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/travel-router/status-server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+# Travel-router LAN DHCP/DNS config (dnsmasq). Rendered once by install.sh.
+# Serves the private LAN and acts as the Pi's own DNS for connected clients.
+interface=__LAN_INTERFACE__
+bind-dynamic
+
+# Advertise 192.168.50.1-style address as the DNS server clients use.
+# Note: `dhcp-option=6` with no value points clients at this host (self DNS).
+domain-needed
+dhcp-option=6
+
+# DHCP range for travel-network clients.
+dhcp-range=__DHCP_RANGE__
+
+# No-hosts is intentionally NOT set: keep /etc/hosts entries resolvable.
+
+# Debug only; uncomment to log DHCP requests.
+#log-dhcp

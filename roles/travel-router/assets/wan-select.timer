@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-run travel-router WAN detection every 30s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=wan-select.service
+
+[Install]
+WantedBy=timers.target

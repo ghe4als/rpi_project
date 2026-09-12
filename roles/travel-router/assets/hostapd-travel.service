@@ -1,0 +1,17 @@
+[Unit]
+Description=Travel-router access point (hostapd, onboard WiFi)
+After=network-online.target wan-select.service
+Wants=network-online.target
+
+# Dedicated unit: Debian's stock hostapd.service carries
+# ConditionFileNotEmpty=/etc/hostapd/hostapd.conf and reads DAEMON_CONF from
+# /etc/default/hostapd — with a custom config path it is silently skipped,
+# and with DAEMON_CONF unset it starts configless and errors.
+
+[Service]
+ExecStart=/usr/sbin/hostapd /etc/hostapd/hostapd-travel.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

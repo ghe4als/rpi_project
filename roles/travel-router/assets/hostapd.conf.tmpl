@@ -1,0 +1,28 @@
+# Travel-router AP config (hostapd). Rendered once by install.sh from role.env.
+# The onboard (SDIO) WiFi radio serves as the private travel network.
+#
+# ctrl_interface enables hostapd_cli queries used by the status page.
+ctrl_interface=/var/run/hostapd
+
+# Radio / driver
+driver=nl80211
+interface=__AP_INTERFACE__
+
+# Network identity (WPA2-Personal)
+ssid=__AP_SSID__
+country_code=__AP_COUNTRY__
+
+# 802.11n on the 2.4 GHz band
+ieee80211n=1
+wmm_enabled=1
+
+# Channel (set from role.env; fixed single-band)
+channel=__AP_CHANNEL__
+
+# WPA2 security
+wpa=2
+wpa_passphrase=__AP_PSK__
+wpa_key_mgmt=WPA-PSK
+auth_algs=1
+rsn_pairwise=CCMP
+wpa_pairwise=CCMP

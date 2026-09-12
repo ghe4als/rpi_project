@@ -1,0 +1,34 @@
+flush ruleset
+
+# Travel-router nftables ruleset. Rendered per-run by wan-select.sh.
+# flush is REQUIRED: the 30s timer re-runs `nft -f` here. Without flush,
+# re-declaring `table inet travel_router` fails with "file exists" and a
+# WAN change never applies. With flush the whole ruleset swaps atomically.
+
+table inet travel_router {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        # Loopback + established/related return traffic.
+        iifname "lo" accept
+        ct state established,related accept
+        # DHCP/DNS + HTTP status page + SSH for LAN clients.
+        iifname "__LAN_INTERFACE__" udp dport { 53, 67 } accept
+        iifname "__LAN_INTERFACE__" tcp dport { 53, 80, 22 } accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        # Return traffic for LAN-originated flows.
+        ct state established,related accept
+        # Outbound LAN -> WAN (WAN-present modes). Replaced by a comment in
+        # standalone mode so the file stays syntactically valid.
+        iifname "__LAN_INTERFACE__" oifname "__WAN_INTERFACE__" accept
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        # NAT LAN -> WAN (WAN-present modes). Replaced by a comment in
+        # standalone mode.
+        oifname "__WAN_INTERFACE__" masquerade
+    }
+}
