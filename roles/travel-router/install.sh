@@ -11,7 +11,7 @@
 # Single-owner rule: THIS script is the sole owner of the hostapd/dnsmasq/sysctl
 # files; wan-select never re-renders them.
 #
-# Test seam (REQUIRED): honours TRAWELROUTER_DRY_RUN=1 + DRY_RUN_PREFIX=<dir> so
+# Test seam (REQUIRED): honours TRAVELROUTER_DRY_RUN=1 + DRY_RUN_PREFIX=<dir> so
 # the QA battery runs on a non-Pi (macOS) runner: every write lands under the
 # prefix and every system-mutating call (apt/systemctl/sysctl/ip/iw/rfkill/nft)
 # is skipped/logged while validation + renders still execute.
@@ -32,7 +32,7 @@ log() { echo "$LOG_TAG $*"; }
 # --- DRY RUN ---------------------------------------------------------------
 # truthy check: 1 | true | yes | on
 DRY_RUN=0
-case "${TRAWELROUTER_DRY_RUN:-0}" in
+case "${TRAVELROUTER_DRY_RUN:-0}" in
   1|true|yes|on) DRY_RUN=1 ;;
 esac
 DRY_RUN_PREFIX="${DRY_RUN_PREFIX:-/}"
@@ -52,7 +52,7 @@ real_or_log() {
 }
 
 # --- (1) Source role.env (two-path idiom, mirrors the tailscale role) --------
-ROLE_ENV="${TRAWELROUTER_ROLE_ENV:- /run/travel-router/role.env}"
+ROLE_ENV="${TRAVELROUTER_ROLE_ENV:- /run/travel-router/role.env}"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/firmware/role/role.env"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/role/role.env"
 if [[ -f "$ROLE_ENV" ]]; then
@@ -63,8 +63,8 @@ else
 fi
 
 # --- Defaults --------------------------------------------------------------
-: "${TRAWELROUTER_AP_COUNTRY:=US}"
-: "${TRAWELROUTER_AP_NAME:=travel-router}"
+: "${TRAVELROUTER_AP_COUNTRY:=US}"
+: "${TRAVELROUTER_AP_NAME:=travel-router}"
 
 # --- (2) Validate required vars BEFORE apt ---------------------------------
 # Render idiom is `sed 's|__X__|$VAL|g'`: a value with | / \ or a newline breaks
@@ -79,7 +79,7 @@ fail() {
 # -base64 can emit + / =, which the validation below rejects. Pull from
 # /dev/urandom filtered to the exact allowed alphabet so the default is always
 # 8-63 chars of [A-Za-z0-9._-] and contains no | \ & or newline.
-pkey="${TRAWELROUTER_PSK:-}"
+pkey="${TRAVELROUTER_PSK:-}"
 if [[ -z "$pkey" ]]; then
   # No PSK supplied: generate one that is already validation-safe. Using a
   # fixed-count dd (no pipeline early-close/SIGPIPE) means we don't trip
@@ -99,29 +99,29 @@ if [[ -z "$pkey" ]]; then
   [[ ${#p_30} -gt 63 ]] && p_30="${p_30:0:63}"
   pkey="$p_30"
 fi
-sid="${TRAWELROUTER_AP_NAME}"
+sid="${TRAVELROUTER_AP_NAME}"
 if [[ -z "${sid:-}" ]]; then
-  fail "AP_SSID (TRAWELROUTER_AP_NAME) is empty" "set a non-empty TRAWELROUTER_AP_NAME (printable ASCII, <=32 chars)"
+  fail "AP_SSID (TRAVELROUTER_AP_NAME) is empty" "set a non-empty TRAVELROUTER_AP_NAME (printable ASCII, <=32 chars)"
 fi
 if [[ -z "${pkey:-}" ]]; then
-  fail "AP_PSK (TRAWELROUTER_PSK) is empty" "set TRAWELROUTER_PSK in role.env (8-63 chars, A-Za-z0-9._- only)"
+  fail "AP_PSK (TRAVELROUTER_PSK) is empty" "set TRAVELROUTER_PSK in role.env (8-63 chars, A-Za-z0-9._- only)"
 fi
 if [[ "${#sid}" -gt 32 ]]; then
-  fail "AP_SSID too long (${#sid} > 32)" "TRAWELROUTER_AP_NAME must be printable ASCII, <=32 chars"
+  fail "AP_SSID too long (${#sid} > 32)" "TRAVELROUTER_AP_NAME must be printable ASCII, <=32 chars"
 fi
-printf '%s' "$sid" | grep -qE "$PRINTABLE_RE" || fail "AP_SSID has illegal characters" "TRAWELROUTER_AP_NAME must be printable ASCII only"
+printf '%s' "$sid" | grep -qE "$PRINTABLE_RE" || fail "AP_SSID has illegal characters" "TRAVELROUTER_AP_NAME must be printable ASCII only"
 pkey_len="${#pkey}"
 if [[ "$pkey_len" -lt 8 || "$pkey_len" -gt 63 ]]; then
-  fail "AP_PSK length ${pkey_len} outside 8-63" "set a TRAWELROUTER_PSK between 8 and 63 characters"
+  fail "AP_PSK length ${pkey_len} outside 8-63" "set a TRAVELROUTER_PSK between 8 and 63 characters"
 fi
 # Disallow the render-breakers and any char outside the allowed whitelist.
 case "$pkey" in
   *'|'*|*'\\'*|*'$'*|*'\n'*) fail "AP_PSK contains a render-breaker char (|, \, or $)" \
-    "remove | / \ / $ from TRAWELROUTER_PSK; they break the sed render" ;;
+    "remove | / \ / $ from TRAVELROUTER_PSK; they break the sed render" ;;
 esac
 pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
-  "trim TRAWELROUTER_PSK to letters, digits and . _ -"
+  "trim TRAVELROUTER_PSK to letters, digits and . _ -"
 
 # --- (3) Run the base role first (tailscale idiom) -------------------------
 # Idempotent: if a prior role already ran base, apt + common packages exist.
@@ -167,7 +167,7 @@ fi
 # SAME rule as wan-select: first wireless whose /sys/class/net/<if>/device path
 # does NOT contain /usb (onboard SDIO radio), fallback wlan0. On a non-Pi the
 # enumeration is empty so this degrades gracefully to wlan0.
-ap="${TRAWELROUTER_AP_IFACE:-}"
+ap="${TRAVELROUTER_AP_IFACE:-}"
 if [[ -z "$ap" && -d /sys/class/net ]]; then
   for d in /sys/class/net/*; do
     [[ -d "$d" ]] || continue
@@ -200,15 +200,15 @@ log "NM unmanaged conf (iface=${ap}) -> ${unmanaged}"
 mkdir -p "${DRY_RUN_PREFIX}/etc/hostapd" "${DRY_RUN_PREFIX}/etc/dnsmasq.d" "${DRY_RUN_PREFIX}/etc/sysctl.d"
 hostapd_conf="${DRY_RUN_PREFIX}/etc/hostapd/hostapd-travel.conf"
 sed -e "s|__AP_INTERFACE__|${ap}|g" \
-    -e "s|__AP_SSID__|${TRAWELROUTER_AP_NAME}|g" \
-    -e "s|__AP_COUNTRY__|${TRAWELROUTER_AP_COUNTRY}|g" \
-    -e "s|__AP_CHANNEL__|${TRAWELROUTER_AP_CHANNEL:-6}|g" \
+    -e "s|__AP_SSID__|${TRAVELROUTER_AP_NAME}|g" \
+    -e "s|__AP_COUNTRY__|${TRAVELROUTER_AP_COUNTRY}|g" \
+    -e "s|__AP_CHANNEL__|${TRAVELROUTER_AP_CHANNEL:-6}|g" \
     -e "s|__AP_PSK__|${pkey}|g" \
     "$ASSETS/hostapd.conf.tmpl" > "$hostapd_conf"
 
 dnsmasq_conf="${DRY_RUN_PREFIX}/etc/dnsmasq.d/travel-router.conf"
 sed -e "s|__LAN_INTERFACE__|${ap}|g" \
-    -e "s|__DHCP_RANGE__|${TRAWELROUTER_DHCP_RANGE:-192.168.50.100,192.168.50.200,12h}|g" \
+    -e "s|__DHCP_RANGE__|${TRAVELROUTER_DHCP_RANGE:-192.168.50.100,192.168.50.200,12h}|g" \
     "$ASSETS/dnsmasq.conf.tmpl" > "$dnsmasq_conf"
 
 sysctl_conf="${DRY_RUN_PREFIX}/etc/sysctl.d/90-travel-router.conf"
@@ -247,8 +247,8 @@ fi
 log "sanity: dnsmasq.d present, stock config inert"
 
 # --- (10) Final banner -----------------------------------------------------
-lan_ip=$(printf "%s" "${TRAWELROUTER_LAN_CIDR:-192.168.50.1/24}" | sed "s|/.*||")
-status_port="${TRAWELROUTER_STATUS_PORT:-80}"
+lan_ip=$(printf "%s" "${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}" | sed "s|/.*||")
+status_port="${TRAVELROUTER_STATUS_PORT:-80}"
 if [[ "$status_port" == "80" ]]; then
   status_url="http://${lan_ip}"
 else
@@ -256,12 +256,12 @@ else
 fi
 echo "-----------------------------------------------"
 echo "travel-router installed"
-echo "  AP SSID     : ${TRAWELROUTER_AP_NAME}"
+echo "  AP SSID     : ${TRAVELROUTER_AP_NAME}"
 echo "  AP iface    : ${ap}"
 echo "  LAN IP      : ${lan_ip}"
 echo "  Status page : ${status_url}"
 echo "  Manage      : ssh pi@${lan_ip} 'travel-wan connect <SSID> <PSK>'"
-echo "NOTE: the Pi is only reachable over the ${TRAWELROUTER_AP_NAME}"
+echo "NOTE: the Pi is only reachable over the ${TRAVELROUTER_AP_NAME}"
 echo "  SSID or a USB Ethernet adapter (restores NM-managed connectivity)."
 echo "-----------------------------------------------"
 log "travel-router install complete"
