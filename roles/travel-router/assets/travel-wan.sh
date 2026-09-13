@@ -1,0 +1,232 @@
+#!/bin/bash
+# travel-wan.sh — hotel-WiFi management over SSH.
+#
+# Installs to /usr/local/bin/travel-wan. Run as the admin (pi) over SSH from a
+# device ON the travel SSID to scan/connect/disconnect/forget/hotel networks
+# on the travel-router's WAN wifi adapter.
+#
+# PRIVILEGES: `nmcli` READ (scan, status, dev show) works as any user, but
+# `nmcli` WRITE (connect/disconnect/forget/connection delete) touches Network
+# Manager, a SYSTEM service, so it requires ROOT. We wrap write commands in
+# `sudo`. The provisioning cloud-config (user-data.tmpl) adds the pi user to
+# the sudo group; the base image's sudo NOPASSWD (where present, e.g. the
+# standard Raspberry Pi image) lets this run unattended. If the base image asks
+# for a password, a non-root caller gets a clear hint (see usage text).
+#
+# SECURITY: the connection profile lives under /etc/NetworkManager/system-
+# connections on the Pi's rootfs (NM persists it there) — so the hotel PSK is
+# stored on the Pi, not just in transit. We NEVER echo a PSK back in `status`.
+#
+# This CLI WRITES NOTHING under /boot. It has no interactive prompts, so it is
+# scriptable over SSH only (matches the brief's Q1: portal auth happens on a
+# device ON the travel SSID, not on the Pi).
+set -euo pipefail
+
+log() { printf '[travel-wan] %s\n' "$*" >&2; }
+
+# --- Seams: overridable tool binaries so tests can stub them ----------------
+NMCLI="${NMCLI:-nmcli}"
+IP="${IP:-ip}"
+CURL="${CURL:-curl}"
+HOSTAPD_CLI="${HOSTAPD_CLI:-hostapd_cli}"
+TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
+SUDO="${SUDO:-sudo}"
+
+# --- helpers ---------------------------------------------------------------
+
+# Read a JSON string field from the state file (the one wan-select writes).
+json_field() {
+    local key="$1" val=""
+    if [[ -f "$TRAVELROUTER_STATE_FILE" ]]; then
+        # Portable parser (BSD sed lacks [[:space:]]); split JSON on double
+        # quotes and print the value field that follows the requested key.
+        val=$(awk -F'"' -v k="$key" '{ for (i=1;i<=NF;i++) { if ($i==k && $(i+2)!="" ) { print $(i+2); exit } } }' "$TRAVELROUTER_STATE_FILE" 2>/dev/null)
+    fi
+    printf '%s' "$val"
+}
+
+WIFI_WAN_IF="$(json_field wan_if 2>/dev/null || true)"
+
+# Print this script's header comment block as the usage banner.
+usage() {
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
+
+Usage:
+  travel-wan scan                         list hotel networks (read-only)
+  travel-wan status [--json]              show WAN/SSID/IP/internet/clients
+  travel-wan connect <SSID> [PSK]         connect the WAN wifi adapter
+  travel-wan disconnect                   drop the WAN wifi adapter
+  travel-wan forget <SSID>                delete a saved hotel profile
+  travel-wan recheck                      note (wan-select already runs every 30s)
+
+PSKs are stored on this Pi under /etc/NetworkManager/system-connections.
+EOF
+}
+
+# Interface is usable to talk to nmcli only when the device actually exists.
+iface_ok() {
+    local if_name="$1"
+    [[ -n "$if_name" ]] || return 1
+    [[ -e "/sys/class/net/${if_name}" ]] || return 1
+}
+
+# --- subcommands -----------------------------------------------------------
+
+cmd_scan() {
+    local if_name="$1"
+    if ! iface_ok "$if_name"; then
+        log "scan: WAN wifi device '${if_name:-<empty>}' not available on this model"
+        return 2
+    fi
+    log "scanning WiFi on '${if_name}' ..."
+    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list dev "$if_name" 2>&1 | sort -t, -k2 -nr
+}
+
+cmd_connect() {
+    local if_name="$1"
+    local ssid="${2:-}"
+    local psk="${3:-}"
+    if [[ -z "$ssid" ]]; then
+        log "connect: SSID is required"
+        usage
+        return 2
+    fi
+    if [[ "$ssid" =~ ^[[:space:]]*$ ]]; then
+        log "connect: empty SSID"
+        return 2
+    fi
+    # No WAN device on this model — give a clear, non-cryptographic hint.
+    if ! iface_ok "$if_name"; then
+        log "no WAN wifi adapter detected on this model; a USB/WiFi dongle is required to join hotel networks"
+        return 1
+    fi
+    if [[ -n "$psk" ]]; then
+        log "connecting to '${ssid}' — the network may offer captive-portal auth, in which case finish login from a device ON the travel SSID"
+        "$SUDO" "$NMCLI" dev wifi connect "$ssid" password "$psk"
+    else
+        log "connecting to '${ssid}' (open network, no PSK)"
+        "$SUDO" "$NMCLI" dev wifi connect "$ssid"
+    fi
+    log "connected to '${ssid}' (profile now persisted under /etc/NetworkManager/system-connections)"
+}
+
+cmd_disconnect() {
+    local if_name="$1"
+    if ! iface_ok "$if_name"; then
+        log "disconnect: no WAN wifi adapter detected on this model"
+        return 1
+    fi
+    log "disconnecting WAN wifi '${if_name}' ..."
+    "$SUDO" "$NMCLI" dev disconnect "$if_name"
+}
+
+cmd_forget() {
+    local if_name="$1"
+    local ssid="${2:-}"
+    if [[ -z "$ssid" ]]; then
+        log "forget: SSID is required"
+        usage
+        return 2
+    fi
+    if iface_ok "$if_name"; then
+        "$SUDO" "$NMCLI" dev disconnect "$if_name" 2>/dev/null || true
+    fi
+    log "forgetting profile '${ssid}' ..."
+    "$SUDO" "$NMCLI" connection delete "$ssid"
+}
+
+cmd_status() {
+    local json_mode=0
+    local if_name="$1"
+    if [[ "$2" == "--json" ]]; then json_mode=1; fi
+
+    if ! iface_ok "$if_name"; then
+        log "WAN wifi device '${if_name:-<empty>}' not available on this model; degraded status only"
+        if [[ $json_mode -eq 1 ]]; then
+            printf '{"mode":"routed","wan_if":"","wan_ssid":"","wan_ip":"","internet":"unknown","ap_state":"up","clients":0,"standalone":true}\n'
+        else
+            log "wan_if='': no WAN wifi adapter present on this model (check the USB dongle)"
+        fi
+        return 0
+    fi
+
+    # NM connection name (read; OK for a non-root caller).
+    local connection="" wan_ip=""
+    connection="$("$NMCLI" -t -f GENERAL.CONNECTION dev show "$if_name" 2>/dev/null | awk -F: '{print $2}' | head -1)"
+    wan_ip="$("$IP" -4 -o addr show dev "$if_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    [[ -z "$wan_ip" ]] && wan_ip="$("$IP" route get 1.1.1.1 2>/dev/null | awk '/1.1.1.1/{print $1}' | head -1)"
+
+    local ap_state="up"
+    if [[ -x "$(command -v "$HOSTAPD_CLI" 2>/dev/null || true)" ]]; then
+        local n
+        n="$("$HOSTAPD_CLI" all_sta 2>/dev/null | wc -l | tr -d ' ')"
+        ap_state="_sta_count:${n:-0}"
+    fi
+
+    local clients=-1
+    if [[ -f /var/lib/misc/dnsmasq.leases ]]; then
+        clients="$(grep -c '.' /var/lib/misc/dnsmasq.leases 2>/dev/null | tr -d ' ')"
+        [[ -z "$clients" ]] && clients=0
+    fi
+
+    local internet="unknown"
+    if "$CURL" -4 -fsS -m 5 https://1.1.1.1 >/dev/null 2>&1; then
+        internet="yes"
+    else
+        if "$IP" route get 1.1.1.1 >/dev/null 2>&1; then internet="reachable"; else internet="no"; fi
+    fi
+
+    if [[ $json_mode -eq 1 ]]; then
+        printf '{"wan_if":"%s","wan_ssid":"%s","wan_ip":"%s","internet":"%s","ap_state":"%s","clients":%s,"standalone":false}\n' \
+            "$if_name" "${connection:-}" "${wan_ip:-}" "$internet" "$ap_state" "$clients"
+    else
+        log "WAN IF  : $if_name"
+        log "SSID    : $connection"
+        log "WAN IP  : $wan_ip"
+        log "INTERNET: $internet"
+        log "AP      : $ap_state"
+        log "CLIENTS : $clients"
+    fi
+}
+
+main() {
+    local sub="${1:-}"
+    if [[ -z "$sub" ]]; then
+        usage
+        return 1
+    fi
+    shift || true
+    case "$sub" in
+        scan)
+            local if_name="${1:-$WIFI_WAN_IF}"
+            cmd_scan "$if_name"
+            ;;
+        connect)
+            local s="${1:-}" p="${2:-}"
+            cmd_connect "${WIFI_WAN_IF:-}" "$s" "$p"
+            ;;
+        disconnect)
+            cmd_disconnect "${WIFI_WAN_IF:-}"
+            ;;
+        forget)
+            cmd_forget "${WIFI_WAN_IF:-}" "$@"
+            ;;
+        status)
+            cmd_status "${WIFI_WAN_IF:-}" "${1:-}"
+            ;;
+        recheck)
+            log "recheck: wan-select already re-detects the WAN every 30s (timer wan-select.timer is enabled; wan-if=${WIFI_WAN_IF:-none}). Nothing to trigger."
+            ;;
+        --help|-h|help)
+            usage
+            ;;
+        *)
+            usage
+            echo "ERROR: unknown subcommand '${sub}'"
+            return 2
+            ;;
+    esac
+}
+
+main "$@"
