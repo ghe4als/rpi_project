@@ -3,7 +3,7 @@ set -euo pipefail
 
 log() { echo "[nats-announce] $*"; }
 
-: "${NATS_URL:=nats://192.168.0.76:4222}"
+: "${NATS_URL:=nats://192.168.0.151:4222}"
 : "${NATS_SUBJECT_PREFIX:=rpi.nodes}"
 : "${NATS_ANNOUNCE_EVENT:=online}"
 : "${NATS_ANNOUNCE_ATTEMPTS:=20}"

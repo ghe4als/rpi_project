@@ -190,7 +190,7 @@ you want to monitor; it streams metrics to the parent over HTTP.
    Paste into `.env`:
    ```
    NETDATA_STREAM_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   NATS_URL="nats://192.168.0.76:4222"          # the monitor Pi's IP
+   NATS_URL="nats://192.168.0.151:4222"          # the monitor Pi's IP
    # NETDATA_PARENT_HOST is optional - defaults to the host in NATS_URL.
    ```
 
@@ -216,7 +216,7 @@ you want to monitor; it streams metrics to the parent over HTTP.
 4. **Open the dashboards**:
    ```bash
    open http://192.168.0.76:19999        # Netdata (all Pis streaming in)
-   open http://192.168.0.76:8222/varz     # NATS broker status
+   open http://192.168.0.151:8222/varz     # NATS broker status
    ```
    Every fleet Pi appears as a menu entry in the Netdata dashboard's
    top-right host selector once it has streamed its first metric.

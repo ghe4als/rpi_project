@@ -38,7 +38,7 @@ if [[ -f "$ROLE_ENV" ]]; then
   set +a
 fi
 
-: "${NATS_URL:=nats://192.168.0.76:4222}"
+: "${NATS_URL:=nats://192.168.0.151:4222}"
 : "${NATS_SUBJECT_PREFIX:=rpi.nodes}"
 : "${NATS_ANNOUNCE_ATTEMPTS:=20}"
 : "${NATS_ANNOUNCE_RETRY_SEC:=3}"

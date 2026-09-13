@@ -131,7 +131,7 @@ Logs: `journalctl -u tailscale-up.service` or `/var/log/role-setup.log`.
    ```
    ```
    NETDATA_STREAM_API_KEY="..."
-   NATS_URL="nats://192.168.0.76:4222"   # the monitor Pi's IP
+   NATS_URL="nats://192.168.0.151:4222"   # the monitor Pi's IP
    ```
 2. Flash the monitor Pi 4 with the `monitor` role (NATS broker + Netdata parent).
 3. Flash fleet Pis with `netdata-child` (standalone, or added to a role's `role.deps`).
