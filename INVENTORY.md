@@ -97,7 +97,7 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
 | `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent. | `NETDATA_STREAM_API_KEY`, `NATS_URL` |
 | `netdata-child` | Netdata agent streaming to the monitor Pi's parent. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
-| `travel-router` | Travel WiFi router: onboard radio = private AP; USB adapter = auto WAN. | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK` |
+| `travel-router` | Travel WiFi router: onboard radio = private AP; USB adapter = auto WAN. Phone setup page at `http://192.168.50.1/setup` (PIN). | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK`, `TRAVELROUTER_SETUP_PIN` |
 
 ### Provisioning a Tailscale VPN node
 

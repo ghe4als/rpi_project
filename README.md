@@ -229,7 +229,8 @@ Turns a Pi (a Zero W v1.1 works) into a travel router: its onboard WiFi is
 **always** your private travel network (`TRAVELROUTER_AP_SSID`), and whatever
 USB network adapter you plug in auto-becomes the WAN (hotel WiFi dongle,
 wired jack, or nothing — standalone AP mode). LAN is 192.168.50.0/24 with
-DHCP/DNS and a read-only status page at `http://192.168.50.1`.
+DHCP/DNS, a status page and a **phone setup page** at `http://192.168.50.1`
+— no SSH needed to pick the hotel network.
 
 1. **What to buy** — a micro-USB **OTG adapter is REQUIRED** on the Zero W
    v1.1: its only data port is the micro-USB OTG port (the PWR port is
@@ -255,24 +256,45 @@ ROLE="travel-router"
    internet flows through the WAN. On the Zero W the first boot is slow
    (ARMv6 + full apt) — wait for the travel SSID before assuming failure.
 
-4. **Hotel procedure** — plug in the dongle → join the travel SSID from
-   your phone/laptop → complete the hotel's captive-portal login **from
-   that device, on the travel SSID** → (optionally)
-   `ssh pi@192.168.50.1 travel-wan connect <SSID> <PSK>` to have the Pi
-   itself join the hotel WiFi. WAN is re-detected every 30s; unplugging the
-   adapter drops back to standalone automatically.
+4. **Hotel procedure (phone, no SSH)** — plug in the dongle → join the
+   travel SSID from your phone → the setup page opens automatically (the OS
+   captive-portal popup; if it doesn't, open `http://192.168.50.1/setup`) →
+   enter your **`TRAVELROUTER_SETUP_PIN`** → tap **Scan** → pick the hotel
+   network → **Connect** (add the PSK if the hotel uses WPA2). Then:
+   - **Hotel with a captive portal** (login page): the Pi is now associated
+     but not yet online — finish the **hotel's own login page from the same
+     device**: open any `http://` site and the portal pops up (the Pi stays
+     out of the way during this phase by design). Once you log in, the
+     status page flips to internet=yes.
+   - **Hotel with WPA2** (just a password): you already entered the PSK —
+     done.
+   - The "no internet" badge on your phone can linger a couple of minutes
+     after connecting (OS re-probe cadence); `http://192.168.50.1` is the
+     source of truth. WAN is re-detected every 30s; unplugging the adapter
+     drops back to standalone automatically.
 
 5. **Standalone note** — with no adapter plugged in the Pi is still a fully
-   usable private AP (LAN + DHCP/DNS + status page, no NAT).
+   usable private AP (LAN + DHCP/DNS + status/setup page, no NAT). While
+   standalone, phones joining the travel SSID get the setup page pushed at
+   them automatically (probe hijack); it switches off the moment a WAN
+   exists.
 
-6. **Recovery** — after role-setup the Pi is reachable ONLY via the travel
-   SSID (SSH to 192.168.50.1, creds from `.env`) or by plugging a USB
-   Ethernet adapter (NetworkManager stays managing it, so wired
-   connectivity is restored for recovery). A FAILED role-setup stays
-   enabled and retries on the next boot. If first-boot home WiFi was
-   unreachable, apt fails BEFORE the AP interface is unmanaged, so the
-   home-WiFi client config survives — fix `.env` and re-provision, or plug
-   USB Ethernet.
+6. **Recovery / fallback (SSH)** — after role-setup the Pi is reachable ONLY
+   via the travel SSID (SSH to 192.168.50.1, creds from `.env`; the
+   `travel-wan` CLI still works: `ssh pi@192.168.50.1 travel-wan
+   connect <SSID> <PSK>`) or by plugging a USB Ethernet adapter
+   (NetworkManager stays managing it, so wired connectivity is restored for
+   recovery). Forgot the PIN? Re-provision, or edit
+   `/boot/firmware/role/role.env` on the bootfs partition and restart
+   `travel-router-status.service`. A FAILED role-setup stays enabled and
+   retries on the next boot. If first-boot home WiFi was unreachable, apt
+   fails BEFORE the AP interface is unmanaged, so the home-WiFi client
+   config survives — fix `.env` and re-provision, or plug USB Ethernet.
+
+7. **Upgrading a previously provisioned Pi** — Pis flashed before this
+   feature have no setup PIN, so the phone setup API stays deny-by-default
+   there: re-provision, or hand-add `TRAVELROUTER_SETUP_PIN` to `role.env`
+   and restart `travel-router-status.service`.
 
 ## How it works
 
