@@ -80,11 +80,12 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
    | `WIFI_SSID` / `WIFI_PSK` / `WIFI_COUNTRY` | Your WiFi. `WIFI_COUNTRY` is the ISO 3166-1 alpha-2 code (e.g. `US`). |
    | `PI_USERNAME` / `PI_PASSWORD` | The user created on every Pi. Password is hashed at render time. |
    | `TIMEZONE` / `LOCALE` / `KEYMAP` | e.g. `America/Los_Angeles` / `en_US.UTF-8` / `us`. |
-   | `ROLE` | Default role if you don't pass one to `flash.sh`. One of: `base`, `security-camera`, `touchscreen`, `tailscale`. |
+   | `ROLE` | Default role if you don't pass one to `flash.sh`. One of: `base`, `security-camera`, `touchscreen`, `tailscale`, `monitor`, `netdata-child`, `travel-router`. |
    | `NATS_URL` | NATS broker for the node self-announcer installed by `base`. |
    | `TAILSCALE_*` | Only for the `tailscale` role (see below). |
    | `TOUCHSCREEN_*` | Only for the `touchscreen` role. |
    | `OLLAMA_*` / `COOP_*` / `MOTION_PORT` | Only for the `chicken-cam`/`security-camera` roles. |
+   | `TRAVELROUTER_*` | Only for the `travel-router` role (see below). |
 
 3. **Download a Raspberry Pi OS image**. This pipeline expects the **Lite**
    (headless) images. Get them from https://www.raspberrypi.com/software/operating-system/
@@ -149,6 +150,7 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
 | `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent dashboard. For an always-on Pi 4. | `NATS_URL`, `NETDATA_STREAM_API_KEY` |
 | `netdata-child` | Netdata agent that streams this Pi's metrics to the monitor Pi. Add to a fleet Pi's `role.deps`. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
+| `travel-router` | Travel WiFi router: the Pi's onboard radio is always your private AP; a USB adapter (WiFi dongle or Ethernet) auto-becomes the WAN. | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK` |
 
 ### Provisioning a Tailscale VPN node
 
@@ -220,6 +222,56 @@ you want to monitor; it streams metrics to the parent over HTTP.
    ```
    Every fleet Pi appears as a menu entry in the Netdata dashboard's
    top-right host selector once it has streamed its first metric.
+
+### Provisioning the travel-router Pi
+
+Turns a Pi (a Zero W v1.1 works) into a travel router: its onboard WiFi is
+**always** your private travel network (`TRAVELROUTER_AP_SSID`), and whatever
+USB network adapter you plug in auto-becomes the WAN (hotel WiFi dongle,
+wired jack, or nothing — standalone AP mode). LAN is 192.168.50.0/24 with
+DHCP/DNS and a read-only status page at `http://192.168.50.1`.
+
+1. **What to buy** — a micro-USB **OTG adapter is REQUIRED** on the Zero W
+   v1.1: its only data port is the micro-USB OTG port (the PWR port is
+   power-only), so no USB device plugs in without it; a powered OTG hub is
+   recommended for power-hungry adapters. A USB WiFi dongle must have a
+   working Linux driver + CLIENT/station mode (ideally 5 GHz — the AP side
+   is the onboard radio and never needs AP mode on the dongle); a USB
+   Ethernet adapter just needs a working Linux driver. Some dongles lack
+   usable Linux drivers or 5 GHz channel support — check before travel.
+
+2. **Set `.env`**:
+   ```
+   TRAVELROUTER_AP_SSID="TravelNet"
+   TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
+   ROLE="travel-router"
+   ```
+
+3. **Home test** — flash with the USB adapter plugged in (on the Zero W
+   v1.1 use a **32-bit armhf Lite image** — Bookworm armhf Lite
+   recommended; arm64 does not boot on this SoC). After first boot join the
+   travel SSID from a laptop, open `http://192.168.50.1`, and confirm
+   internet flows through the WAN. On the Zero W the first boot is slow
+   (ARMv6 + full apt) — wait for the travel SSID before assuming failure.
+
+4. **Hotel procedure** — plug in the dongle → join the travel SSID from
+   your phone/laptop → complete the hotel's captive-portal login **from
+   that device, on the travel SSID** → (optionally)
+   `ssh pi@192.168.50.1 travel-wan connect <SSID> <PSK>` to have the Pi
+   itself join the hotel WiFi. WAN is re-detected every 30s; unplugging the
+   adapter drops back to standalone automatically.
+
+5. **Standalone note** — with no adapter plugged in the Pi is still a fully
+   usable private AP (LAN + DHCP/DNS + status page, no NAT).
+
+6. **Recovery** — after role-setup the Pi is reachable ONLY via the travel
+   SSID (SSH to 192.168.50.1, creds from `.env`) or by plugging a USB
+   Ethernet adapter (NetworkManager stays managing it, so wired
+   connectivity is restored for recovery). A FAILED role-setup stays
+   enabled and retries on the next boot. If first-boot home WiFi was
+   unreachable, apt fails BEFORE the AP interface is unmanaged, so the
+   home-WiFi client config survives — fix `.env` and re-provision, or plug
+   USB Ethernet.
 
 ## How it works
 
