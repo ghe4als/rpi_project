@@ -26,6 +26,7 @@ STATE_PATH_ENV = "TRAVELROUTER_STATE_FILE"
 DEFAULT_STATE_PATH = "/run/travel-router/state.json"
 DEFAULT_HOST = "192.168.50.1"
 TTL_SECONDS = 30.0
+WAN_TOOL = os.environ.get("TRAVELWAN_BIN", "/usr/local/bin/travel-wan")
 
 
 # Write verbs (the four config-carrying verbs) are the surface for config
@@ -69,6 +70,15 @@ def _json_field(text, key):
     return "".join(out)
 
 
+def _state_field(key):
+    state_file = _load_state_file()
+    try:
+        with open(state_file, "r", encoding="utf-8") as fh:
+            return _json_field(fh.read(), key)
+    except OSError:
+        return None
+
+
 def get_status():
     """Return the /status dict. Shells out to `travel-wan status --json`;
     falls back to a degraded dict if the tool is unavailable or its output is
@@ -79,16 +89,19 @@ def get_status():
     if _cache_ok and (time.time() - _cache_when) < TTL_SECONDS:
         return _cache_result
 
+    state_mode = _state_field("mode") or "standalone"
     payload = {
+        "mode": state_mode,
+        "lan_ip": _state_field("lan_ip") or "",
         "internet": "unknown",
         "wan_if": "",
         "wan_ssid": "",
         "wan_ip": "",
-        "standalone": False,
+        "standalone": state_mode != "routed",
     }
     try:
         out = subprocess.run(
-            ["bash", "-c", "/usr/local/bin/travel-wan status --json"],
+            [WAN_TOOL, "status", "--json"],
             capture_output=True, text=True, timeout=20,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -202,13 +215,7 @@ _make_handler()
 
 
 def resolve_host_and_port():
-    host = None
-    state_file = _load_state_file()
-    try:
-        with open(state_file, "r", encoding="utf-8") as fh:
-            host = _json_field(fh.read(), "lan_ip")
-    except OSError:
-        host = None
+    host = _state_field("lan_ip")
     if not host:
         host = DEFAULT_HOST
     port = 80

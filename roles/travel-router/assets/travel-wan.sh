@@ -31,6 +31,7 @@ CURL="${CURL:-curl}"
 HOSTAPD_CLI="${HOSTAPD_CLI:-hostapd_cli}"
 TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
 SUDO="${SUDO:-sudo}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -58,7 +59,7 @@ Usage:
   travel-wan connect <SSID> [PSK]         connect the WAN wifi adapter
   travel-wan disconnect                   drop the WAN wifi adapter
   travel-wan forget <SSID>                delete a saved hotel profile
-  travel-wan recheck                      note (wan-select already runs every 30s)
+  travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
 PSKs are stored on this Pi under /etc/NetworkManager/system-connections.
 EOF
@@ -80,7 +81,7 @@ cmd_scan() {
         return 2
     fi
     log "scanning WiFi on '${if_name}' ..."
-    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list dev "$if_name" 2>&1 | sort -t, -k2 -nr
+    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" 2>&1 | sort -t, -k2 -nr
 }
 
 cmd_connect() {
@@ -103,10 +104,10 @@ cmd_connect() {
     fi
     if [[ -n "$psk" ]]; then
         log "connecting to '${ssid}' — the network may offer captive-portal auth, in which case finish login from a device ON the travel SSID"
-        "$SUDO" "$NMCLI" dev wifi connect "$ssid" password "$psk"
+        "$SUDO" "$NMCLI" dev wifi connect "$ssid" ifname "$if_name" password "$psk"
     else
         log "connecting to '${ssid}' (open network, no PSK)"
-        "$SUDO" "$NMCLI" dev wifi connect "$ssid"
+        "$SUDO" "$NMCLI" dev wifi connect "$ssid" ifname "$if_name"
     fi
     log "connected to '${ssid}' (profile now persisted under /etc/NetworkManager/system-connections)"
 }
@@ -141,10 +142,20 @@ cmd_status() {
     local if_name="$1"
     if [[ "$2" == "--json" ]]; then json_mode=1; fi
 
+    # mode + lan_ip come from wan-select's state file; standalone derives from
+    # the state mode (never hardcoded). Defaults cover a missing state file.
+    local state_mode="" lan_ip=""
+    state_mode="$(json_field mode)"
+    lan_ip="$(json_field lan_ip)"
+    [[ -z "$state_mode" ]] && state_mode="standalone"
+    local standalone="false"
+    [[ "$state_mode" != "routed" ]] && standalone="true"
+
     if ! iface_ok "$if_name"; then
         log "WAN wifi device '${if_name:-<empty>}' not available on this model; degraded status only"
         if [[ $json_mode -eq 1 ]]; then
-            printf '{"mode":"routed","wan_if":"","wan_ssid":"","wan_ip":"","internet":"unknown","ap_state":"up","clients":0,"standalone":true}\n'
+            printf '{"mode":"%s","lan_ip":"%s","wan_if":"","wan_ssid":"","wan_ip":"","internet":"unknown","ap_state":"up","clients":0,"standalone":%s}\n' \
+                "$state_mode" "$lan_ip" "$standalone"
         else
             log "wan_if='': no WAN wifi adapter present on this model (check the USB dongle)"
         fi
@@ -178,8 +189,11 @@ cmd_status() {
     fi
 
     if [[ $json_mode -eq 1 ]]; then
-        printf '{"wan_if":"%s","wan_ssid":"%s","wan_ip":"%s","internet":"%s","ap_state":"%s","clients":%s,"standalone":false}\n' \
-            "$if_name" "${connection:-}" "${wan_ip:-}" "$internet" "$ap_state" "$clients"
+        # Strip quote/backslash so adversarial SSIDs cannot break the JSON.
+        local wan_ssid="${connection//\"/}"
+        wan_ssid="${wan_ssid//\\/}"
+        printf '{"mode":"%s","lan_ip":"%s","wan_if":"%s","wan_ssid":"%s","wan_ip":"%s","internet":"%s","ap_state":"%s","clients":%s,"standalone":%s}\n' \
+            "$state_mode" "$lan_ip" "$if_name" "$wan_ssid" "${wan_ip:-}" "$internet" "$ap_state" "$clients" "$standalone"
     else
         log "WAN IF  : $if_name"
         log "SSID    : $connection"
@@ -216,7 +230,8 @@ main() {
             cmd_status "${WIFI_WAN_IF:-}" "${1:-}"
             ;;
         recheck)
-            log "recheck: wan-select already re-detects the WAN every 30s (timer wan-select.timer is enabled; wan-if=${WIFI_WAN_IF:-none}). Nothing to trigger."
+            log "recheck: triggering wan-select now (it also re-runs every 30s via wan-select.timer; wan-if=${WIFI_WAN_IF:-none})"
+            "$SUDO" "$SYSTEMCTL" start wan-select.service
             ;;
         --help|-h|help)
             usage

@@ -3,10 +3,10 @@
 interface=__LAN_INTERFACE__
 bind-dynamic
 
-# Advertise 192.168.50.1-style address as the DNS server clients use.
-# Note: `dhcp-option=6` with no value points clients at this host (self DNS).
+# DNS for DHCP clients: dnsmasq advertises itself as the DNS server to
+# DHCP clients by default (option 6 = this host), so no explicit
+# dhcp-option line is needed.
 domain-needed
-dhcp-option=6
 
 # DHCP range for travel-network clients.
 dhcp-range=__DHCP_RANGE__
