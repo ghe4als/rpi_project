@@ -226,6 +226,16 @@ echo "$out" | grep -q '"standalone":false' && echo "$out" | grep -q '"mode":"rou
 # recheck triggers wan-select (SYSTEMCTL stub)
 out=$(SUDO="$STUB/sudo" SYSTEMCTL="$STUB/systemctl" TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$A/travel-wan.sh" recheck 2>/dev/null); rc=$?
 grep -q 'start wan-select.service' "$B/tw-systemctl.log" 2>/dev/null && ok "recheck triggers wan-select" || bad "recheck: $(cat "$B/tw-systemctl.log" 2>/dev/null | head -1)"
+# empty leases file must not abort status (F2 MAJOR-1 regression assert)
+: > "$B/empty-leases"; mkdir -p "$B/leases-dir" 2>/dev/null || true
+out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent \
+      TRAVELROUTER_STATE_FILE="$B/tw-state.json" leases_file_override_test=1 bash -c '
+        leases="/tmp/twv-leases.$$"; : > "$leases"
+        # exercise the leases branch against an EMPTY file via a scratch copy
+        sed "s|/var/lib/misc/dnsmasq.leases|$leases|g" "$0" > "$leases-copy.sh"
+        bash "$leases-copy.sh" status --json' "$A/travel-wan.sh" 2>/dev/null); rc=$?
+echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "status survives empty leases file (F2 MAJOR-1)" || bad "empty leases aborts status: $out"
+rm -f "$B/leases-copy.sh" "$B/empty-leases"
 # connect missing SSID regression
 SUDO="$STUB/sudo" SYSTEMCTL="$STUB/systemctl" TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$A/travel-wan.sh" connect >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "connect missing SSID rc=2" || bad "connect regression rc≠2"

@@ -177,7 +177,9 @@ cmd_status() {
 
     local clients=-1
     if [[ -f /var/lib/misc/dnsmasq.leases ]]; then
-        clients="$(grep -c '.' /var/lib/misc/dnsmasq.leases 2>/dev/null | tr -d ' ')"
+        # grep -c exits 1 on a zero count (empty leases file = normal on
+        # first boot); swallow that so pipefail+errexit cannot kill status.
+        clients="$( (grep -c '.' /var/lib/misc/dnsmasq.leases 2>/dev/null || true) | tr -d ' ')"
         [[ -z "$clients" ]] && clients=0
     fi
 
