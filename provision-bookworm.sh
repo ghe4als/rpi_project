@@ -202,6 +202,13 @@ if [ -n "$SSH_PUBKEY" ] && [ -d "\$USERHOME" ]; then
   chmod 600 "\$USERHOME/.ssh/authorized_keys"
 fi
 
+# role-setup progress log symlink: /var/log/role-setup.log (where the unit's
+# StandardOutput/StandardError append) surfaces in the user's home dir so the
+# provisioning status is easy to find from the first SSH session. The unit
+# appends as root; the symlink itself is owned by the user.
+ln -sf /var/log/role-setup.log "\$USERHOME/role-setup.log"
+chown -h "$PI_USERNAME:$PI_USERNAME" "\$USERHOME/role-setup.log" 2>/dev/null || true
+
 # WiFi (Bookworm uses NetworkManager via imager_custom set_wlan).
 # No -h flag: Brook is a broadcast SSID, not hidden.
 # Set the regulatory country FIRST (file-based, not raspi-config which is risky

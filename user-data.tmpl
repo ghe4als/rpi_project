@@ -50,6 +50,12 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable role-setup.service
   - systemctl start role-setup.service
+  # role-setup progress log symlink: /var/log/role-setup.log (the unit's
+  # StandardOutput/StandardError target) surfaces in the user's home dir so
+  # provisioning status is easy to find from the first SSH session. The log
+  # itself is root-owned (unit appends as root); the link is user-owned.
+  - ln -sf /var/log/role-setup.log /home/${PI_USERNAME}/role-setup.log
+  - chown -h ${PI_USERNAME}:${PI_USERNAME} /home/${PI_USERNAME}/role-setup.log
   # Diagnostics: write cloud-init status + recent logs to the FAT bootfs
   # partition so they're readable from macOS when the card is re-inserted.
   # Helps diagnose why SSH/WiFi didn't come up on Lite images.
