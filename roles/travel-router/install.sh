@@ -66,7 +66,7 @@ else
 fi
 
 # --- Defaults --------------------------------------------------------------
-: "${TRAVELROUTER_AP_COUNTRY:=US}"
+: "${TRAVELROUTER_AP_COUNTRY:=${WIFI_COUNTRY:-US}}"
 # AP_SSID / AP_PSK intentionally have NO defaults: both are required by the
 # role contract (see .env.example). A random PSK would leave an AP nobody can
 # discover the key for; a default SSID hides a missing config.
@@ -148,6 +148,31 @@ done
 log "installing hostapd dnsmasq nftables iw (network still up at this point)"
 real_or_log apt-get update
 real_or_log apt-get install -y --no-install-recommends hostapd dnsmasq nftables iw
+
+# --- (4b) Seed the bootstrap WAN profile (WIFI_SSID as the initial "hotel") --
+# The provisioning WiFi (wired into role.env by the provisioners) becomes the
+# FIRST WAN profile: NM auto-activates it on any MANAGED wifi device (the USB
+# dongle), exactly as if it had been picked on the setup page. The AP
+# interface is unmanaged in step (6), so it can never activate there.
+# Idempotent: skip when a profile with id=WIFI_SSID already exists (Bookworm
+# firstrun.sh seeds one). DRY_RUN logs the command with the PSK redacted.
+if [[ -n "${WIFI_SSID:-}" ]]; then
+  if [[ "$DRY_RUN" -ne 1 ]] && nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$WIFI_SSID"; then
+    log "WAN bootstrap profile '${WIFI_SSID}' already exists (provisioner seed); skipping"
+  elif [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run: nmcli connection add type wifi con-name '${WIFI_SSID}' ssid '${WIFI_SSID}' wifi-sec.psk <redacted> connection.autoconnect yes"
+  elif [[ -n "${WIFI_PSK:-}" ]]; then
+    nmcli connection add type wifi ifname '*' con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
+      wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$WIFI_PSK" connection.autoconnect yes
+    log "seeded WAN bootstrap profile '${WIFI_SSID}' (autoconnect, any managed wifi device)"
+  else
+    nmcli connection add type wifi ifname '*' con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
+      connection.autoconnect yes
+    log "seeded WAN bootstrap profile '${WIFI_SSID}' (open network)"
+  fi
+else
+  log "no WIFI_SSID in role.env — skipping WAN bootstrap profile (standalone AP first boot)"
+fi
 
 # --- (5) Install scripts to their final locations --------------------------
 mkdir -p "${DRY_RUN_PREFIX}/usr/local/lib/travel-router" "${DRY_RUN_PREFIX}/usr/local/bin"
@@ -290,6 +315,7 @@ echo "  LAN IP      : ${lan_ip}"
 echo "  Status page : ${status_url}"
 echo "  Setup       : ${status_url}/setup (PIN required)"
 echo "  Fallback    : ssh pi@${lan_ip} 'travel-wan connect <SSID> <PSK>'"
+[[ -n "${WIFI_SSID:-}" ]] && echo "  WAN bootstrap: '${WIFI_SSID}' profile seeded (auto-connects on USB adapter)"
 echo "NOTE: the Pi is only reachable over the ${TRAVELROUTER_AP_SSID}"
 echo "  SSID or a USB Ethernet adapter (restores NM-managed connectivity)."
 echo "-----------------------------------------------"
