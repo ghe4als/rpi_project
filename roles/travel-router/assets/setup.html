@@ -8,6 +8,20 @@
   DOM exclusively with createElement + textContent. innerHTML /
   insertAdjacentHTML / document.write are FORBIDDEN — SSIDs and error text
   come from outside (hotel networks are hostile input).
+
+  SCAN ROW FORMAT (nmcli terse, colon-separated): SSID:SIGNAL:SECURITY where
+  nmcli escapes ':' as '\:' and '\' as '\\'. SECURITY is a space-joined
+  subset of WEP|WPA1|WPA2|WPA3|OWE|OWE-TM|802.1X; an EMPTY security string
+  means an open network. The escape-aware SSID splitter below decodes raw
+  rows into [ssid, signal, security]; its semantics are pinned by a python
+  replica in validate-local.sh §5r — keep both in lockstep.
+
+  KNOWN NETWORKS feed: GET /api/wan/known -> {known:[{name,timestamp,
+  autoconnect}]}. Scan cards for SSIDs also present in the known list get a
+  "known" badge. Hidden networks (empty ssid) and enterprise networks
+  (security contains 802.1X) render as NON-CONNECTABLE cards. The RAW
+  (unescaped) SSID is carried in element.dataset for API calls and is NEVER
+  re-derived from the rendered label text.
 -->
 <html lang="en">
 <head>
@@ -35,11 +49,37 @@
            font-weight: 600; }
   button.secondary { background: #3a434e; }
   button:disabled { opacity: 0.5; }
-  .scanrow { display: block; width: 100%; text-align: left;
-             background: #222a33; margin: 0.25rem 0; word-break: break-all; }
   .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
   .warn { color: #ffb84d; }
   .ok { color: #5dd879; }
+
+  /* per-network card */
+  .netcard { background: #222a33; border-radius: 8px; padding: 0.7rem 0.8rem;
+             margin: 0.4rem 0; }
+  .netcard .ssid { font-weight: 700; font-size: 1.02rem; word-break: break-all; }
+  .netcard .meta { font-size: 0.85rem; color: #9aa5b1; margin-top: 0.25rem;
+                   display: flex; align-items: center; flex-wrap: wrap;
+                   gap: 0.4rem 0.6rem; }
+  .sig { display: inline-flex; gap: 2px; margin-left: 0.25rem; vertical-align: middle; }
+  .sig i { display: inline-block; width: 4px; height: 12px; background: #3a434e;
+           border-radius: 1px; }
+  .sig i.on { background: #5dd879; }
+  .badge { display: inline-block; font-size: 0.72rem; padding: 1px 6px;
+           border-radius: 999px; background: #2d7ff9; color: white;
+           font-weight: 600; letter-spacing: 0.02em; }
+  .badge.open { background: #3a434e; color: #e8eaed; }
+  .badge.ent  { background: #7a3e3e; color: #ffd6d6; }
+  .badge.known{ background: #2d7ff9; }
+  .badge.auto { background: #2d6f4d; color: #d6ffe6; }
+  .netcard .cardbtns { margin-top: 0.5rem; display: flex; flex-wrap: wrap;
+                       gap: 0.35rem; }
+  .netcard .pskwrap { margin-top: 0.5rem; }
+  .netcard .pskwrap input { margin: 0.2rem 0; }
+  .netcard .cardmsg { min-height: 1.1em; font-size: 0.82rem; color: #9aa5b1;
+                      margin-top: 0.35rem; word-break: break-all; }
+  .netcard .cardmsg.warn { color: #ffb84d; }
+  .netcard .cardmsg.ok { color: #5dd879; }
+  .dim { color: #6b7682; font-style: italic; }
 </style>
 </head>
 <body>
@@ -53,6 +93,13 @@
   </section>
 
   <section>
+    <h2>PIN</h2>
+    <label for="pin">Setup PIN</label>
+    <input id="pin" inputmode="numeric" autocomplete="off">
+    <p class="msg" id="pin-msg"></p>
+  </section>
+
+  <section>
     <h2>Networks</h2>
     <button id="scan-btn" type="button">Scan</button>
     <div id="scan-list"></div>
@@ -60,13 +107,17 @@
   </section>
 
   <section>
-    <h2>Connect</h2>
+    <h2>Known networks</h2>
+    <div id="known-list"></div>
+    <p class="msg" id="known-msg"></p>
+  </section>
+
+  <section>
+    <h2>Connect manually</h2>
     <label for="ssid">Network name (SSID)</label>
     <input id="ssid" autocomplete="off" maxlength="32">
     <label for="psk">Password (leave empty for open networks)</label>
     <input id="psk" type="password" autocomplete="off">
-    <label for="pin">Setup PIN</label>
-    <input id="pin" inputmode="numeric" autocomplete="off">
     <p>
       <button id="connect-btn" type="button">Connect</button>
       <button id="disconnect-btn" type="button" class="secondary">Disconnect</button>
@@ -79,6 +130,9 @@
 <script>
 "use strict";
 // DOM built with createElement/textContent only (see file-header rule).
+// The RAW (unescaped) SSID is carried in element.dataset.ssid for API calls
+// and is NEVER re-derived from rendered label text.
+
 function cellRow(tbody, label, value) {
   var tr = document.createElement("tr");
   var l = document.createElement("td");
@@ -117,6 +171,55 @@ function savedPin() {
   try { return localStorage.getItem("setup-pin") || ""; } catch (e) { return ""; }
 }
 
+// --- escape-aware SSID splitter ------------------------------------------
+// Contract pinned by a python replica in validate-local.sh §5r. Single pass
+// over the raw scan row: backslash escapes the next char (any char); an
+// unescaped ':' emits a field separator. Returns the first 3 fields
+// [ssid, signal, security]. A trailing lone backslash (no next char) is
+// emitted literally. Empty ssid => hidden network; empty security => open.
+function splitRow(row) {
+  var out = []; var cur = ""; var i = 0;
+  while (i < row.length) {
+    var ch = row.charAt(i);
+    if (ch === "\\" && i + 1 < row.length) {
+      cur += row.charAt(i + 1); i += 2; continue;
+    }
+    if (ch === ":") { out.push(cur); cur = ""; }
+    else { cur += ch; }
+    i += 1;
+  }
+  out.push(cur);
+  return out.slice(0, 3);
+}
+
+// --- signal bar (0..100 -> 4 segments) -----------------------------------
+function signalBars(sig) {
+  var n = Math.max(0, Math.min(4, Math.round((Number(sig) || 0) / 25)));
+  var wrap = document.createElement("span");
+  wrap.className = "sig";
+  wrap.setAttribute("aria-label", String(sig));
+  for (var k = 0; k < 4; k++) {
+    var b = document.createElement("i");
+    if (k < n) { b.className = "on"; }
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
+function badge(text, cls) {
+  var b = document.createElement("span");
+  b.className = "badge" + (cls ? " " + cls : "");
+  b.textContent = text;
+  return b;
+}
+
+// security label for a parsed security token string
+function securityLabel(sec) {
+  if (!sec) { return "Open"; }
+  if (sec.indexOf("802.1X") !== -1) { return "Enterprise (unsupported)"; }
+  return sec;
+}
+
 function refreshStatus() {
   fetch("/status", { cache: "no-store" }).then(function (r) { return r.json(); })
     .then(function (d) {
@@ -131,8 +234,6 @@ function refreshStatus() {
         msg.textContent = "Online through " + (d.wan_ssid || d.wan_if);
         msg.className = "msg ok";
       } else if (d.internet === "reachable") {
-        // Portal phase: the hotel login page reaches this device through the
-        // Pi (probes pass through). Our auto-popup deliberately stays off.
         msg.textContent = "Connected to " + (d.wan_ssid || "network") +
           " — open any http:// site (or wait) to finish the network's own " +
           "login page from this device.";
@@ -147,11 +248,14 @@ function refreshStatus() {
     });
 }
 
+var KNOWN_NAMES = {};   // ssid -> true, refreshed alongside scan
+var SCAN_BUSY = false;
+var GLOBAL_BUSY = { scan: false, connect: false };
+
 function busy(on) {
   ["scan-btn", "connect-btn", "disconnect-btn", "forget-btn"].forEach(
     function (id) { document.getElementById(id).disabled = on; });
 }
-var busyOff = function () { busy(false); };
 
 function handleErr(prefix) {
   return function (r) {
@@ -164,37 +268,339 @@ function handleErr(prefix) {
   };
 }
 
+// card-level message helper
+function setCardMsg(card, text, cls) {
+  var m = card.querySelector(".cardmsg");
+  if (!m) { return; }
+  m.textContent = text;
+  m.className = "cardmsg" + (cls ? " " + cls : "");
+}
+
+// enable/disable all buttons inside a card
+function setCardBusy(card, on) {
+  var btns = card.querySelectorAll("button");
+  for (var i = 0; i < btns.length; i++) { btns[i].disabled = on; }
+}
+
+// render one scan row as a card; returns the card element (or null if row
+// could not be parsed into 3 fields).
+function renderScanCard(line, knownSet) {
+  var fields = splitRow(line);
+  if (fields.length < 3) { return null; }
+  var ssid = fields[0];
+  var sig = fields[1];
+  var sec = fields[2];
+  var hidden = (ssid === "");
+  var enterprise = (sec.indexOf("802.1X") !== -1);
+  var connectable = !hidden && !enterprise;
+  var isKnown = !hidden && Object.prototype.hasOwnProperty.call(knownSet, ssid);
+
+  var card = document.createElement("div");
+  card.className = "netcard";
+  card.dataset.ssid = ssid;  // RAW SSID for API calls — never re-derive from label
+
+  var name = document.createElement("div");
+  name.className = "ssid";
+  name.textContent = hidden ? "(hidden network)" : ssid;
+  card.appendChild(name);
+
+  var meta = document.createElement("div");
+  meta.className = "meta";
+  // signal number + bars
+  var sigText = document.createElement("span");
+  sigText.textContent = "signal " + (sig || "?");
+  meta.appendChild(sigText);
+  meta.appendChild(signalBars(sig));
+  // security badge
+  var secBadge = badge(securityLabel(sec),
+    !sec ? "open" : (enterprise ? "ent" : ""));
+  meta.appendChild(secBadge);
+  // known badge (cross-reference)
+  if (isKnown) { meta.appendChild(badge("known", "known")); }
+  card.appendChild(meta);
+
+  if (!connectable) {
+    var note = document.createElement("div");
+    note.className = "cardmsg dim";
+    note.textContent = hidden
+      ? "Hidden network — connect manually with the SSID."
+      : "Enterprise (unsupported) — 802.1X networks cannot be joined from this page.";
+    card.appendChild(note);
+    return card;
+  }
+
+  // action buttons
+  var btns = document.createElement("div");
+  btns.className = "cardbtns";
+
+  var connectBtn = document.createElement("button");
+  connectBtn.type = "button";
+  connectBtn.textContent = "Connect";
+  btns.appendChild(connectBtn);
+
+  var tryBtn = document.createElement("button");
+  tryBtn.type = "button";
+  tryBtn.className = "secondary";
+  tryBtn.textContent = "Try saved passwords";
+  btns.appendChild(tryBtn);
+
+  card.appendChild(btns);
+
+  // inline PSK input (revealed by Connect)
+  var pskWrap = document.createElement("div");
+  pskWrap.className = "pskwrap";
+  pskWrap.style.display = "none";
+
+  var pskLabel = document.createElement("label");
+  pskLabel.textContent = "Password (leave empty for open)";
+  pskLabel.style.fontSize = "0.85rem";
+  var pskInput = document.createElement("input");
+  pskInput.type = "password";
+  pskInput.autocomplete = "off";
+  pskWrap.appendChild(pskLabel);
+  pskWrap.appendChild(pskInput);
+
+  var goBtn = document.createElement("button");
+  goBtn.type = "button";
+  goBtn.textContent = "Connect";
+  pskWrap.appendChild(goBtn);
+
+  card.appendChild(pskWrap);
+
+  var cardMsg = document.createElement("div");
+  cardMsg.className = "cardmsg";
+  card.appendChild(cardMsg);
+
+  // Connect on the card reveals the inline PSK input.
+  connectBtn.addEventListener("click", function () {
+    if (pskWrap.style.display === "none") {
+      pskWrap.style.display = "block";
+      pskInput.focus();
+      setCardMsg(card, "enter password if needed, then Connect", "");
+      return;
+    }
+    // already revealed: act as connect with current psk
+    doConnect(card, ssid, pskInput.value);
+  });
+
+  goBtn.addEventListener("click", function () {
+    doConnect(card, ssid, pskInput.value);
+  });
+
+  // Try saved passwords: POST /api/wan/psks {pin, ssid} — render envelope
+  // `lines` as progress text; disable while busy.
+  tryBtn.addEventListener("click", function () {
+    var pin = pinOrNull() || savedPin();
+    if (!pin) {
+      setCardMsg(card, "PIN required — enter it in the PIN section", "warn");
+      return;
+    }
+    setCardBusy(card, true);
+    setCardMsg(card, "trying saved passwords…", "");
+    api("/api/wan/psks", { pin: pin, ssid: ssid }).then(function (r) {
+      if (r.status === 403) { return handleErr("psks denied")(r); }
+      return r.json();
+    }).then(function (d) {
+      var lines = d.lines || [];
+      if (lines.length) {
+        setCardMsg(card, lines.join("  |  "), d.ok ? "ok" : "");
+      } else {
+        setCardMsg(card, d.ok ? "done (no candidates)" : "failed (rc=" + d.rc + ")",
+          d.ok ? "ok" : "warn");
+      }
+      if (d.ok) { refreshStatus(); }
+    }).catch(function (e) {
+      setCardMsg(card, String(e.message || e), "warn");
+    }).then(function () { setCardBusy(card, false); },
+            function () { setCardBusy(card, false); });
+  });
+
+  function doConnect(cardEl, rawSsid, pskVal) {
+    var pin = pinOrNull() || savedPin();
+    if (!pin) {
+      setCardMsg(cardEl, "PIN required — enter it in the PIN section", "warn");
+      return;
+    }
+    setCardBusy(cardEl, true);
+    setCardMsg(cardEl, "connecting…", "");
+    var body = { pin: pin, ssid: rawSsid };
+    if (pskVal) { body.psk = pskVal; }
+    api("/api/wan/connect", body).then(function (r) {
+      if (r.status === 403) { return handleErr("connect denied")(r); }
+      return r.json();
+    }).then(function (d) {
+      if (!d.ok) {
+        var log = (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")");
+        setCardMsg(cardEl, log, "warn");
+      } else {
+        setCardMsg(cardEl, "connected", "ok");
+        refreshStatus();
+        refreshKnown();
+      }
+    }).catch(function (e) {
+      setCardMsg(cardEl, String(e.message || e), "warn");
+    }).then(function () { setCardBusy(cardEl, false); },
+            function () { setCardBusy(cardEl, false); });
+  }
+
+  return card;
+}
+
 function doScan() {
   busy(true);
+  SCAN_BUSY = true;
   setMsg("scan-msg", "scanning…");
-  api("/api/wan/scan", {}).then(function (r) {
+  // refresh known alongside scan so cards can show the "known" badge
+  var knownP = fetch("/api/wan/known", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { return d.known || []; })
+    .catch(function () { return []; });
+  knownP.then(renderKnown);  // also render the Known section
+  // Scan is POST but the server never reads the request body. Send NO body:
+  // a JSON "{}" body left unread in the keep-alive buffer poisons the next
+  // request on the same connection ("{}POST /api/wan/psks ..." → 501). Same
+  // X-Requested-With header as api(); only the body is omitted.
+  fetch("/api/wan/scan", {
+    method: "POST", cache: "no-store",
+    headers: { "X-Requested-With": "XMLHttpRequest" }
+  }).then(function (r) {
     if (!r.ok) { return handleErr("scan failed")(r); }
     return r.json();
   }).then(function (d) {
-    var list = document.getElementById("scan-list");
-    while (list.firstChild) { list.removeChild(list.firstChild); }
-    (d.lines || []).forEach(function (line) {
-      // line: "SSID,SIGNAL,SECURITY" (nmcli terse); textContent only.
-      var btn = document.createElement("button");
-      btn.className = "scanrow";
-      btn.type = "button";
-      btn.textContent = line;
-      btn.addEventListener("click", function () {
-        var name = line.split(",")[0];
-        var ssidInput = document.getElementById("ssid");
-        ssidInput.value = name;
-        ssidInput.focus();
+    var knownSet = {};
+    // build the name set from the freshly fetched known list
+    return knownP.then(function (known) {
+      (known || []).forEach(function (k) {
+        if (k && k.name) { knownSet[k.name] = true; }
       });
-      list.appendChild(btn);
+      var list = document.getElementById("scan-list");
+      while (list.firstChild) { list.removeChild(list.firstChild); }
+      var rows = (d.lines || []).slice();
+      // sort by signal (field 2) descending — keep stable for ties
+      rows.sort(function (a, b) {
+        var sa = Number(splitRow(a)[1]) || 0;
+        var sb = Number(splitRow(b)[1]) || 0;
+        return sb - sa;
+      });
+      var shown = 0;
+      rows.forEach(function (line) {
+        var card = renderScanCard(line, knownSet);
+        if (card) { list.appendChild(card); shown += 1; }
+      });
+      if (!shown) {
+        setMsg("scan-msg", "no networks found");
+      } else {
+        setMsg("scan-msg", shown + " network" + (shown === 1 ? "" : "s"));
+      }
     });
-    if (!d.lines || !d.lines.length) {
-      setMsg("scan-msg", "no networks found");
-    } else {
-      setMsg("scan-msg", "");
-    }
   }).catch(function (e) {
     setMsg("scan-msg", String(e.message || e), "warn");
-  }).then(busyOff, busyOff);
+  }).then(function () { busy(false); SCAN_BUSY = false; },
+          function () { busy(false); SCAN_BUSY = false; });
+}
+
+// --- Known networks section ----------------------------------------------
+function renderKnown(known) {
+  KNOWN_NAMES = {};
+  var list = document.getElementById("known-list");
+  while (list.firstChild) { list.removeChild(list.firstChild); }
+  if (!known || !known.length) {
+    setMsg("known-msg", "no known networks yet");
+    return;
+  }
+  setMsg("known-msg", "");
+  known.forEach(function (k) {
+    if (!k || !k.name) { return; }
+    KNOWN_NAMES[k.name] = true;
+    var card = document.createElement("div");
+    card.className = "netcard";
+    card.dataset.ssid = k.name;  // RAW SSID for API calls
+
+    var name = document.createElement("div");
+    name.className = "ssid";
+    name.textContent = k.name;
+    card.appendChild(name);
+
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    if (k.timestamp) {
+      var ts = document.createElement("span");
+      ts.textContent = "last: " + k.timestamp;
+      meta.appendChild(ts);
+    }
+    if (k.autoconnect === "yes") { meta.appendChild(badge("autoconnect", "auto")); }
+    card.appendChild(meta);
+
+    var btns = document.createElement("div");
+    btns.className = "cardbtns";
+    var cBtn = document.createElement("button");
+    cBtn.type = "button";
+    cBtn.textContent = "Connect";
+    var fBtn = document.createElement("button");
+    fBtn.type = "button";
+    fBtn.className = "secondary";
+    fBtn.textContent = "Forget";
+    btns.appendChild(cBtn);
+    btns.appendChild(fBtn);
+    card.appendChild(btns);
+
+    var cMsg = document.createElement("div");
+    cMsg.className = "cardmsg";
+    card.appendChild(cMsg);
+
+    cBtn.addEventListener("click", function () {
+      var pin = pinOrNull() || savedPin();
+      if (!pin) { setCardMsg(card, "PIN required — enter it in the PIN section", "warn"); return; }
+      setCardBusy(card, true);
+      setCardMsg(card, "connecting…", "");
+      api("/api/wan/connect", { pin: pin, ssid: k.name }).then(function (r) {
+        if (r.status === 403) { return handleErr("connect denied")(r); }
+        return r.json();
+      }).then(function (d) {
+        if (!d.ok) {
+          var log = (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")");
+          setCardMsg(card, log, "warn");
+        } else {
+          setCardMsg(card, "connected", "ok");
+          refreshStatus();
+        }
+      }).catch(function (e) {
+        setCardMsg(card, String(e.message || e), "warn");
+      }).then(function () { setCardBusy(card, false); },
+              function () { setCardBusy(card, false); });
+    });
+
+    fBtn.addEventListener("click", function () {
+      var pin = pinOrNull() || savedPin();
+      if (!pin) { setCardMsg(card, "PIN required — enter it in the PIN section", "warn"); return; }
+      setCardBusy(card, true);
+      setCardMsg(card, "forgetting…", "");
+      api("/api/wan/forget", { pin: pin, ssid: k.name }).then(function (r) {
+        if (r.status === 403) { return handleErr("forget denied")(r); }
+        return r.json();
+      }).then(function (d) {
+        if (!d.ok) {
+          var log = (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")");
+          setCardMsg(card, log, "warn");
+        } else {
+          setCardMsg(card, "forgotten", "ok");
+          refreshKnown();
+        }
+      }).catch(function (e) {
+        setCardMsg(card, String(e.message || e), "warn");
+      }).then(function () { setCardBusy(card, false); },
+              function () { setCardBusy(card, false); });
+    });
+
+    list.appendChild(card);
+  });
+}
+
+function refreshKnown() {
+  fetch("/api/wan/known", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { renderKnown(d.known || []); })
+    .catch(function () { setMsg("known-msg", "known networks unavailable", "warn"); });
 }
 
 function apiWrite(path, extra) {
@@ -207,13 +613,14 @@ function apiWrite(path, extra) {
     if (r.status === 403) { return handleErr("access denied")(r); }
     return r.json().then(function (d) {
       if (!d.ok) { throw new Error((d.log && d.log.join(" ")) || "failed (rc=" + d.rc + ")"); }
-      setMsg("form-msg", "done");
+      setMsg("form-msg", "done", "ok");
       refreshStatus();
+      refreshKnown();
       return d;
     });
   }).catch(function (e) {
     setMsg("form-msg", String(e.message || e), "warn");
-  }).then(busyOff, busyOff);
+  }).then(busy, busy);
 }
 
 function connectSsid(ssid) {
@@ -244,6 +651,7 @@ document.getElementById("forget-btn").addEventListener("click", function () {
 })();
 
 refreshStatus();
+refreshKnown();
 setInterval(refreshStatus, 4000);
 </script>
 </body>
