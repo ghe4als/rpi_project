@@ -256,6 +256,34 @@ ROLE="travel-router"
    internet flows through the WAN. On the Zero W the first boot is slow
    (ARMv6 + full apt) — wait for the travel SSID before assuming failure.
 
+### First-boot simulation (provisioning WiFi becomes the first WAN)
+
+The provisioning WiFi (`WIFI_SSID`/`WIFI_PSK` from `.env`) does double duty:
+it bootstraps apt during first boot AND is seeded as the first WAN ("hotel")
+NM profile (unbound, so it can only activate on a managed USB WiFi adapter,
+never the AP radio).
+
+- **USB adapter plugged in at first boot**: the Pi comes up ROUTED to
+  `WIFI_SSID` with zero manual steps (wan-select auto-detects the WAN within
+  30s). You can rehearse a full hotel setup at home before you travel.
+- **No USB adapter**: the Pi boots standalone (AP only); the profile is
+  seeded but inert and the install is green.
+- Change or forget the seed later from the phone setup page, or
+  `ssh pi@192.168.50.1 travel-wan forget <SSID>` (it is SSID-named, so
+  forget works like any hotel profile). Re-provisioning re-seeds it.
+
+### First-boot notifications (NATS)
+
+Both events need a route to `NATS_URL`; with no USB adapter plugged in
+(standalone AP boot) neither is published. Subscribe on the monitor Pi with
+`nats sub 'rpi.nodes.>'`.
+
+- `rpi.nodes.<hostname>.online` — the base role's node announcer publishes
+  this during role-setup; it retries 20x3s, then keeps retrying every 30s
+  (systemd `Restart=on-failure`) until the broker is reachable.
+- `rpi.nodes.<hostname>.setup-complete` — published when role-setup finishes
+  successfully (best-effort ExecStartPost).
+
 4. **Hotel procedure (phone, no SSH)** — plug in the dongle → join the
    travel SSID from your phone → the setup page opens automatically (the OS
    captive-portal popup; if it doesn't, open `http://192.168.50.1/setup`) →
