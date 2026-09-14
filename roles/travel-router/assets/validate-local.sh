@@ -297,7 +297,7 @@ if python3 - <<'PY' 2>/dev/null; then ok "textContent-only rendering (setup.html
 setup = open("roles/travel-router/assets/setup.html").read()
 srv = open("roles/travel-router/assets/status-server.py").read()
 code = setup.split("<script>")[1].split("</script>")[0]
-for forbidden in ("innerHTML", "insertAdjacentHTML", "document.write"):
+for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
     assert forbidden not in code
 # status page JS block: no assignment to .innerHTML either
 page = srv.split('_STATUS_HTML = """')[1].split('"""')[0]
@@ -517,6 +517,213 @@ done
 sec "5m. PSK-leak guard (whole temp dir)"
 hits=$(grep -rl 'SeedPass123' "$TMP" 2>/dev/null | grep -v '\.env$' | grep -v '/seedrun/etc/hostapd/hostapd-travel.conf$' || true)
 [[ -z "$hits" ]] && ok "SeedPass123 only in rendered hostapd conf" || bad "SeedPass123 elsewhere: $(echo "$hits" | tr '\n' ' ')"
+
+# --- (5n) store-seeding battery (M8-a) ----------------------------------------
+sec "5n. install.sh known-psks store seeding (M8-a)"
+# macOS runner has no /sys/class/net, so travel-wan connect never passes the
+# iface gate. These batteries assert STORE FILE CONTENTS ONLY (never rc).
+# Seed 1: TRAVELROUTER_DEFAULT_PSKS="alpha,beta" -> fresh store with 2 d-rows.
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=alpha,beta\n' > "$TMP/pskseed.env"
+pfxn="$TMP/pskseed"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxn" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskseed.log" 2>&1; then
+  ok "5n seed dry-run rc=0"
+else bad "5n seed dry-run exited $?"; fi
+STORE="$pfxn/etc/rpi-project/travel-router/known-psks"
+[[ -f "$STORE" ]] && ok "5n known-psks store staged" || bad "5n known-psks store MISSING (seeding unimplemented)"
+if [[ -f "$STORE" ]]; then
+  m=$(stat -f%Lp "$STORE" 2>/dev/null || stat -c%a "$STORE" 2>/dev/null)
+  [[ "$m" == "600" ]] && ok "5n store mode 0600" || bad "5n store mode=$m"
+  dn=$(grep -c $'^d\t\talpha$' "$STORE"); [[ "$dn" == "1" ]] && ok "5n d-row alpha" || bad "5n d-row alpha count=$dn"
+  dn=$(grep -c $'^d\t\tbeta$'  "$STORE"); [[ "$dn" == "1" ]] && ok "5n d-row beta"  || bad "5n d-row beta count=$dn"
+  sn=$(grep -c $'^s\t' "$STORE");         [[ "$sn" == "0" ]] && ok "5n zero s-rows" || bad "5n s-rows=$sn (must be none)"
+fi
+# Seed 2: pre-existing s-row survives re-seed; d-rows replaced by new defaults.
+mkdir -p "$pfxn/etc/rpi-project/travel-router"
+printf 's\tHotelNet\toldpsk\n' > "$STORE"; chmod 600 "$STORE"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxn" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+   TRAVELROUTER_DEFAULT_PSKS="gamma" bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskseed2.log" 2>&1; then
+  ok "5n re-seed dry-run rc=0"
+else bad "5n re-seed dry-run exited $?"; fi
+if [[ -f "$STORE" ]]; then
+  c=$(grep -c $'^s\tHotelNet\toldpsk$' "$STORE"); [[ "$c" == "1" ]] && ok "5n HotelNet s-row intact across re-seed" || bad "5n s-row clobbered (c=$c)"
+  dn=$(grep -c $'^d\t' "$STORE"); [[ "$dn" == "1" ]] && grep -q $'^d\t\tgamma$' "$STORE" \
+    && ok "5n re-seed d-rows replaced (exactly gamma)" || bad "5n re-seed d-rows=$dn (want 1: gamma)"
+  m=$(stat -f%Lp "$STORE" 2>/dev/null || stat -c%a "$STORE" 2>/dev/null)
+  [[ "$m" == "600" ]] && ok "5n store mode 0600 after re-seed" || bad "5n re-seed mode=$m"
+fi
+
+# --- (5o) candidate-cap + TAB rejection battery (M8-b) -------------------------
+sec "5o. travel-wan psk-store cap + TAB-SSID rejection (M8-b)"
+# Seam TRAVELROUTER_PSK_FILE does not exist yet in travel-wan.sh — that is
+# the point of this RED battery. Never assert connect rc (iface gate fails
+# on this runner by design); assert STORE CONTENTS only.
+TWENV=(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent
+       SUDO="$STUB/sudo" SYSTEMCTL="$STUB/systemctl" TRAVELROUTER_STATE_FILE="$B/tw-state.json")
+PSKSTORE="$B/cand-store"; : > "$PSKSTORE"
+PSKCAP="$B/cap-caps"; : > "$PSKCAP"; PSKCERR="$B/cap-caps.err"; : > "$PSKCERR"
+for i in 1 2 3 4 5; do
+  env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$PSKSTORE" bash "$A/travel-wan.sh" \
+    connect TestNet "capk${i}x" >>"$PSKCAP" 2>>"$PSKCERR"
+done
+sc=$(grep -c $'^s\tTestNet\t' "$PSKSTORE")
+[[ "$sc" == "4" ]] && ok "5o cap: exactly 4 s-rows for TestNet (4/SSID)" || bad "5o s-rows=$sc (want 4)"
+c=$(grep -c $'capk1x' "$PSKSTORE"); [[ "$c" == "0" ]] && ok "5o oldest psk (capk1x) evicted" || bad "5o capk1x still present"
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$PSKSTORE" bash "$A/travel-wan.sh" \
+  connect $'Bad\tNet' somepsk >>"$PSKCAP" 2>>"$PSKCERR"
+c=$(grep -c $'Bad' "$PSKSTORE"); [[ "$c" == "0" ]] && ok "5o TAB SSID never lands in store" || bad "5o TAB SSID row present (count=$c)"
+
+# --- (5p) default-fallback order battery (M8-c) --------------------------------
+sec "5p. travel-wan try-psks fallback order (M8-c)"
+PSKP="$B/order-store"
+printf 's\tA\tpsk1order\ns\tA\tpsk2order\nd\t\tpskdflt\n' > "$PSKP"
+ARGVLOG="$B/order-argv.log"; : > "$ARGVLOG"
+STWP="$B/stub-tw-order"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> %s\nexit 1\n' "$ARGVLOG" > "$STWP"; chmod +x "$STWP"
+env "${TWENV[@]}" NMCLI="$STWP" TRAVELROUTER_PSK_FILE="$PSKP" bash "$A/travel-wan.sh" try-psks A \
+  >"$B/order-out" 2>"$B/order-err"
+l1=$(grep -n 'psk1order' "$ARGVLOG" | head -1 | cut -d: -f1)
+l2=$(grep -n 'psk2order' "$ARGVLOG" | head -1 | cut -d: -f1)
+l3=$(grep -n 'pskdflt' "$ARGVLOG" | head -1 | cut -d: -f1)
+[[ -n "$l1" && -n "$l2" && -n "$l3" && "$l1" -lt "$l2" && "$l2" -lt "$l3" ]] \
+  && ok "5p order: psk1order < psk2order < pskdflt in argv" \
+  || bad "5p try order wrong (l1=$l1 l2=$l2 l3=$l3)"
+
+# --- (5q) auto-collect dedup battery (M8-d) ------------------------------------
+sec "5q. connect auto-collect dedup (M8-d)"
+DEDUP="$B/dedup-store"; : > "$DEDUP"
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1A >/dev/null 2>&1
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1B >>"$PSKCAP" 2>>"$PSKCERR"
+dr=$(grep -c $'^s\tDedupNet\t' "$DEDUP")
+[[ "$dr" == "1" ]] && grep -q $'^s\tDedupNet\tdedup1B$' "$DEDUP" \
+  && ok "5q dedup: one s-row, second psk wins" || bad "5q s-rows=$dr (want 1, dedup1B)"
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect OpenNet >>"$PSKCAP" 2>>"$PSKCERR"
+or=$(grep -c $'^s\tOpenNet\t' "$DEDUP"); [[ "$or" == "0" ]] \
+  && ok "5q open-network connect stores no psk" || bad "5q OpenNet s-rows=$or"
+
+# --- (5r) scan-parse fixture battery (M8-e) ------------------------------------
+sec "5r. scan row splitter contract (M8-e)"
+# (1) structural: setup.html must declare the escape-aware SSID splitter.
+grep -q 'escape-aware SSID splitter' "$A/setup.html" \
+  && ok "5r setup.html escape-aware SSID splitter marker" \
+  || bad "5r setup.html splitter marker MISSING (T7 adds it)"
+# (2) behavioral: python replica pins the splitter contract.
+# DRIFT RISK: this replica must be updated in lockstep with the JS splitter
+# in setup.html (and the travel-wan scan row format) — if one changes, both
+# must change. Escaped chars pass through; unescaped colon splits.
+if python3 - <<'PY'
+def split_row(row):
+    out = []; cur = ""
+    i = 0
+    while i < len(row):
+        ch = row[i]
+        if ch == "\\" and i + 1 < len(row):
+            cur += row[i + 1]; i += 2; continue
+        if ch == ":":
+            out.append(cur); cur = ""
+        else:
+            cur += ch
+        i += 1
+    out.append(cur)
+    return out
+
+assert split_row("My\\:Net:75:WPA2")[:3] == ["My:Net", "75", "WPA2"]
+assert split_row("Back\\\\slash:80:")[:3] == ["Back\\slash", "80", ""]
+assert split_row(":55:WPA3")[:3] == ["", "55", "WPA3"]
+PY
+then ok "5r splitter replica: 3 fixture rows parse per contract"
+else bad "5r splitter replica contract broken"; fi
+
+# --- (5s) scan stderr + sort expression battery (M8-f) ------------------------
+sec "5s. scan pipeline: stderr kept out + signal sort (M8-f)"
+# Structural, scoped to the cmd_scan function (lines between 'cmd_scan()' and
+# the next function/section at top level), NOT the whole file: other sections
+# legitimately use 2>&1 (e.g. the online probe).
+scan_start=$(grep -n '^cmd_scan()' "$A/travel-wan.sh" | cut -d: -f1)
+scan_end=$(awk -v s="$scan_start" 'NR>s && /^[a-zA-Z_]+\(\)/ {print NR; exit}' "$A/travel-wan.sh")
+[[ -n "$scan_start" && -n "$scan_end" ]] || scan_end=$((scan_start+12))
+if sed -n "${scan_start},${scan_end}p" "$A/travel-wan.sh" | grep -q '2>&1'; then
+  bad "5s scan merges stderr into row stream (2>&1 in cmd_scan)"
+else ok "5s scan pipeline keeps stderr out of rows"; fi
+if sed -n "${scan_start},${scan_end}p" "$A/travel-wan.sh" | grep -q 'sort -t: -k2 -nr'; then
+  ok "5s sort expression: sort -t: -k2 -nr"
+else bad "5s sort expression wrong (want sort -t: -k2 -nr)"; fi
+# Behavioral: the sort expression orders rows by signal descending.
+srt=$(printf 'Aaa:40:WPA2\nZzz:90:WPA2\n' | sort -t: -k2 -nr | head -1)
+[[ "$srt" == "Zzz:90:WPA2" ]] && ok "5s behavioral: signal sort puts strongest first" \
+  || bad "5s behavioral sort wrong: $srt"
+
+# --- (5t) known-psks endpoint policy matrix (M8-g) ----------------------------
+sec "5t. /api/wan/known + /api/wan/psks policy (M8-g)"
+# NOTE: state fixture MUST bind lan_ip 127.0.0.1 (server binds it; errno 49
+# otherwise). pkill any stale server before starting ours.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWT="$B/stub-travel-wan-t"
+printf '#!/bin/bash\ncase "$1" in try-psks) exit 0;; esac\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' > "$STWT"; chmod +x "$STWT"
+KNOWN_STATE="$B/known-state.json"; cp "$B/srv-state.json" "$KNOWN_STATE"
+TRAVELWAN_PSK_STORE="$B/known-fixture-store"
+printf 's\tFixtureNet\tsup3rsecret\n' > "$TRAVELWAN_PSK_STORE"
+start_known_srv() { # pin -> server on 18095 with TRAVELWAN_PSK_STORE fixture
+  TRAVELROUTER_SETUP_PIN="$1" TRAVELWAN_BIN="$STWT" TRAVELROUTER_STATE_FILE="$KNOWN_STATE" \
+  TRAVELWAN_PSK_STORE="$TRAVELWAN_PSK_STORE" \
+  TRAVELROUTER_STATUS_PORT=18095 python3 "$A/status-server.py" >"$B/srv-m8g.log" 2>&1 &
+  SPID=$!; sleep 1.5
+}
+stop_known_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; sleep 0.3; }
+# gate matrix on POST /api/wan/psks with NO pin in env -> 403
+start_known_srv ""
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "403" ]] && ok "5t POST psks pin-unset -> 403" || bad "5t pin-unset code=$r (want 403)"
+stop_known_srv
+# wrong pin -> 403; missing X-Requested-With -> 403
+start_known_srv "1234"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"9","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "403" ]] && ok "5t POST psks wrong pin -> 403" || bad "5t wrong-pin code=$r (want 403)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "403" ]] && ok "5t POST psks missing X-Requested-With -> 403" || bad "5t csrf code=$r (want 403)"
+# GET /api/wan/known: 200 + fixture SSID present, fixture PSK absent.
+resp=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
+code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+[[ "$code" == "200" ]] && ok "5t GET /api/wan/known -> 200" || bad "5t known code=$code (want 200)"
+echo "$body" | grep -q 'FixtureNet' && ok "5t known body carries SSID" || bad "5t known body missing SSID: $(echo "$body" | head -c 120)"
+echo "$body" | grep -q 'sup3rsecret' && bad "5t known body LEAKS psk (forbidden)" || ok "5t known body free of psk"
+# POST /api/wan/psks happy path: PIN + header -> 200 (endpoint RED now: 404)
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "200" ]] && ok "5t POST psks happy path (pin+hdr) -> 200" || bad "5t POST psks happy code=$r (want 200)"
+# GET /api/wan/psks -> 404 (read forbidden; policy assert, passes now)
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18095/api/wan/psks 2>/dev/null)
+[[ "$r" == "404" ]] && ok "5t GET /api/wan/psks -> 404" || bad "5t GET psks code=$r"
+# POST /status -> 404 parity re-assert
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18095/status 2>/dev/null)
+[[ "$r" == "404" ]] && ok "5t POST /status -> 404 (parity)" || bad "5t POST /status code=$r"
+# PUT/PATCH/DELETE /api/wan/psks -> 404 each
+for verb in PUT PATCH DELETE; do
+  r=$(curl -s -o /dev/null -w '%{http_code}' -X "$verb" http://127.0.0.1:18095/api/wan/psks 2>/dev/null)
+  [[ "$r" == "404" ]] && ok "5t $verb /api/wan/psks -> 404" || bad "5t $verb psks code=$r"
+done
+kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+
+# --- (5u) PSK-leak sweep for battery fixture psks (M8-h) -----------------------
+sec "5u. battery-psk leak sweep (M8-h)"
+# Scope: whole battery temp dir — M8 battery captures (§5n-§5t) live under
+# $B, install dry-runs under $TMP. Excludes: the psk store files themselves,
+# the argv-log stub (transport under test), .env/role.env fixtures.
+leak_hits=""
+for p in capk1x capk2x capk3x capk4x capk5x psk1order psk2order pskdflt dedup1A dedup1B oldpsk sup3rsecret; do
+  h=$(grep -rl "$p" "$TMP" 2>/dev/null \
+      | grep -v '/cand-store$' | grep -v '/dedup-store$' | grep -v '/order-store$' \
+      | grep -v '/known-fixture-store$' | grep -v '/pskseed/etc/rpi-project/travel-router/known-psks$' \
+      | grep -v '/order-argv.log$' | grep -v '\.env$' || true)
+  [[ -n "$h" ]] && leak_hits="$leak_hits $p:$(echo "$h" | tr '\n' ' ')"
+done
+[[ -z "$leak_hits" ]] && ok "5u no battery psks leaked into logs/captures" \
+  || bad "5u leaks:$leak_hits"
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
