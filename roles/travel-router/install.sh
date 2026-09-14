@@ -52,7 +52,7 @@ real_or_log() {
 }
 
 # --- (1) Source role.env (two-path idiom, mirrors the tailscale role) --------
-ROLE_ENV="${TRAVELROUTER_ROLE_ENV:- /run/travel-router/role.env}"
+ROLE_ENV="${TRAVELROUTER_ROLE_ENV:-/run/travel-router/role.env}"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/firmware/role/role.env"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/role/role.env"
 if [[ -f "$ROLE_ENV" ]]; then
@@ -64,7 +64,9 @@ fi
 
 # --- Defaults --------------------------------------------------------------
 : "${TRAVELROUTER_AP_COUNTRY:=US}"
-: "${TRAVELROUTER_AP_NAME:=travel-router}"
+# AP_SSID / AP_PSK intentionally have NO defaults: both are required by the
+# role contract (see .env.example). A random PSK would leave an AP nobody can
+# discover the key for; a default SSID hides a missing config.
 
 # --- (2) Validate required vars BEFORE apt ---------------------------------
 # Render idiom is `sed 's|__X__|$VAL|g'`: a value with | / \ or a newline breaks
@@ -75,53 +77,32 @@ fail() {
   exit 1
 }
 
-# Generate a charset-VALID random PSK when none is supplied: openssl rand
-# -base64 can emit + / =, which the validation below rejects. Pull from
-# /dev/urandom filtered to the exact allowed alphabet so the default is always
-# 8-63 chars of [A-Za-z0-9._-] and contains no | \ & or newline.
-pkey="${TRAVELROUTER_PSK:-}"
-if [[ -z "$pkey" ]]; then
-  # No PSK supplied: generate one that is already validation-safe. Using a
-  # fixed-count dd (no pipeline early-close/SIGPIPE) means we don't trip
-  # `set -euo pipefail`. A fallback covers the (extremely unlikely) case of
-  # zero printable bytes, so the generated default is always 8-63 chars of
-  # [A-Za-z0-9._-] and contains no | / & or newline.
-  p_30="$(LC_ALL=C dd if=/dev/urandom count=4 bs=16 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9._-')"
-  # tr may filter the random bytes down below 8 chars; retry until the key
-  # is at least the minimum accepted length, then truncate to a safe length
-  # (still well within 8-63) if it somehow exceeds it.
-  while [[ -n "$p_30" && ${#p_30} -lt 8 && ${p_30_runs:-0} -lt 64 ]]; do
-    p_30="$(LC_ALL=C dd if=/dev/urandom count=4 bs=16 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9._-')"
-    p_30_runs=$((p_30_runs + 1))
-  done
-  [[ -n "$p_30" ]] || p_30="$(printf %s "${RANDOM:-$$}${RANDOM:-$$}" | tr -dc 'A-Za-z0-9._-')"
-  [[ -n "$p_30" ]] || p_30="travelrouter"
-  [[ ${#p_30} -gt 63 ]] && p_30="${p_30:0:63}"
-  pkey="$p_30"
-fi
-sid="${TRAVELROUTER_AP_NAME}"
+# AP_PSK is REQUIRED (8-63 chars of [A-Za-z0-9._-]); an empty value fails
+# below so the AP never comes up with a key nobody knows.
+pkey="${TRAVELROUTER_AP_PSK:-}"
+sid="${TRAVELROUTER_AP_SSID}"
 if [[ -z "${sid:-}" ]]; then
-  fail "AP_SSID (TRAVELROUTER_AP_NAME) is empty" "set a non-empty TRAVELROUTER_AP_NAME (printable ASCII, <=32 chars)"
+  fail "AP_SSID (TRAVELROUTER_AP_SSID) is empty" "set a non-empty TRAVELROUTER_AP_SSID (printable ASCII, <=32 chars)"
 fi
 if [[ -z "${pkey:-}" ]]; then
-  fail "AP_PSK (TRAVELROUTER_PSK) is empty" "set TRAVELROUTER_PSK in role.env (8-63 chars, A-Za-z0-9._- only)"
+  fail "AP_PSK (TRAVELROUTER_AP_PSK) is empty" "set TRAVELROUTER_AP_PSK in role.env (8-63 chars, A-Za-z0-9._- only)"
 fi
 if [[ "${#sid}" -gt 32 ]]; then
-  fail "AP_SSID too long (${#sid} > 32)" "TRAVELROUTER_AP_NAME must be printable ASCII, <=32 chars"
+  fail "AP_SSID too long (${#sid} > 32)" "TRAVELROUTER_AP_SSID must be printable ASCII, <=32 chars"
 fi
-printf '%s' "$sid" | grep -qE "$PRINTABLE_RE" || fail "AP_SSID has illegal characters" "TRAVELROUTER_AP_NAME must be printable ASCII only"
+printf '%s' "$sid" | grep -qE "$PRINTABLE_RE" || fail "AP_SSID has illegal characters" "TRAVELROUTER_AP_SSID must be printable ASCII only"
 pkey_len="${#pkey}"
 if [[ "$pkey_len" -lt 8 || "$pkey_len" -gt 63 ]]; then
-  fail "AP_PSK length ${pkey_len} outside 8-63" "set a TRAVELROUTER_PSK between 8 and 63 characters"
+  fail "AP_PSK length ${pkey_len} outside 8-63" "set a TRAVELROUTER_AP_PSK between 8 and 63 characters"
 fi
 # Disallow the render-breakers and any char outside the allowed whitelist.
 case "$pkey" in
   *'|'*|*'\\'*|*'$'*|*'\n'*) fail "AP_PSK contains a render-breaker char (|, \, or $)" \
-    "remove | / \ / $ from TRAVELROUTER_PSK; they break the sed render" ;;
+    "remove | / \ / $ from TRAVELROUTER_AP_PSK; they break the sed render" ;;
 esac
 pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
-  "trim TRAVELROUTER_PSK to letters, digits and . _ -"
+  "trim TRAVELROUTER_AP_PSK to letters, digits and . _ -"
 
 # --- (3) Run the base role first (tailscale idiom) -------------------------
 # Idempotent: if a prior role already ran base, apt + common packages exist.
@@ -136,7 +117,7 @@ for base in /boot/firmware/role/base/install.sh /boot/role/base/install.sh; do
     break
   fi
 done
-[[ "$DERIVED_BASE" -eq 0 ]] || log "no base role found at /boot path (base is auto-staged by provisioner)"
+[[ "$DERIVED_BASE" -eq 0 ]] && log "no base role found at /boot path (base is auto-staged by provisioner)"
 
 # --- (4) apt BEFORE unmanaging wlan0 (network still up, NM still manages it) --
 # NOTE: the stock dnsmasq package AUTO-STARTS dnsmasq.service here with the
@@ -200,7 +181,7 @@ log "NM unmanaged conf (iface=${ap}) -> ${unmanaged}"
 mkdir -p "${DRY_RUN_PREFIX}/etc/hostapd" "${DRY_RUN_PREFIX}/etc/dnsmasq.d" "${DRY_RUN_PREFIX}/etc/sysctl.d"
 hostapd_conf="${DRY_RUN_PREFIX}/etc/hostapd/hostapd-travel.conf"
 sed -e "s|__AP_INTERFACE__|${ap}|g" \
-    -e "s|__AP_SSID__|${TRAVELROUTER_AP_NAME}|g" \
+    -e "s|__AP_SSID__|${TRAVELROUTER_AP_SSID}|g" \
     -e "s|__AP_COUNTRY__|${TRAVELROUTER_AP_COUNTRY}|g" \
     -e "s|__AP_CHANNEL__|${TRAVELROUTER_AP_CHANNEL:-6}|g" \
     -e "s|__AP_PSK__|${pkey}|g" \
@@ -256,12 +237,12 @@ else
 fi
 echo "-----------------------------------------------"
 echo "travel-router installed"
-echo "  AP SSID     : ${TRAVELROUTER_AP_NAME}"
+echo "  AP SSID     : ${TRAVELROUTER_AP_SSID}"
 echo "  AP iface    : ${ap}"
 echo "  LAN IP      : ${lan_ip}"
 echo "  Status page : ${status_url}"
 echo "  Manage      : ssh pi@${lan_ip} 'travel-wan connect <SSID> <PSK>'"
-echo "NOTE: the Pi is only reachable over the ${TRAVELROUTER_AP_NAME}"
+echo "NOTE: the Pi is only reachable over the ${TRAVELROUTER_AP_SSID}"
 echo "  SSID or a USB Ethernet adapter (restores NM-managed connectivity)."
 echo "-----------------------------------------------"
 log "travel-router install complete"

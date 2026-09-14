@@ -2,8 +2,8 @@
 Last updated: 2026-09-13
 
 ## Status
-Current task: T06 (IN PROGRESS — env wiring + install.sh contract alignment)
-Last completed: T05 ✅ (commit `01c37e2`, env-prefix fix `c31f47d`)
+Current task: T07 (next — README + INVENTORY.md docs)
+Last completed: T06 ✅ (commit in this session)
 
 The authoritative spec for the travel-router role is
 `.omo/plans/travel-router-role.md` (local, gitignored). This file is the
@@ -15,7 +15,7 @@ session index: what is done, what is next.
 - [x] T03 — `travel-wan.sh` hotel-wifi SSH CLI ✅ `a3b08a0`
 - [x] T04 — `status-server.py` read-only LAN status page ✅ `c35436a` (init `e2aec5c`)
 - [x] T05 — `install.sh` role installer + dry-run QA seam ✅ `01c37e2`, fix `c31f47d`
-- [ ] T06 — `TRAVELROUTER_` env wiring into both provisioners + `.env.example` + install.sh contract alignment ⏳ IN PROGRESS
+- [x] T06 — `TRAVELROUTER_` env wiring into both provisioners + `.env.example` + install.sh contract alignment ✅
 - [ ] T07 — Docs: README + INVENTORY.md role entries and travel workflow
 - [ ] T08 — Local validation suite `roles/travel-router/assets/validate-local.sh` (green gate)
 - [ ] F1 — Plan compliance audit
