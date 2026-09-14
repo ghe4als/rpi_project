@@ -215,7 +215,7 @@ you want to monitor; it streams metrics to the parent over HTTP.
 
 4. **Open the dashboards**:
    ```bash
-   open http://192.168.0.76:19999        # Netdata (all Pis streaming in)
+   open http://192.168.0.151:19999       # Netdata (all Pis streaming in)
    open http://192.168.0.151:8222/varz     # NATS broker status
    ```
    Every fleet Pi appears as a menu entry in the Netdata dashboard's

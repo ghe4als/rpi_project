@@ -1,14 +1,17 @@
-# T5 — `install.sh` for the travel-router role
+# T05 — `install.sh` for the travel-router role
+
+## Status
+- **DONE** — committed `01c37e2`, env-prefix bugfix `c31f47d` (this file formerly lived as `tasks/PLAN-travel-router.md`).
 
 ## Goal
 Create `roles/travel-router/install.sh` that installs the travel-router role on the Pi (apt, render-once, systemd wiring, PSK validation, final banner), following the repo role contract, with `TRAVELROUTER_DRY_RUN=1` + `DRY_RUN_PREFIX` fully honored so it passes the local QA battery without mutating the Pi.
 
 ## Context
 - T1–T4 are complete and committed locally (verified):
-  - T1 — T1 assets (committed, hash pending commit; see below).
+  - T1 — role asset configs (committed `5b1de1e`).
   - T2 — `wan-select.sh` (committed `6d79d02`).
   - T3 — `travel-wan.sh` (committed `a3b08a0`).
-  - T4 — `status-server.py` (committed `b6c0211`).
+  - T4 — `status-server.py` (committed `c35436a`; initial write `e2aec5c`).
 - The plan (`/Users/al/code/rpi_project/.omo/plans/travel-router-role.md`) T5 spec is lines 136-163.
 - `install.sh` follows the repo role contract: staged to bootfs `role/` and exec'd by the generic dispatcher via `role-setup.service`. Must source role.env two-path idiom, validate vars, apt hostapd/dnsmasq/nftables/iw **at the very start** (before unmanaging wlan0), resolve AP iface identically to wan-select, render assets ONCE, install + enable systemd units, `restart dnsmasq`, PSK 8–63 + charset validation, and print a final banner.
 - DRY_RUN is the key local-QA seam: when `TRAVELROUTER_DRY_RUN=1` (with optional `DRY_RUN_PREFIX=<dir>`), the script must NOT call apt/systemctl/sysctl/ip/iw/rfkill/nft/systemd — it logs the intended actions instead, but still performs all validation and asset renders. With a DRY_RUN_PREFIX, file writes go under that prefix; the rendered nftables template must still render with the first non-comment line being `flush ruleset`.
@@ -17,7 +20,7 @@ Create `roles/travel-router/install.sh` that installs the travel-router role on 
 - `roles/travel-router/install.sh` (new).
 
 ## Pre-conditions
-- [ ] T1–T4 committed and validated (they are).
+- [x] T1–T4 committed and validated (they are).
 - [ ] The repo role contract observed (bootfs `role/` staging, `role-setup.service` dispatcher) — confirm by reading `roles/` for an existing example role's install.sh (e.g. tailscale) and mirroring its structure/idiom.
 
 ## Exact changes required
@@ -68,9 +71,9 @@ grep -A4 '^render_nftables' /tmp/rpishell/role-setup.log | head    # confirm fir
 - `SYNTAX_OK` prints, the banner is present, the first non-comment line of the rendered nftables is `flush ruleset`, and a malformed PSK triggers the remediation message with no host mutation.
 
 ## Success criteria
-- [ ] `bash -n` clean.
-- [ ] dry-run run: PSK validation renders all assets, renders nftables with `flush ruleset` first, prints banner, mutates nothing on the host.
-- [ ] git diff shows only `roles/travel-router/install.sh`.
+- [x] `bash -n` clean.
+- [x] dry-run run: PSK validation renders all assets, renders nftables with `flush ruleset` first, prints banner, mutates nothing on the host.
+- [x] git diff shows only `roles/travel-router/install.sh` (plus the `c31f47d` env-prefix fix).
 
 ## Rollback
     git stash  # or: rm roles/travel-router/install.sh

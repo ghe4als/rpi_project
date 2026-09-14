@@ -1,39 +1,36 @@
-# Project Plan — Tailscale role for remote-access VPN
-Last updated: 2026-08-08
-
-## Status
-Current task: none (all complete)
-Last completed: T03 ✅
-
-## Task list
-- [x] T01 — Create `tailscale` role: install.sh + systemd bring-up service ✅ DONE
-- [x] T02 — Wire TAILSCALE_* vars into .env.example and provision.sh role.env staging ✅ DONE
-- [x] T03 — Document the role in INVENTORY.md / README and add validation ✅ DONE
-
-## Blocked
-None.
-
-## Decisions (from user)
-- Mode: **subnet router** (advertise LAN subnet to tailnet). Exit node: off.
-- Auth: **auth key in .env** (`TAILSCALE_AUTH_KEY`), staged via role.env, scrubbed after first `tailscale up`.
-- Tailscale SSH: **enabled** (`tailscale up --ssh`).
-- Subnet: **configurable via .env** (`TAILSCALE_SUBNET`, default `192.168.0.0/24`).
-- Install method: **official installer script** (`https://tailscale.com/install.sh`).
-
----
-
-# Project Plan — NATS / broker IP shift (192.168.0.76 → 192.168.0.151)
+# Project Plan — travel-router role (fleet Pi provisioning)
 Last updated: 2026-09-13
 
 ## Status
-Current task: t5 (IN PROGRESS)
-Last completed: —
+Current task: T06 (IN PROGRESS — env wiring + install.sh contract alignment)
+Last completed: T05 ✅ (commit `01c37e2`, env-prefix fix `c31f47d`)
+
+The authoritative spec for the travel-router role is
+`.omo/plans/travel-router-role.md` (local, gitignored). This file is the
+session index: what is done, what is next.
 
 ## Task list
-- [ ] t5 — Replace every `192.168.0.76` with `192.168.0.151` across env examples, README (with Netdata/Netdata-broker lines), base role `NATS_URL` defaults, and docs. See `tasks/t5-nats-ip-shift.md`.
+- [x] T01 — Role asset configs (hostapd/dnsmasq/nftables/sysctl/NM/units) ✅ `5b1de1e`
+- [x] T02 — `wan-select.sh` USB WAN autodetect + nftables render/load + state.json ✅ `6d79d02`
+- [x] T03 — `travel-wan.sh` hotel-wifi SSH CLI ✅ `a3b08a0`
+- [x] T04 — `status-server.py` read-only LAN status page ✅ `c35436a` (init `e2aec5c`)
+- [x] T05 — `install.sh` role installer + dry-run QA seam ✅ `01c37e2`, fix `c31f47d`
+- [ ] T06 — `TRAVELROUTER_` env wiring into both provisioners + `.env.example` + install.sh contract alignment ⏳ IN PROGRESS
+- [ ] T07 — Docs: README + INVENTORY.md role entries and travel workflow
+- [ ] T08 — Local validation suite `roles/travel-router/assets/validate-local.sh` (green gate)
+- [ ] F1 — Plan compliance audit
+- [ ] F2 — Code quality review
+- [ ] F3 — Real manual QA (USER-GATED: hardware flash + boot + hotel portal)
+- [ ] F4 — Scope fidelity
 
 ## Blocked
 None.
 
-## Notes
-- `.env` (gitignored, local secrets) also contains 2 occurrences — NOT covered by this commit; leave for local edit.
+## Legacy (complete, not part of this plan)
+- Tailscale role T01–T03 — done (see `tasks/T01-tailscale-role.md` `T02-env-wiring.md` `T03-documentation.md`).
+- Monitor / netdata-child roles — done (see `tasks/PLAN-monitor.md`).
+- NATS broker IP shift `192.168.0.76 → 192.168.0.151` — done (see `tasks/t5-nats-ip-shift.md`).
+
+## Per-task commit style (repo protocol)
+`feat(provision):` / `docs:` / `test:` / `fix:` — one commit per task, no
+commits to `.env` or `inventory.yaml` (gitignored), never stage `.omo/`.

@@ -3,3 +3,5 @@ inventory.yaml
 *.img
 *.img.xz
 .omo/
+
+__pycache__/
