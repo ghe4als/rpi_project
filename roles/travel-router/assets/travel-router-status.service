@@ -1,10 +1,14 @@
 [Unit]
-Description=Travel-router read-only LAN status page
+Description=Travel-router LAN status + setup page
 After=network.target wan-select.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/local/lib/travel-router/status-server.py
+# Setup PIN (H05): staged by install.sh to this tmpfs path, 0600. The leading
+# dash tolerates a missing file (un-provisioned/pre-H05 Pi) — status-server
+# then denies all setup writes (deny-by-default).
+EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env
 Restart=always
 RestartSec=3
 

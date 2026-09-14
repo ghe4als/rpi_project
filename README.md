@@ -242,9 +242,10 @@ DHCP/DNS and a read-only status page at `http://192.168.50.1`.
 
 2. **Set `.env`**:
    ```
-   TRAVELROUTER_AP_SSID="TravelNet"
-   TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
-   ROLE="travel-router"
+TRAVELROUTER_AP_SSID="TravelNet"
+TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
+TRAVELROUTER_SETUP_PIN="1234"            # required; unlocks the phone setup page
+ROLE="travel-router"
    ```
 
 3. **Home test** — flash with the USB adapter plugged in (on the Zero W

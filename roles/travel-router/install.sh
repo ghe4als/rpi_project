@@ -114,6 +114,19 @@ pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
   "trim TRAVELROUTER_AP_PSK to letters, digits and . _ -"
 
+# SETUP_PIN is REQUIRED: it gates the phone setup API (deny-by-default in
+# status-server when unset — H01; this validation makes it always present).
+upin="${TRAVELROUTER_SETUP_PIN:-}"
+if [[ -z "$upin" ]]; then
+  fail "SETUP_PIN (TRAVELROUTER_SETUP_PIN) is empty" \
+    "set TRAVELROUTER_SETUP_PIN in role.env (4-12 chars of A-Za-z0-9; it unlocks the phone setup page)"
+fi
+if [[ "${#upin}" -lt 4 || "${#upin}" -gt 12 ]]; then
+  fail "SETUP_PIN length ${#upin} outside 4-12" "TRAVELROUTER_SETUP_PIN must be 4-12 characters"
+fi
+printf '%s' "$upin" | grep -qE '^[A-Za-z0-9]+$' || fail "SETUP_PIN has illegal characters" \
+  "TRAVELROUTER_SETUP_PIN must be A-Za-z0-9 only (phone-keyboard-friendly)"
+
 # --- (3) Run the base role first (tailscale idiom) -------------------------
 # Idempotent: if a prior role already ran base, apt + common packages exist.
 # base is auto-staged by the provisioner; call it here so prerequisites exist
@@ -222,6 +235,15 @@ sysctl_conf="${DRY_RUN_PREFIX}/etc/sysctl.d/90-travel-router.conf"
 cp "$ASSETS/90-travel-router.conf.sysctl" "$sysctl_conf"
 chmod 0644 "$sysctl_conf"
 real_or_log sysctl --system
+
+# PIN delivery: the status unit reads it from a tmpfs EnvironmentFile (H05).
+# Written BEFORE the unit enable below; 0600 (secret); /run is tmpfs so it
+# does not persist on disk. Missing file -> unit still starts (deny-by-default).
+pin_env_dir="${DRY_RUN_PREFIX}/run/travel-router/role-env"
+mkdir -p "$pin_env_dir"
+printf 'TRAVELROUTER_SETUP_PIN="%s"\n' "$upin" > "${pin_env_dir}/travel-router-setup.env"
+chmod 0600 "${pin_env_dir}/travel-router-setup.env"
+log "staged PIN EnvironmentFile (0600, tmpfs) -> ${pin_env_dir}/travel-router-setup.env"
 log "rendered hostapd/dnsmasq/sysctl to ${DRY_RUN_PREFIX}"
 
 # --- (8) Sanity-assert stock dnsmasq is inert (BEFORE any enable/restart) ----

@@ -44,6 +44,7 @@ TRAVELROUTER_LAN_CIDR=192.168.50.1/24
 TRAVELROUTER_DHCP_RANGE=192.168.50.100,192.168.50.200,12h
 TRAVELROUTER_WAN_PREFER=auto
 TRAVELROUTER_STATUS_PORT=80
+TRAVELROUTER_SETUP_PIN=9876
 EOF
 pfx="$TMP/run1"
 if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfx" TRAVELROUTER_ROLE_ENV="$TMP/role.env" \
@@ -116,7 +117,7 @@ for pf in provision.sh provision-bookworm.sh; do
   n=$(printf 'WIFI_PSK=secret\n' | awk -v p="^(${grp})_" -F= '$0 ~ p {print $1}')
   [[ -z "$n" ]] && ok "$pf regex excludes WIFI_*" || bad "$pf regex MATCHES WIFI_* (forbidden)"
 done
-for v in AP_SSID AP_PSK AP_CHANNEL AP_COUNTRY LAN_CIDR DHCP_RANGE WAN_PREFER STATUS_PORT; do
+for v in AP_SSID AP_PSK AP_CHANNEL AP_COUNTRY LAN_CIDR DHCP_RANGE WAN_PREFER STATUS_PORT SETUP_PIN; do
   grep -q "^TRAVELROUTER_${v}=" "$ROOT/.env.example" && ok ".env.example has TRAVELROUTER_${v}" || bad ".env.example missing TRAVELROUTER_${v}"
 done
 grep -q 'travel-router' "$ROOT/.env.example" && ok ".env.example ROLE enum includes travel-router" || bad ".env.example enum stale"
@@ -407,6 +408,48 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' http://127.0.0.1
 # R4: port-suffixed probe Host still redirects
 r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com:18091' http://127.0.0.1:18091/generate_204 2>/dev/null)
 [[ "$r" == "302" ]] && ok "R4 Host with :port still 302" || bad "R4 code=$r"
+PORTAL_STOP
+
+# --- (5g) mandatory PIN staging battery (H05) ---------------------------------
+sec "5g. mandatory PIN staging (H05)"
+# unit: EnvironmentFile line present (missing-file tolerated with -)
+grep -qF 'EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env' \
+  "$A/travel-router-status.service" && ok "status unit declares PIN EnvironmentFile" || bad "unit missing EnvironmentFile"
+# install.sh dry-run: PIN validation battery (malformed -> friendly fail rc=1)
+for bad_pin in "" "123" "1234567890123" "12 4" "123-4"; do
+  printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=%s\n' "$bad_pin" > "$TMP/pin.env"
+  out=$(TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/pinbrk" TRAVELROUTER_ROLE_ENV="$TMP/pin.env" \
+        bash "$ROOT/roles/travel-router/install.sh" 2>&1); rc=$?
+  [[ $rc -eq 1 && "$out" == *"SETUP_PIN"* ]] && ok "malformed PIN '${bad_pin:-<empty>}' rejected (rc=1)" \
+    || bad "PIN '${bad_pin:-<empty>}' NOT rejected (rc=$rc out=$(echo "$out" | head -1))"
+done
+# happy dry-run: env file staged 0600 with the PIN (fixture carries the PIN
+# because install.sh sources role.env; the other PIN breakers use pin.env)
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\n' > "$TMP/pinok.env"
+pfx2="$TMP/pinrun"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfx2" TRAVELROUTER_ROLE_ENV="$TMP/pinok.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pinrun.log" 2>&1; then ok "PIN happy dry-run rc=0"; else bad "PIN happy dry-run exited $?"; fi
+envfile="$pfx2/run/travel-router/role-env/travel-router-setup.env"
+[[ -f "$envfile" ]] && ok "PIN env file staged" || bad "PIN env file MISSING: $(ls "$pfx2/run/travel-router/" 2>/dev/null)"
+grep -qF 'TRAVELROUTER_SETUP_PIN="9876"' "$envfile" && ok "PIN rendered into env file" || bad "PIN not in env file"
+m=$(stat -f%Lp "$envfile" 2>/dev/null || stat -c%a "$envfile" 2>/dev/null)
+[[ "$m" == "600" ]] && ok "PIN env file mode 0600" || bad "PIN env file mode=$m"
+grep -qF '9876' "$TMP/pinrun.log" && bad "PIN leaked to install log" || ok "PIN absent from install log"
+# server: pin required end-to-end (fixture server, real POST)
+SRV_PIN_STATE="$B/srv-state.json"
+PORTAL_START() {
+  TRAVELROUTER_SETUP_PIN="2468" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_PIN_STATE" \
+  TRAVELROUTER_STATUS_PORT=18094 python3 "$A/status-server.py" >"$B/srv-h05.log" 2>&1 &
+  SPID=$!; sleep 1.5
+}
+PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
+PORTAL_START
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"wrong","ssid":"A"}' http://127.0.0.1:18094/api/wan/connect)
+[[ "$r" == "403" ]] && ok "5g wrong PIN -> 403" || bad "5g wrong-pin code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"2468","ssid":"Net5g"}' http://127.0.0.1:18094/api/wan/connect)
+[[ "$r" == "200" ]] && ok "5g correct PIN -> 200" || bad "5g happy code=$r"
 PORTAL_STOP
 
 # --- (6) scope assert ---------------------------------------------------------
