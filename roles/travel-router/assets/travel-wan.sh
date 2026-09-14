@@ -204,6 +204,7 @@ Usage:
   travel-wan forget <SSID>                delete a saved hotel profile
   travel-wan known                       list saved wifi networks (NM profiles)
   travel-wan collect <SSID> <PSK>        record a PSK candidate for try-psks
+  travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
 PSKs are stored on this Pi under /etc/NetworkManager/system-connections.
@@ -226,7 +227,9 @@ cmd_scan() {
         return 2
     fi
     log "scanning WiFi on '${if_name}' ..."
-    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" 2>&1 | sort -t, -k2 -nr
+    # stderr (nmcli warnings) must NOT become a row: it flows to our stderr
+    # (status-server routes it to the envelope `log` field), never into sort.
+    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" | sort -t: -k2 -nr
 }
 
 cmd_connect() {
@@ -308,6 +311,63 @@ cmd_collect() {
     esac
     [[ "$rc" -eq 0 ]] || return 1
     return 0
+}
+
+# try-psks (M4): probe each stored candidate for SSID (SSID s-rows in file
+# order, then d-row defaults) via a throwaway probe profile. Reserved con-name
+# `tr-probe` (autoconnect no) is deleted before AND after every attempt, so it
+# never leaks and never auto-activates (NM facts, draft Findings Q2). On a
+# working candidate: delete the probe, record the candidate, then run the
+# NORMAL connect path so NM persists the real profile. Wall budget ~60s:
+# stop issuing NEW attempts once SECONDS >= 60 (finish the current delete).
+# rc 0 iff some candidate connected. NEVER log the PSK value (index only).
+# NOTE: like collect, attempts are NOT gated on iface_ok (attempt-time
+# semantics; the runner has no /sys/class/net, and on the Pi the failure mode
+# of a missing adapter must surface from nmcli itself, rc 1).
+cmd_try_psks() {
+    local ssid="$1"
+    if [[ -z "$ssid" ]]; then
+        log "try-psks: SSID is required"
+        usage
+        return 2
+    fi
+    if [[ "$ssid" =~ ^[[:space:]]*$ ]]; then
+        log "try-psks: empty SSID"
+        return 2
+    fi
+    local cands
+    cands="$(psk_candidates "$ssid")"
+    if [[ -z "$cands" ]]; then
+        log "try-psks: no stored candidates for '${ssid}'"
+        return 1
+    fi
+    local total=0
+    total="$(printf '%s\n' "$cands" | grep -c .)"
+    local idx=0 rc=1 cand t0 now
+    t0="$(date +%s)"
+    while IFS= read -r cand; do
+        [[ -n "$cand" ]] || continue
+        now="$(date +%s)"
+        if (( now - t0 >= 60 )); then
+            log "try-psks: wall budget reached (${idx}/${total} candidates tried)"
+            break
+        fi
+        idx=$((idx+1))
+        "$SUDO" "$NMCLI" connection delete tr-probe >/dev/null 2>&1 || true
+        if "$SUDO" "$NMCLI" connection add type wifi ifname '*' con-name tr-probe ssid "$ssid" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$cand" connection.autoconnect no >/dev/null 2>&1; then
+            if "$SUDO" "$NMCLI" --wait 15 connection up tr-probe >/dev/null 2>&1; then
+                log "try-psks: candidate ${idx}/${total} OK — connected to '${ssid}'"
+                "$SUDO" "$NMCLI" connection delete tr-probe >/dev/null 2>&1 || true
+                psk_collect "$ssid" "$cand" || true
+                cmd_connect "${WIFI_WAN_IF:-}" "$ssid" "$cand"
+                return $?
+            fi
+        fi
+        log "try-psks: candidate ${idx}/${total} failed"
+        "$SUDO" "$NMCLI" connection delete tr-probe >/dev/null 2>&1 || true
+    done < <(printf '%s\n' "$cands")
+    log "try-psks: no candidate connected to '${ssid}' (${idx}/${total} tried)"
+    return 1
 }
 
 cmd_known() {
@@ -439,6 +499,9 @@ main() {
             ;;
         collect)
             cmd_collect "$@"
+            ;;
+        try-psks)
+            cmd_try_psks "$1"
             ;;
         status)
             cmd_status "${WIFI_WAN_IF:-}" "${1:-}"
