@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""Read-only LAN status page for the travel-router.
+"""LAN status + PIN-gated setup API for the travel-router.
 
 Stdlib only (http.server + json). Serves:
-  GET /        -> small static HTML page that polls /status
-  GET /status  -> JSON status (shells out to `travel-wan status --json`,
-                  reachability cached in-process with a 30s TTL so an offline
-                  WAN does not stall every page load for curl's 5s timeout)
-  GET /health  -> 200 {"status":"ok"}
-Anything else (other path or method) -> 404 (no POST/PUT/forms surface here).
+  GET /            -> small static HTML page that polls /status
+  GET /status      -> JSON status (shells out to `travel-wan status --json`,
+                      reachability cached in-process with a 30s TTL so an
+                      offline WAN does not stall every page load)
+  GET /health      -> 200 {"status":"ok"}
+  POST /api/wan/*  -> PIN-gated setup API (H01 posture change; see below)
+Anything else (other path or method) -> 404.
 
-No POST/PUT/forms/auth-bypass; the page states that configuration is via SSH.
+POSTURE CHANGE (H01): this server used to be strictly read-only (every write
+verb 404). The phone setup feature requires a writable surface, so
+POST /api/wan/{scan,status,connect,disconnect,forget,recheck} is now a real
+dispatch. It stays gated: JSON-only bodies (8KB cap) + X-Requested-With
+header (CSRF guard; no CORS headers are ever emitted) +, for write verbs,
+TRAVELROUTER_SETUP_PIN from the environment compared in constant time. PIN
+unset/empty -> every write verb 403s (deny-by-default; un-provisioned Pis
+never grant write access). PUT/PATCH/DELETE stay reject-bound (404).
+
 The server binds the IP in the wan-select state file so the bind never goes
 stale; port comes from TRAVELROUTER_STATUS_PORT (default 80).
 """
 
+import hmac
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -27,13 +38,23 @@ DEFAULT_STATE_PATH = "/run/travel-router/state.json"
 DEFAULT_HOST = "192.168.50.1"
 TTL_SECONDS = 30.0
 WAN_TOOL = os.environ.get("TRAVELWAN_BIN", "/usr/local/bin/travel-wan")
+SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
 
+# Write verbs WITHOUT a handler stay reject-bound (404). Only POST gained a
+# real dispatcher (H01 posture change; see module docstring).
+WRITE_VERBS = ("PUT", "PATCH", "DELETE")
 
-# Write verbs (the four config-carrying verbs) are the surface for config
-# writes; we reject every request with 404 rather than implementing a handler.
-# Binding them dynamically keeps them out of the source as literal method names
-# so a reader finds no write handler on this module.
-WRITE_VERBS = ("POST", "PUT", "PATCH", "DELETE")
+# POST policy caps (Zero W, 512MB): small bodies, hard subprocess timeouts.
+MAX_BODY_BYTES = 8192
+WRITE_LOCK = threading.Lock()
+
+API_SCAN_TIMEOUT = 25
+API_WRITE_TIMEOUT = 90
+API_QUICK_TIMEOUT = 30
+
+# SSID policy: nmcli treats a leading dash as an option, control chars and
+# over-long SSIDs are never legitimate 802.11 SSIDs (max 32 bytes).
+SSID_MAX_BYTES = 32
 
 
 def _load_state_file():
@@ -201,14 +222,137 @@ class StatusHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"404 not found", "text/plain")
 
+    # --- POST API (H01) --------------------------------------------------------
 
-# Bind the four write verbs to the reject handler. They are 404s, not real
-# handlers, so this page (and the grep) sees no write surface. Spec: any other
-# method/path -> 404.
+    def _read_json_body(self):
+        """Return (dict, None) or (None, error_code). Enforces the body cap
+        and Content-Type; returns None dict only on policy failures."""
+        length_hdr = self.headers.get("Content-Length")
+        if not length_hdr:
+            return None, 411
+        try:
+            length = int(length_hdr)
+        except ValueError:
+            return None, 400
+        if length <= 0 or length > MAX_BODY_BYTES:
+            return None, 413
+        ctype = self.headers.get("Content-Type", "")
+        if ctype.split(";")[0].strip() != "application/json":
+            return None, 415
+        if self.headers.get("X-Requested-With") != "XMLHttpRequest":
+            # Custom header: a cross-site form/fetch cannot set it without a
+            # CORS preflight, and this server never answers preflight.
+            return None, 403
+        body = self.rfile.read(length)
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None, 400
+        if not isinstance(parsed, dict):
+            return None, 400
+        return parsed, None
+
+    @staticmethod
+    def _ssid_valid(ssid):
+        if not isinstance(ssid, str) or not ssid.strip() or ssid.startswith("-"):
+            return False
+        if any(ord(c) < 32 or ord(c) == 127 for c in ssid):
+            return False
+        return len(ssid.encode("utf-8")) <= SSID_MAX_BYTES
+
+    @staticmethod
+    def _pin_ok(body):
+        if not SETUP_PIN:
+            return False
+        supplied = body.get("pin")
+        if not isinstance(supplied, str):
+            return False
+        return hmac.compare_digest(supplied, SETUP_PIN)
+
+    def _run_tool(self, args, timeout):
+        """Shells out to travel-wan in list form (never a shell). Returns
+        (rc, out_lines, err_lines). NEVER puts a PSK into a log line."""
+        try:
+            proc = subprocess.run(
+                [WAN_TOOL] + args, capture_output=True, text=True, timeout=timeout,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None, [], ["travel-wan invocation failed"]
+        out = [l for l in (proc.stdout or "").splitlines() if l.strip()]
+        err = [l for l in (proc.stderr or "").splitlines() if l.strip()]
+        return proc.returncode, out, err
+
+    def _api_response(self, rc, out, err, http_ok=200):
+        """Standard envelope. PSKs never pass through here (travel-wan never
+        echoes them; stderr from our own wrappers carries no PSK either)."""
+        if rc is None:
+            self._send(504, json.dumps({"error": "timeout"}), "application/json")
+            return
+        self._send(200, json.dumps({"ok": rc == 0, "rc": rc, "lines": out, "log": err}),
+                   "application/json")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/wan/scan" or path == "/api/wan/status":
+            if path == "/api/wan/status":
+                self._send(200, json.dumps(get_status()), "application/json")
+                return
+            rc, out, err = self._run_tool(["scan"], API_SCAN_TIMEOUT)
+            self._api_response(rc, out, err)
+            return
+        if not (path == "/api/wan/connect" or path == "/api/wan/disconnect"
+                or path == "/api/wan/forget" or path == "/api/wan/recheck"):
+            self._send(404, b"404 not found", "text/plain")
+            return
+        body, err_code = self._read_json_body()
+        if err_code is not None:
+            self._send(err_code, json.dumps({"error": _code_msg(err_code)}),
+                       "application/json")
+            return
+        if not self._pin_ok(body):
+            self._send(403, json.dumps({"error": "pin"}), "application/json")
+            return
+        with WRITE_LOCK:
+            if path == "/api/wan/connect":
+                ssid = body.get("ssid")
+                if not self._ssid_valid(ssid):
+                    self._send(400, json.dumps({"error": "ssid"}), "application/json")
+                    return
+                psk = body.get("psk")
+                args = ["connect", ssid] + ([psk] if isinstance(psk, str) and psk else [])
+                rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
+            elif path == "/api/wan/disconnect":
+                rc, out, err = self._run_tool(["disconnect"], API_QUICK_TIMEOUT)
+            elif path == "/api/wan/forget":
+                ssid = body.get("ssid")
+                if not self._ssid_valid(ssid):
+                    self._send(400, json.dumps({"error": "ssid"}), "application/json")
+                    return
+                rc, out, err = self._run_tool(["forget", ssid], API_QUICK_TIMEOUT)
+            else:
+                rc, out, err = self._run_tool(["recheck"], API_QUICK_TIMEOUT)
+        self._api_response(rc, out, err)
+
+
+# Write verbs without a dispatcher stay reject-bound (404) — only POST is a
+# real handler now (H01 posture change). Spec: any other method/path -> 404.
 def _make_handler():
     h = StatusHandler
     for verb in WRITE_VERBS:
         setattr(h, "do_%s" % verb, h._reject_write)
+
+
+_API_CODE_MSG = {
+    400: "bad request",
+    403: "forbidden",
+    411: "length required",
+    413: "payload too large",
+    415: "unsupported media type",
+}
+
+
+def _code_msg(code):
+    return _API_CODE_MSG.get(code, "error")
 
 
 _make_handler()

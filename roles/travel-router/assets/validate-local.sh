@@ -144,10 +144,9 @@ for seam in NMCLI IP CURL HOSTAPD_CLI SYSTEMCTL TRAVELROUTER_STATE_FILE; do
 done
 grep -q 'TRAVELWAN_BIN' "$A/status-server.py" && ok "status-server seam TRAVELWAN_BIN" || bad "status-server missing TRAVELWAN_BIN"
 grep -q 'TRAVELROUTER_STATE_FILE' "$A/status-server.py" && ok "status-server state seam" || bad "status-server missing state seam"
-python3 - <<'PY' && ok "no literal do_POST" || bad "do_POST literal present"
-src = open("roles/travel-router/assets/status-server.py").read()
-raise SystemExit(0 if "do_POST" not in src else 1)
-PY
+# POST API posture change (H01): the write surface is deliberate now, so the
+# textual `no do_POST` assert is retired. Behavior is asserted in §5d below.
+grep -q 'def do_POST' "$A/status-server.py" && ok "POST dispatcher present (posture change H01)" || bad "do_POST missing"
 grep -qF 'dhcp-option=6' "$A/dnsmasq.conf.tmpl" && bad "bare dhcp-option=6 still present" || ok "dnsmasq self-DNS line removed"
 
 # --- (5b) wan-select REAL-execution regression battery (Oracle C1/C2) --------
@@ -263,6 +262,70 @@ sleep 1.5
 sj=$(curl -s http://127.0.0.1:18081/status 2>/dev/null)
 echo "$sj" | grep -q '"mode"' && echo "$sj" | grep -q '"lan_ip"' && ok "fallback payload carries mode/lan_ip" || bad "fallback: $sj"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
+
+# --- (5d) POST API battery (H01: PIN gate + policy + argv contract) -----------
+sec "5d. status-server POST API (H01)"
+# argv-logging stub: every invocation appends its argv for connect-shape asserts
+STW="$B/stub-travel-wan-args"
+printf '#!/bin/bash\n{ printf "%%s\\n" "$*"; } >> %s/tw-args.log\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"
+chmod +x "$STW"
+SRV_STATE="$B/srv-state.json"   # lan_ip=127.0.0.1 (runner-bindable)
+srv_case() { # method path pin ssid psk -> emits "code body" on stdout
+  local method="$1" url="$2" pin="$3" ssid="$4" psk="$5" body=""
+  body=$(printf '{"pin":"%s","ssid":"%s","psk":"%s"}' "$pin" "$ssid" "$psk")
+  curl -s -w '\n%{http_code}' -X "$method" \
+    -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+    --data-binary "$body" "http://127.0.0.1:18090${url}" 2>/dev/null
+}
+start_srv() { # pin -> starts server on 18090 with TRAVELROUTER_SETUP_PIN=$1
+  TRAVELROUTER_SETUP_PIN="$1" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_STATE" \
+    TRAVELROUTER_STATUS_PORT=18090 python3 "$A/status-server.py" >"$B/srv-h01.log" 2>&1 &
+  SPID=$!; sleep 1.5
+}
+stop_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; : > "$B/tw-args.log" 2>/dev/null; }
+
+# deny-by-default: NO pin in env -> write verbs 403 even with correct-looking pin
+start_srv ""
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "403" ]] && ok "deny-by-default: PIN unset -> 403" || bad "deny-by-default code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{}' http://127.0.0.1:18090/api/wan/scan)
+[[ "$r" == "200" ]] && ok "scan is read-only (no pin) -> 200" || bad "scan code=$r"
+stop_srv
+
+start_srv "1234"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"9","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "403" ]] && ok "wrong PIN -> 403" || bad "wrong pin code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "403" || "$r" == "415" ]] && ok "missing X-Requested-With rejected (CSRF guard)" || bad "CSRF code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "415" ]] && ok "wrong Content-Type -> 415" || bad "ctype code=$r"
+r=$(python3 -c "print('{\"pad\":\"' + 'x'*9000 + '\"}')" | curl -s -o /dev/null -w '%{http_code}' -X POST \
+      -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' --data-binary @- http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "413" ]] && ok "oversized body -> 413" || bad "size code=$r"
+# happy path: exact argv in list form, PSK never echoed back
+resp=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+  -d '{"pin":"1234","ssid":"HotelNet","psk":"secret1"}' http://127.0.0.1:18090/api/wan/connect)
+code="${resp##*$'\n'}"
+body="${resp%$'\n'*}"
+[[ "$code" == "200" ]] && ok "connect happy path -> 200" || bad "connect code=$code resp=$resp"
+grep -qF 'connect HotelNet secret1' "$B/tw-args.log" && ok "stub received list-form argv (connect ssid psk)" || bad "argv: $(cat "$B/tw-args.log" 2>/dev/null | head -1)"
+grep -qF 'secret1' "$body" && bad "PSK echoed in connect response (forbidden)" || ok "no PSK in connect response"
+# SSID policy: leading dash rejected before any subprocess call
+: > "$B/tw-args.log"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"-evil"}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "400" ]] && ok "leading-dash SSID -> 400" || bad "dash ssid code=$r"
+[[ ! -s "$B/tw-args.log" ]] && ok "rejected SSID never reached travel-wan" || bad "dash ssid invoked tool"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18090/status)
+[[ "$r" == "404" ]] && ok "POST /status still 404" || bad "POST /status code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "404" ]] && ok "PUT /api/wan/connect 404 (only POST dispatched)" || bad "PUT code=$r"
+stop_srv
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
