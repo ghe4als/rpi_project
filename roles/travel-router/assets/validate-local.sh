@@ -591,12 +591,20 @@ l3=$(grep -n 'pskdflt' "$ARGVLOG" | head -1 | cut -d: -f1)
 
 # --- (5q) auto-collect dedup battery (M8-d) ------------------------------------
 sec "5q. connect auto-collect dedup (M8-d)"
+# Contract: distinct psk values for one SSID ACCUMULATE (up to cap 4 —
+# see 5o); re-collecting a value ALREADY stored must NOT duplicate it
+# (value-dedup); open-network connects store nothing.
 DEDUP="$B/dedup-store"; : > "$DEDUP"
-env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1A >/dev/null 2>&1
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1A >>"$PSKCAP" 2>>"$PSKCERR"
+dr=$(grep -c $'^s\tDedupNet\t' "$DEDUP"); [[ "$dr" == "1" ]] && grep -q $'^s\tDedupNet\tdedup1A$' "$DEDUP" \
+  && ok "5q first psk collected (1 row)" || bad "5q first collect rows=$dr (want 1)"
 env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1B >>"$PSKCAP" 2>>"$PSKCERR"
-dr=$(grep -c $'^s\tDedupNet\t' "$DEDUP")
-[[ "$dr" == "1" ]] && grep -q $'^s\tDedupNet\tdedup1B$' "$DEDUP" \
-  && ok "5q dedup: one s-row, second psk wins" || bad "5q s-rows=$dr (want 1, dedup1B)"
+dr=$(grep -c $'^s\tDedupNet\t' "$DEDUP"); [[ "$dr" == "2" ]] && grep -q $'^s\tDedupNet\tdedup1A$' "$DEDUP" && grep -q $'^s\tDedupNet\tdedup1B$' "$DEDUP" \
+  && ok "5q distinct second psk accumulates (2 rows, both kept)" || bad "5q after 2nd collect rows=$dr (want 2)"
+env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect DedupNet dedup1A >>"$PSKCAP" 2>>"$PSKCERR"
+dr=$(grep -c $'^s\tDedupNet\t' "$DEDUP"); da=$(grep -c $'^s\tDedupNet\tdedup1A$' "$DEDUP")
+[[ "$dr" == "2" && "$da" == "1" ]] \
+  && ok "5q re-collect of stored value dedups (still 2 rows, no dup)" || bad "5q re-collect rows=$dr dupA=$da (want 2/1)"
 env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$DEDUP" bash "$A/travel-wan.sh" connect OpenNet >>"$PSKCAP" 2>>"$PSKCERR"
 or=$(grep -c $'^s\tOpenNet\t' "$DEDUP"); [[ "$or" == "0" ]] \
   && ok "5q open-network connect stores no psk" || bad "5q OpenNet s-rows=$or"
@@ -660,7 +668,7 @@ sec "5t. /api/wan/known + /api/wan/psks policy (M8-g)"
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STWT="$B/stub-travel-wan-t"
-printf '#!/bin/bash\ncase "$1" in try-psks) exit 0;; esac\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' > "$STWT"; chmod +x "$STWT"
+printf '#!/bin/bash\ncase "$1" in try-psks) exit 0;; known) printf "FixtureNet\\t1697100000\\tyes\\n"; exit 0;; esac\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' > "$STWT"; chmod +x "$STWT"
 KNOWN_STATE="$B/known-state.json"; cp "$B/srv-state.json" "$KNOWN_STATE"
 TRAVELWAN_PSK_STORE="$B/known-fixture-store"
 printf 's\tFixtureNet\tsup3rsecret\n' > "$TRAVELWAN_PSK_STORE"
