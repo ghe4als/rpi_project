@@ -7,13 +7,15 @@ Stdlib only (http.server + json). Serves:
                       reachability cached in-process with a 30s TTL so an
                       offline WAN does not stall every page load)
   GET /health      -> 200 {"status":"ok"}
+  GET /api/wan/known -> PIN-free known-networks JSON (travel-wan known rows:
+                      NAME/TIMESTAMP/AUTOCONNECT metadata, never a PSK)
   POST /api/wan/*  -> PIN-gated setup API (H01 posture change; see below)
 Anything else (other path or method) -> 404.
 
 POSTURE CHANGE (H01): this server used to be strictly read-only (every write
 verb 404). The phone setup feature requires a writable surface, so
-POST /api/wan/{scan,status,connect,disconnect,forget,recheck} is now a real
-dispatch. It stays gated: JSON-only bodies (8KB cap) + X-Requested-With
+POST /api/wan/{scan,status,connect,disconnect,forget,recheck,psks} is now a
+real dispatch. It stays gated: JSON-only bodies (8KB cap) + X-Requested-With
 header (CSRF guard; no CORS headers are ever emitted) +, for write verbs,
 TRAVELROUTER_SETUP_PIN from the environment compared in constant time. PIN
 unset/empty -> every write verb 403s (deny-by-default; un-provisioned Pis
@@ -285,6 +287,18 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/status":
             self._send(200, json.dumps(get_status()), "application/json")
+        elif path == "/api/wan/known":
+            rc, out, err = self._run_tool(["known"], API_QUICK_TIMEOUT)
+            if rc is None:
+                self._send(504, json.dumps({"error": "timeout"}), "application/json")
+                return
+            known = []
+            for line in out:
+                parts = line.split("\t")
+                if len(parts) == 3:
+                    known.append({"name": parts[0], "timestamp": parts[1],
+                                  "autoconnect": parts[2]})
+            self._send(200, json.dumps({"known": known}), "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_setup()
         elif path == "/" or path == "/index.html":
@@ -370,7 +384,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             rc, out, err = self._run_tool(["scan"], API_SCAN_TIMEOUT)
             self._api_response(rc, out, err)
             return
-        if not (path == "/api/wan/connect" or path == "/api/wan/disconnect"
+        if not (path == "/api/wan/connect" or path == "/api/wan/psks"
+                or path == "/api/wan/disconnect"
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"):
             self._send(404, b"404 not found", "text/plain")
             return
@@ -391,6 +406,12 @@ class StatusHandler(BaseHTTPRequestHandler):
                 psk = body.get("psk")
                 args = ["connect", ssid] + ([psk] if isinstance(psk, str) and psk else [])
                 rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
+            elif path == "/api/wan/psks":
+                ssid = body.get("ssid")
+                if not self._ssid_valid(ssid):
+                    self._send(400, json.dumps({"error": "ssid"}), "application/json")
+                    return
+                rc, out, err = self._run_tool(["try-psks", ssid], API_WRITE_TIMEOUT)
             elif path == "/api/wan/disconnect":
                 rc, out, err = self._run_tool(["disconnect"], API_QUICK_TIMEOUT)
             elif path == "/api/wan/forget":
