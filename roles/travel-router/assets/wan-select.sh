@@ -58,12 +58,14 @@ run_or_log() {
 }
 
 # read_state_json KEY : echo the string value of a top-level JSON key from the
-# state file (best effort; empty when absent or unreadable). No python dep.
+# state file (best effort; empty when absent, unreadable, or a truncated file).
+# The grep is non-fatal: a corrupted state file must degrade, never abort the
+# 30s tick (a failure here under pipefail+set -e would loop forever).
 read_state_json() {
   key="$1"
   val=""
   if [[ -r "$TRAVELROUTER_STATE_FILE" ]]; then
-    val=$(grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$TRAVELROUTER_STATE_FILE" 2>/dev/null | head -1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\".*/\1/")
+    val=$( (grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$TRAVELROUTER_STATE_FILE" 2>/dev/null || true) | head -1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\".*/\1/" )
   fi
   printf '%s' "$val"
 }
@@ -133,11 +135,11 @@ find_wan() {
 WAN_IF=""
 case "$TRAVELROUTER_WAN_PREFER" in
   ethernet)
-    WAN_IF=$(find_wan 0)
+    WAN_IF=$(find_wan 0 || true)
     [[ -z "$WAN_IF" ]] && log "ethernet requested but no USB ethernet adapter found"
     ;;
   wifi)
-    WAN_IF=$(find_wan 1)
+    WAN_IF=$(find_wan 1 || true)
     [[ -z "$WAN_IF" ]] && log "wifi requested but no USB wifi adapter found"
     ;;
   none)
@@ -145,14 +147,14 @@ case "$TRAVELROUTER_WAN_PREFER" in
     log "wan_prefer=none -> force standalone mode"
     ;;
   auto|"")
-    WAN_IF=$(find_wan 1 || true)
-    [[ -z "$WAN_IF" ]] && WAN_IF=$(find_wan 0 || true)
-    log "wan_prefer=auto -> tried USB wifi then USB ethernet"
+    WAN_IF=$(find_wan 0 || true)
+    [[ -z "$WAN_IF" ]] && WAN_IF=$(find_wan 1 || true)
+    log "wan_prefer=auto -> tried USB ethernet then USB wifi"
     ;;
   *)
     log "unknown WAN_PREFER='${TRAVELROUTER_WAN_PREFER}', defaulting to auto"
-    WAN_IF=$(find_wan 1 || true)
-    [[ -z "$WAN_IF" ]] && WAN_IF=$(find_wan 0 || true)
+    WAN_IF=$(find_wan 0 || true)
+    [[ -z "$WAN_IF" ]] && WAN_IF=$(find_wan 1 || true)
     ;;
 esac
 [[ -z "${WAN_IF+x}" ]] && WAN_IF=""
@@ -178,8 +180,8 @@ REG_COUNTRY=""
 if [[ -n "$TRAVELROUTER_AP_COUNTRY" ]]; then
   REG_COUNTRY="$TRAVELROUTER_AP_COUNTRY"
 else
-  _REGPROG='/^country /{print $2; exit}'
-  REG_COUNTRY=$(set +e; "$IW" reg get 2>/dev/null | awk "$_REGPROG")
+  _REGPROG='/^country /{sub(/:$/,"",$2); print $2; exit}'
+  REG_COUNTRY=$(set +e; "$IW" reg get 2>/dev/null | awk "$_REGPROG" || true)
   [[ -z "$REG_COUNTRY" ]] && REG_COUNTRY="00"
 fi
 case "$(printf '%s' "$REG_COUNTRY" | tr '[:upper:]' '[:lower:]')" in
@@ -191,8 +193,9 @@ run_or_log "$IW" reg set "$REG_COUNTRY"
 # Unblock the wifi radio.
 run_or_log "$RFKILL" unblock wifi
 
-# Disable power_save on the AP radio (stable LAN broadcast).
-run_or_log "$IP" link set "$LAN_IF" power_save off
+# Disable power_save on the AP radio (stable LAN broadcast). iw owns dev
+# power_save; `ip link` has no such argument and would abort every run.
+run_or_log "$IW" dev "$LAN_IF" set power_save off
 
 # --- (4) Render + load nftables for current WAN state ------------------------
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
@@ -216,11 +219,12 @@ if ! head -1 "$RENDER_TMP" | grep -qx 'flush ruleset'; then
   exit 1
 fi
 
-run_or_log "$NFT" -f "$NFTABLES_TARGET"
-# Install the rendered file for later inspection (never in dry-run).
+# Copy the fresh render to the nft target BEFORE loading it, so `nft -f`
+# always reads the file this tick rendered (never in dry-run).
 if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
-  cp "$RENDER_TMP" "$NFTABLES_TARGET" 2>/dev/null || cp "$RENDER_TMP" "${NFTABLES_TARGET}.wan-selected"
+  cp "$RENDER_TMP" "$NFTABLES_TARGET"
 fi
+run_or_log "$NFT" -f "$NFTABLES_TARGET"
 rm -f "$RENDER_TMP"
 
 # --- (5) Emit state.json + try-restart status server on LAN IP change --------
@@ -229,19 +233,22 @@ PREV_LAN=$(read_state_json lan_ip)
 WAN_SSID=""
 WAN_IP=""
 if [[ -n "$WAN_IF" ]]; then
-  WAN_SSID=$(set +e; "$NMCLI" -t -f GENERAL.CONNECTION dev show "$WAN_IF" 2>/dev/null | grep -m1 '^GENERAL.CONNECTION:' | cut -d: -f2-)
-  WAN_IP=$(iface_addr "$WAN_IF")
+  WAN_SSID=$(set +e; "$NMCLI" -t -f GENERAL.CONNECTION dev show "$WAN_IF" 2>/dev/null | grep -m1 '^GENERAL.CONNECTION:' | cut -d: -f2- || true)
+  WAN_IP=$(iface_addr "$WAN_IF" || true)
 fi
 
 mkdir -p "$(dirname "$TRAVELROUTER_STATE_FILE")" 2>/dev/null || true
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
-LAN_IP=$(iface_addr "$LAN_IF")
+LAN_IP=$(iface_addr "$LAN_IF" || true)
 LAN_IP="${LAN_IP:-${TRAVELROUTER_LAN_CIDR%%/*}}"
 
 STATE_MODE="standalone"
 [[ -n "$WAN_IF" ]] && STATE_MODE="routed"
 
-cat >"$TRAVELROUTER_STATE_FILE" <<EOF
+# Atomic write: tmp file in the SAME directory (same filesystem) + mv, so a
+# crash mid-write can never leave a truncated state.json behind.
+STATE_TMP="${TRAVELROUTER_STATE_FILE}.tmp.$$"
+cat >"$STATE_TMP" <<EOF
 {
   "mode": "${STATE_MODE}",
   "wan_if": "${WAN_IF}",
@@ -253,6 +260,7 @@ cat >"$TRAVELROUTER_STATE_FILE" <<EOF
   "timestamp": "${TS}"
 }
 EOF
+mv -f "$STATE_TMP" "$TRAVELROUTER_STATE_FILE"
 
 if [[ "$PREV_LAN" != "$LAN_IP" ]]; then
   log "lan_ip changed ($PREV_LAN -> $LAN_IP): try-restart travel-router-status.service"

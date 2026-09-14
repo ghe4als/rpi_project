@@ -20,15 +20,18 @@ table inet travel_router {
         type filter hook forward priority filter; policy drop;
         # Return traffic for LAN-originated flows.
         ct state established,related accept
-        # Outbound LAN -> WAN (WAN-present modes). Replaced by a comment in
-        # standalone mode so the file stays syntactically valid.
+        # Outbound LAN -> WAN (routed modes only). In standalone mode
+        # wan-select STRIPS this rule line (grep -v on the rendered WAN
+        # placeholder), leaving only this comment header, so the file stays
+        # syntactically valid with no dangling placeholders.
         iifname "__LAN_INTERFACE__" oifname "__WAN_INTERFACE__" accept
     }
 
     chain postrouting {
         type nat hook postrouting priority srcnat;
-        # NAT LAN -> WAN (WAN-present modes). Replaced by a comment in
-        # standalone mode.
+        # NAT LAN -> WAN (routed modes only). In standalone mode wan-select
+        # STRIPS this rule line (grep -v), leaving the comment header; the
+        # chain stays valid with an empty body.
         oifname "__WAN_INTERFACE__" masquerade
     }
 }
