@@ -54,6 +54,13 @@ real_or_log() {
   "$@"
 }
 
+# TRAVELROUTER_DEFAULT_PSKS may arrive via the environment (provisioning
+# export) OR role.env. Capture the env value BEFORE the role.env sourcing
+# below: `set -a` sourcing would overwrite it, and an explicitly exported
+# env value must win over the role.env copy (ad-hoc re-runs override the
+# staged defaults). Empty/unset means no d-rows to seed (see (4c)).
+TR_DEFAULTS_ENV="${TRAVELROUTER_DEFAULT_PSKS:-}"
+
 # --- (1) Source role.env (two-path idiom, mirrors the tailscale role) --------
 ROLE_ENV="${TRAVELROUTER_ROLE_ENV:-/run/travel-router/role.env}"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/firmware/role/role.env"
@@ -172,6 +179,59 @@ if [[ -n "${WIFI_SSID:-}" ]]; then
   fi
 else
   log "no WIFI_SSID in role.env — skipping WAN bootstrap profile (standalone AP first boot)"
+fi
+
+# --- (4c) Seed the known-psks store (default PSK candidates) -----------------
+# Store: TAB-schema rows at /etc/rpi-project/travel-router/known-psks (0600,
+# root). d-rows (d<TAB><TAB><psk>) are the defaults from
+# TRAVELROUTER_DEFAULT_PSKS (comma-separated; env-exported at provisioning,
+# pre-captured above so env wins over role.env). Re-runs PRESERVE all s-rows
+# (collected candidates) and refresh only the d-rows. Like every render in
+# this script, the REAL file lands under DRY_RUN_PREFIX in dry-run mode.
+KPSK_DIR="${DRY_RUN_PREFIX}/etc/rpi-project/travel-router"
+KPSK_FILE="$KPSK_DIR/known-psks"
+mkdir -p "$KPSK_DIR"
+# parse + validate defaults: reject TAB/CR/LF in any PSK value (TAB is the
+# store's row/column delimiter; CR/LF would forge rows)
+KPSK_BAD=0
+KPSK_VALS=""
+IFS=',' read -r -a KPSK_ARR <<< "${TR_DEFAULTS_ENV:-${TRAVELROUTER_DEFAULT_PSKS:-}}"
+for kv in ${KPSK_ARR[@]+"${KPSK_ARR[@]}"}; do
+    kv="${kv#"${kv%%[![:space:]]*}"}"
+    kv="${kv%"${kv##*[![:space:]]}"}"
+    [[ -n "$kv" ]] || continue
+    case "$kv" in
+        *$'\t'*|*$'\r'*|*$'\n'*|*$'\v'*|*$'\f'*) KPSK_BAD=1 ;;
+    esac
+    KPSK_VALS+="${KPSK_VALS:+$'\n'}$kv"
+done
+if [[ "$KPSK_BAD" -eq 1 ]]; then
+  fail "TRAVELROUTER_DEFAULT_PSKS contains a PSK with TAB/CR/LF" \
+    "remove the offending PSK value and re-run (store not modified)"
+fi
+# build the new store content: existing s-rows first (preserved verbatim),
+# then fresh d-rows from the defaults
+KPSK_OUT=""
+if [[ -f "$KPSK_FILE" ]]; then
+    while IFS= read -r KROW || [[ -n "$KROW" ]]; do
+        case "$KROW" in
+            s$'\t'*) KPSK_OUT+="${KROW}"$'\n' ;;
+        esac
+    done < "$KPSK_FILE"
+fi
+while IFS= read -r kv; do
+    [[ -n "$kv" ]] || continue
+    KPSK_OUT+="d"$'\t'$'\t'"${kv}"$'\n'
+done <<< "$KPSK_VALS"
+KPSK_TMP="$KPSK_DIR/.known-psks.$$"
+printf '%s' "$KPSK_OUT" > "$KPSK_TMP"
+chmod 0600 "$KPSK_TMP"
+mv -f "$KPSK_TMP" "$KPSK_FILE"
+if [[ -n "$KPSK_VALS" ]]; then
+  log "known-psks store seeded with $(printf '%s\n' "$KPSK_VALS" | grep -c .) default PSK candidate(s) (values redacted)"
+else
+  touch "$KPSK_FILE" && chmod 0600 "$KPSK_FILE"
+  log "known-psks store present, no default PSK candidates to seed"
 fi
 
 # --- (5) Install scripts to their final locations --------------------------

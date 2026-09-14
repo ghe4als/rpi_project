@@ -150,7 +150,7 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
 | `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent dashboard. For an always-on Pi 4. | `NATS_URL`, `NETDATA_STREAM_API_KEY` |
 | `netdata-child` | Netdata agent that streams this Pi's metrics to the monitor Pi. Add to a fleet Pi's `role.deps`. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
-| `travel-router` | Travel WiFi router: the Pi's onboard radio is always your private AP; a USB adapter (WiFi dongle or Ethernet) auto-becomes the WAN. | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK` |
+| `travel-router` | Travel WiFi router: the Pi's onboard radio is always your private AP; a USB adapter (WiFi dongle or Ethernet) auto-becomes the WAN. | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK`, `TRAVELROUTER_DEFAULT_PSKS` |
 
 ### Provisioning a Tailscale VPN node
 
@@ -246,6 +246,7 @@ DHCP/DNS, a status page and a **phone setup page** at `http://192.168.50.1`
 TRAVELROUTER_AP_SSID="TravelNet"
 TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
 TRAVELROUTER_SETUP_PIN="1234"            # required; unlocks the phone setup page
+TRAVELROUTER_DEFAULT_PSKS="homepsk1,homepsk2"  # optional: default PSKs tried by "Try saved passwords"
 ROLE="travel-router"
    ```
 
@@ -271,6 +272,19 @@ never the AP radio).
 - Change or forget the seed later from the phone setup page, or
   `ssh pi@192.168.50.1 travel-wan forget <SSID>` (it is SSID-named, so
   forget works like any hotel profile). Re-provisioning re-seeds it.
+
+### Known networks and saved passwords
+
+Successful connects are remembered: the NM profile (auto-reconnect on
+boot/re-plug) plus a PSK-candidate store at
+`/etc/rpi-project/travel-router/known-psks` (0600, root) — collected
+candidates per SSID (max 4) and `d`-row defaults seeded from
+`TRAVELROUTER_DEFAULT_PSKS`. The phone setup page lists known networks
+and offers "Try saved passwords" per network: it cycles that network's
+saved candidates, then the defaults, via a throwaway probe profile and
+connects with the winner — no re-typing. `travel-wan forget <SSID>`
+removes the profile but KEEPS the saved PSKs, so forgetting a hotel
+network never loses its password.
 
 ### First-boot notifications (NATS)
 
