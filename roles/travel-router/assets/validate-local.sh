@@ -452,10 +452,76 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application
 [[ "$r" == "200" ]] && ok "5g correct PIN -> 200" || bad "5g happy code=$r"
 PORTAL_STOP
 
+# --- (5h) install.sh seed battery (W01/W03) ----------------------------------
+sec "5h. install.sh WAN bootstrap seed (W03) + no-seed skip"
+# second dry-run WITH WIFI_* present (different fixture than run1/§2)
+cat > "$TMP/seed.env" <<'EOF'
+TRAVELROUTER_AP_SSID=TestNet
+TRAVELROUTER_AP_PSK=TestPass123
+TRAVELROUTER_SETUP_PIN=9876
+WIFI_SSID=SeedWifi
+WIFI_PSK=SeedPass123
+WIFI_COUNTRY=US
+EOF
+pfx3="$TMP/seedrun"
+if WIFI_SSID=SeedWifi WIFI_PSK=SeedPass123 WIFI_COUNTRY=US TRAVELROUTER_DRY_RUN=1 \
+   DRY_RUN_PREFIX="$pfx3" TRAVELROUTER_ROLE_ENV="$TMP/seed.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/seed.log" 2>&1; then
+  ok "seed run rc=0"
+else bad "seed run exited $?"; fi
+grep -qF "dry-run: nmcli connection add type wifi con-name 'SeedWifi' ssid 'SeedWifi' wifi-sec.psk <redacted> connection.autoconnect yes" "$TMP/seed.log" \
+  && ok "redacted dry-run nmcli line present" || bad "redacted nmcli line missing: $(grep nmcli "$TMP/seed.log" | head -1)"
+grep -qF 'SeedPass123' "$TMP/seed.log" && bad "WIFI_PSK leaked to seed log" || ok "WIFI_PSK absent from seed log"
+grep -qF "WAN bootstrap: 'SeedWifi' profile seeded" "$TMP/seed.log" && ok "WAN bootstrap banner present" || bad "bootstrap banner missing"
+
+# --- (5i) AP_COUNTRY fallback (W03: TRAVELROUTER_AP_COUNTRY or WIFI_COUNTRY) ---
+sec "5i. AP_COUNTRY fallback chain"
+# unset TRAVELROUTER_AP_COUNTRY, WIFI_COUNTRY=DE -> rendered conf carries DE
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nWIFI_COUNTRY=DE\n' > "$TMP/country.env"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/cc1" TRAVELROUTER_ROLE_ENV="$TMP/country.env" \
+  bash "$ROOT/roles/travel-router/install.sh" >/dev/null 2>&1
+c=$(grep -c '^country_code=DE$' "$TMP/cc1/etc/hostapd/hostapd-travel.conf")
+[[ "$c" == "1" ]] && ok "unset AP_COUNTRY + WIFI_COUNTRY=DE -> country_code=DE" || bad "country_code=DE count=$c"
+# explicit AP_COUNTRY wins over WIFI_COUNTRY
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_AP_COUNTRY=AU\nWIFI_COUNTRY=DE\n' > "$TMP/country2.env"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/cc2" TRAVELROUTER_ROLE_ENV="$TMP/country2.env" \
+  bash "$ROOT/roles/travel-router/install.sh" >/dev/null 2>&1
+c=$(grep -c '^country_code=AU$' "$TMP/cc2/etc/hostapd/hostapd-travel.conf")
+[[ "$c" == "1" ]] && ok "explicit AP_COUNTRY=AU beats WIFI_COUNTRY=DE" || bad "country_code=AU count=$c"
+
+# --- (5j) announcer arg contract (W02, bash invocation, no server) ------------
+sec "5j. nats-announce arg contract (W02)"
+ANN="$ROOT/roles/base/assets/nats-announce.sh"
+out=$(env -u NATS_URL -u NATS_SUBJECT_PREFIX NATS_ANNOUNCE_DRY_RUN=1 bash "$ANN" setup-complete 2>&1)
+echo "$out" | grep -qF '"event":"setup-complete"' && ok "arg setup-complete -> payload event=setup-complete" || bad "setup-complete payload: $(echo "$out" | head -c 120)"
+env -u NATS_URL -u NATS_SUBJECT_PREFIX NATS_ANNOUNCE_DRY_RUN=1 bash "$ANN" 'bad event' >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "invalid event arg -> rc=2" || bad "invalid event rc≠2"
+out=$(env -u NATS_URL -u NATS_SUBJECT_PREFIX NATS_ANNOUNCE_DRY_RUN=1 bash "$ANN" 2>&1)
+echo "$out" | grep -qF '"event":"online"' && ok "no-arg dry-run -> event=online" || bad "no-arg payload: $(echo "$out" | head -c 120)"
+
+# --- (5k) role-setup template assert (W02) ------------------------------------
+sec "5k. role-setup.service.tmpl ExecStartPost"
+c=$(grep -cF 'ExecStartPost=-/usr/local/bin/rpi-nats-announce setup-complete' "$ROOT/role-setup.service.tmpl")
+[[ "$c" == "1" ]] && ok "tmpl has best-effort announce ExecStartPost (1 hit)" || bad "ExecStartPost hits=$c"
+
+# --- (5l) provisioner gating asserts (W01, structural) ------------------------
+sec "5l. provisioner WIFI_* gating (W01)"
+for pf in provision.sh provision-bookworm.sh; do
+  grep -qF 'if [[ "$ROLE" == "travel-router" ]]; then' "$ROOT/$pf" \
+    && ok "$pf has travel-router gate" || bad "$pf MISSING travel-router gate"
+  grep -qF 'for var in WIFI_SSID WIFI_PSK WIFI_COUNTRY; do' "$ROOT/$pf" \
+    && ok "$pf has gated WIFI_* emission loop" || bad "$pf MISSING WIFI_* emission loop"
+done
+
+# --- (5m) PSK-leak guard across all new-run logs ------------------------------
+sec "5m. PSK-leak guard (whole temp dir)"
+hits=$(grep -rl 'SeedPass123' "$TMP" 2>/dev/null | grep -v '\.env$' | grep -v '/seedrun/etc/hostapd/hostapd-travel.conf$' || true)
+[[ -z "$hits" ]] && ok "SeedPass123 only in rendered hostapd conf" || bad "SeedPass123 elsewhere: $(echo "$hits" | tr '\n' ' ')"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
-bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|tasks/|RESUME\.md$)' || true)
+bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|roles/base/|role-setup\.service\.tmpl$|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|tasks/|RESUME\.md$)' || true)
 [[ -z "$scope" ]] && ok "working tree clean" || { [[ -z "$bad_scope" ]] && ok "diff scoped to permitted paths" || bad "diff outside scope: $bad_scope"; }
 
 echo
