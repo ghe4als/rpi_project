@@ -32,6 +32,149 @@ HOSTAPD_CLI="${HOSTAPD_CLI:-hostapd_cli}"
 TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
 SUDO="${SUDO:-sudo}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+PSK_FILE="${TRAVELROUTER_PSK_FILE:-/etc/rpi-project/travel-router/known-psks}"
+
+# --- PSK candidate store (wifi-ui-known-psk wave) -----------------------------
+# Schema: one row per line, 3 TAB-separated fields:
+#   s<TAB><SSID><TAB><PSK>  SSID-specific candidate
+#   d<TAB><TAB><PSK>        default candidate (empty SSID field)
+# Mode 0600, root-owned. Single owner: this script is the only writer
+# (status-server shells out to it). NO sudo in the store path: over SSH the
+# caller runs as `pi` and cannot write the root-owned store — that collect
+# degrades best-effort (one redacted stderr line, connect rc untouched).
+PSK_TAB=$'\t'
+PSK_CR=$'\r'
+
+# Storeable value: non-empty, no TAB/CR/LF (field/row separators).
+psk_field_ok() {
+    local v="$1"
+    [[ -n "$v" ]] || return 1
+    case "$v" in
+        *"$PSK_TAB"*|*"$PSK_CR"*|*"
+"*) return 1 ;;
+    esac
+    return 0
+}
+
+# Well-formed store row: kind s|d, exactly two TABs, non-empty PSK field,
+# s-rows carry a non-empty SSID, d-rows an empty one. Malformed lines are
+# dropped on rewrite (corrupt-store degradation, never a crash).
+psk_row_ok() {
+    local r="$1" rest k mid val
+    [[ "$r" == *"$PSK_TAB"* ]] || return 1
+    rest="${r#*"$PSK_TAB"}"
+    [[ "$rest" == *"$PSK_TAB"* ]] || return 1
+    k="${r%%"$PSK_TAB"*}"
+    mid="${rest%%"$PSK_TAB"*}"
+    val="${rest#*"$PSK_TAB"}"
+    [[ "$val" == *"$PSK_TAB"* ]] && return 1
+    [[ -n "$val" ]] || return 1
+    [[ "$k" == "s" || "$k" == "d" ]] || return 1
+    if [[ "$k" == "s" ]]; then [[ -n "$mid" ]] || return 1
+    else [[ -z "$mid" ]] || return 1
+    fi
+    return 0
+}
+
+# Upsert one SSID candidate. rc 0 = stored/dedup/dry-run, 1 = validation
+# reject, 2 = write failure. NEVER echoes the PSK anywhere.
+psk_store_upsert() {
+    local ssid="$1" psk="$2"
+    psk_field_ok "$ssid" && psk_field_ok "$psk" || return 1
+    local row="s$PSK_TAB$ssid$PSK_TAB$psk"
+    local rows=() r
+    if [[ -f "$PSK_FILE" ]]; then
+        while IFS= read -r r || [[ -n "$r" ]]; do
+            [[ -n "$r" ]] || continue
+            psk_row_ok "$r" || continue
+            [[ "$r" == "$row" ]] && return 0
+            rows[${#rows[@]}]="$r"
+        done < "$PSK_FILE"
+    fi
+    rows[${#rows[@]}]="$row"
+    local n=0 r2 out=() drop
+    for r2 in ${rows[@]+"${rows[@]}"}; do
+        [[ "$r2" == "s$PSK_TAB$ssid$PSK_TAB"* ]] && n=$((n+1))
+    done
+    drop=$((n-4)); [[ "$drop" -lt 0 ]] && drop=0
+    for r2 in ${rows[@]+"${rows[@]}"}; do
+        if [[ "$drop" -gt 0 && "$r2" == "s$PSK_TAB$ssid$PSK_TAB"* ]]; then
+            drop=$((drop-1)); continue
+        fi
+        out[${#out[@]}]="$r2"
+    done
+    local ntot=0 r3 out2=()
+    for r3 in ${out[@]+"${out[@]}"}; do
+        [[ "$r3" == "s$PSK_TAB"* ]] && ntot=$((ntot+1))
+    done
+    drop=$((ntot-32)); [[ "$drop" -lt 0 ]] && drop=0
+    for r3 in ${out[@]+"${out[@]}"}; do
+        if [[ "$drop" -gt 0 && "$r3" == "s$PSK_TAB"* ]]; then
+            drop=$((drop-1)); continue
+        fi
+        out2[${#out2[@]}]="$r3"
+    done
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "psk store: dry-run: would record candidate for '${ssid}'"
+        return 0
+    fi
+    local dir="." tmp
+    case "$PSK_FILE" in */*) dir="${PSK_FILE%/*}" ;; esac
+    tmp="$dir/.known-psks.$$"
+    if ! { for r3 in ${out2[@]+"${out2[@]}"}; do printf '%s\n' "$r3"; done; } > "$tmp" 2>/dev/null; then
+        log "psk store: cannot write '$dir' (store unchanged)"
+        return 2
+    fi
+    chmod 0600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$PSK_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log "psk store: cannot replace '$PSK_FILE' (store unchanged)"
+        return 2
+    fi
+    return 0
+}
+
+# Candidate order for try-psks: SSID s-rows in file order, then d-rows.
+# Prints PSK values only (the caller must never log them).
+psk_candidates() {
+    local ssid="$1" r k rest val
+    if [[ -f "$PSK_FILE" ]]; then
+        while IFS= read -r r || [[ -n "$r" ]]; do
+            [[ -n "$r" ]] || continue
+            psk_row_ok "$r" || continue
+            k="${r%%"$PSK_TAB"*}"
+            if [[ "$k" == "s" ]]; then
+                if [[ "$r" == "s$PSK_TAB$ssid$PSK_TAB"* ]]; then
+                    val="${r#*"s$PSK_TAB$ssid$PSK_TAB"}"
+                    printf '%s\n' "$val"
+                fi
+            fi
+        done < "$PSK_FILE"
+    fi
+    if [[ -f "$PSK_FILE" ]]; then
+        while IFS= read -r r || [[ -n "$r" ]]; do
+            [[ -n "$r" ]] || continue
+            psk_row_ok "$r" || continue
+            if [[ "$r" == "d$PSK_TAB$PSK_TAB"* ]]; then
+                val="${r#*"d$PSK_TAB$PSK_TAB"}"
+                printf '%s\n' "$val"
+            fi
+        done < "$PSK_FILE"
+    fi
+    return 0
+}
+
+# Best-effort collect (connect path): never echoes the PSK, always rc 0.
+psk_collect() {
+    local ssid="$1" psk="$2" rc=0
+    psk_store_upsert "$ssid" "$psk" || rc=$?
+    case "$rc" in
+        0) log "psk store: recorded candidate for '${ssid}'" ;;
+        1) log "psk store: rejected candidate for '${ssid}' (SSID/PSK must not contain TAB/CR/LF)" ;;
+        2) : ;;
+    esac
+    return 0
+}
 
 # --- helpers ---------------------------------------------------------------
 
@@ -59,6 +202,8 @@ Usage:
   travel-wan connect <SSID> [PSK]         connect the WAN wifi adapter
   travel-wan disconnect                   drop the WAN wifi adapter
   travel-wan forget <SSID>                delete a saved hotel profile
+  travel-wan known                       list saved wifi networks (NM profiles)
+  travel-wan collect <SSID> <PSK>        record a PSK candidate for try-psks
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
 PSKs are stored on this Pi under /etc/NetworkManager/system-connections.
@@ -97,6 +242,12 @@ cmd_connect() {
         log "connect: empty SSID"
         return 2
     fi
+    # Auto-collect the PSK candidate (M8) at attempt time, best-effort: a
+    # store failure (SSH path runs as `pi` vs root-owned 0600 store, or a
+    # TAB/CR/LF value) never changes connect's rc or messages.
+    if [[ -n "$psk" ]]; then
+        psk_collect "$ssid" "$psk" || true
+    fi
     # No WAN device on this model — give a clear, non-cryptographic hint.
     if ! iface_ok "$if_name"; then
         log "no WAN wifi adapter detected on this model; a USB/WiFi dongle is required to join hotel networks"
@@ -125,6 +276,9 @@ cmd_disconnect() {
 cmd_forget() {
     local if_name="$1"
     local ssid="${2:-}"
+    # M6 (wifi-ui-known-psk): forget deletes ONLY the NM profile; the
+    # saved-psk candidate row in $PSK_FILE is KEPT so try-psks can
+    # re-establish the profile from a candidate without re-typing.
     if [[ -z "$ssid" ]]; then
         log "forget: SSID is required"
         usage
@@ -135,6 +289,58 @@ cmd_forget() {
     fi
     log "forgetting profile '${ssid}' ..."
     "$SUDO" "$NMCLI" connection delete "$ssid"
+}
+
+cmd_collect() {
+    local ssid="${1:-}"
+    local psk="${2:-}"
+    if [[ -z "$ssid" || -z "$psk" ]]; then
+        log "collect: SSID and PSK are required"
+        usage
+        return 2
+    fi
+    local rc=0
+    psk_store_upsert "$ssid" "$psk" || rc=$?
+    case "$rc" in
+        0) log "psk store: recorded candidate for '${ssid}'" ;;
+        1) log "psk store: rejected candidate for '${ssid}' (SSID/PSK must not contain TAB/CR/LF)" ;;
+        2) log "psk store: write failed (see stderr above)" ;;
+    esac
+    [[ "$rc" -eq 0 ]] || return 1
+    return 0
+}
+
+cmd_known() {
+    # Known wifi networks = NM profiles (the store is NOT consulted here).
+    # Reserved probe profile `tr-probe` (try-psks, M4) is excluded.
+    # Output: one line per network: NAME<TAB>TIMESTAMP<TAB>AUTOCONNECT.
+    local out r name type ts ac nameu rest
+    out="$("$NMCLI" -t -f NAME,TYPE,TIMESTAMP,AUTOCONNECT connection show 2>/dev/null)" || true
+    printf '%s\n' "$out" | while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        # Split right-anchored: TYPE/TIMESTAMP/AUTOCONNECT are colon-free, so
+        # the last three : fields are theirs; NAME (may contain escaped \:)
+        # is everything before them.
+        ac="${r##*:}"
+        rest="${r%:*}"
+        ts="${rest##*:}"
+        rest="${rest%:*}"
+        type="${rest##*:}"
+        name="${rest%:*}"
+        [[ "$type" == "802-11-wireless" ]] || continue
+        [[ "$name" == "tr-probe" ]] && continue
+        # Unescape nmcli terse escaping (\\ -> \, \: -> :) in NAME.
+        nameu=""
+        while [[ "$name" == *'\'* ]]; do
+            nameu="${nameu}${name%%'\'*}"
+            name="${name#*'\'}"
+            nameu="${nameu}${name%"${name#?}"}"
+            name="${name#?}"
+        done
+        nameu="$nameu$name"
+        printf '%s\t%s\t%s\n' "$nameu" "$ts" "$ac"
+    done | sort -t "$(printf '\t')" -k2,2 -nr
+    return 0
 }
 
 cmd_status() {
@@ -227,6 +433,12 @@ main() {
             ;;
         forget)
             cmd_forget "${WIFI_WAN_IF:-}" "$@"
+            ;;
+        known)
+            cmd_known
+            ;;
+        collect)
+            cmd_collect "$@"
             ;;
         status)
             cmd_status "${WIFI_WAN_IF:-}" "${1:-}"
