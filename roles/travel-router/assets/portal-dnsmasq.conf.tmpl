@@ -1,0 +1,28 @@
+# Captive-portal probe hijack (travel-router role).
+#
+# OWNERSHIP (H03 exception): this file is owned and toggled exclusively by
+# wan-select.sh — written in standalone mode (no WAN), removed when a WAN
+# exists. install.sh NEVER renders it. dnsmasq is restarted by wan-select
+# ONLY when this file's existence toggles (dnsmasq does not re-read dnsmasq.d
+# drop-ins on SIGHUP, so add/remove requires a restart; content-identical
+# ticks never restart).
+#
+# WHY STANDALONE ONLY: while a WAN exists, OS connectivity probes must pass
+# through to the upstream (hotel) network so the hotel's own captive-portal
+# login page reaches the client device. Hijacking probes during that phase
+# would steal the portal login flow.
+#
+# local-ttl=10 keeps stale hijack answers in phone DNS caches short-lived so
+# the "no internet" badge clears quickly after the drop-in is removed.
+local-ttl=10
+address=/captive.apple.com/__LAN_IP__
+address=/connectivitycheck.gstatic.com/__LAN_IP__
+address=/www.google.com/__LAN_IP__
+address=/www.msftncsi.com/__LAN_IP__
+address=/detectportal.firefox.com/__LAN_IP__
+address=/nmcheck.gnome.org/__LAN_IP__
+# Android DNS-value probe: answer the EXPECTED constant (131.107.255.255),
+# never the Pi IP — a wrong value here makes some Androids flag "no internet"
+# persistently. The HTTP probe (connectivitycheck.gstatic.com) is hijacked
+# above; this one only needs to satisfy the DNS-level check.
+address=/dns.msftncsi.com/131.107.255.255

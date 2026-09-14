@@ -9,7 +9,10 @@
 # leave running), and (5) prints a final banner.
 #
 # Single-owner rule: THIS script is the sole owner of the hostapd/dnsmasq/sysctl
-# files; wan-select never re-renders them.
+# files; wan-select never re-renders them. ONE EXCEPTION (H03): wan-select
+# solely owns /etc/dnsmasq.d/travel-router-portal.conf (captive-portal probe
+# hijack, standalone only) — this script stages its TEMPLATE but never renders
+# or restarts dnsmasq for it; wan-select restarts dnsmasq only on toggle.
 #
 # Test seam (REQUIRED): honours TRAVELROUTER_DRY_RUN=1 + DRY_RUN_PREFIX=<dir> so
 # the QA battery runs on a non-Pi (macOS) runner: every write lands under the
@@ -142,6 +145,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
   install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
+  install -m 0644 "$ASSETS/portal-dnsmasq.conf.tmpl" /usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl
   mkdir -p /etc/systemd/system
   for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
     install -m 0644 "$ASSETS/$unit" "/etc/systemd/system/$unit"
@@ -153,6 +157,7 @@ else
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
   cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
+  cp "$ASSETS/portal-dnsmasq.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"

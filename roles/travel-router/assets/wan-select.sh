@@ -16,10 +16,15 @@
 # cleanly keeps it OFF the WAN path and lets it serve as the AP.
 #
 # Security: THIS SCRIPT NEVER restarts NetworkManager (a 30s-tick NM restart
-# would flap the WAN link and DHCP every tick). It never restarts hostapd or
-# dnsmasq (install.sh owns their render + restarts; their inputs are static).
-# It never creates a bridge, and never starts a WAN-side DHCP client (NM owns
-# the WAN).
+# would flap the WAN link and DHCP every tick). It never restarts hostapd.
+# dnsmasq: install.sh owns the main render + its restarts. THE ONE EXCEPTION
+# (H03): wan-select solely owns /etc/dnsmasq.d/travel-router-portal.conf (the
+# captive-portal probe hijack, standalone mode only). It writes/removes that
+# drop-in ONLY on a state change and restarts dnsmasq exactly then (never per
+# tick; never SIGHUP — dnsmasq does not re-read dnsmasq.d drop-ins on HUP).
+# Probes must pass through whenever a WAN exists so the hotel portal reaches
+# the client device. It never creates a bridge, and never starts a WAN-side
+# DHCP client (NM owns the WAN).
 set -euo pipefail
 
 log() { printf '[wan-select] %s\n' "$*"; }
@@ -37,6 +42,9 @@ TRAVELROUTER_WAN_PREFER="${TRAVELROUTER_WAN_PREFER:-auto}"
 TRAVELROUTER_LAN_CIDR="${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}"
 TRAVELROUTER_AP_COUNTRY="${TRAVELROUTER_AP_COUNTRY:-}"
 NFTABLES_TARGET="${NFTABLES_TARGET:-/etc/nftables.conf}"
+DNSMASQ_CONF_DIR="${DNSMASQ_CONF_DIR:-/etc/dnsmasq.d}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+PORTAL_CONF="${DNSMASQ_CONF_DIR}/travel-router-portal.conf"
 
 # nftables template location. When run by the service ASSETS may not be set;
 # derive it from this script's own path as a fallback.
@@ -261,6 +269,36 @@ cat >"$STATE_TMP" <<EOF
 }
 EOF
 mv -f "$STATE_TMP" "$TRAVELROUTER_STATE_FILE"
+
+# --- (6) Captive-portal probe hijack (standalone only; see header exception)
+# Standalone -> render the drop-in (unless content-identical). Routed -> remove
+# it (if present). dnsmasq restarts ONLY when the file's presence toggled.
+portal_wanted=""
+portal_render=""
+if [[ -z "$WAN_IF" && -f "$ASSETS/portal-dnsmasq.conf.tmpl" ]]; then
+  portal_wanted=1
+  portal_render=$(sed -e "s|__LAN_IP__|${LAN_IP}|g" "$ASSETS/portal-dnsmasq.conf.tmpl")
+fi
+if [[ -n "$portal_wanted" ]]; then
+  if [[ -f "$PORTAL_CONF" ]] && cmp -s "$PORTAL_CONF" <(printf '%s' "$portal_render"); then
+    : # content-identical: no write, no dnsmasq churn
+  else
+    log "portal hijack ON (standalone) -> ${PORTAL_CONF} + dnsmasq restart"
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
+      mkdir -p "$DNSMASQ_CONF_DIR" 2>/dev/null || true
+      PORTAL_TMP="${PORTAL_CONF}.tmp.$$"
+      printf '%s' "$portal_render" >"$PORTAL_TMP"
+      mv -f "$PORTAL_TMP" "$PORTAL_CONF"
+    fi
+    run_or_log "$SYSTEMCTL" restart dnsmasq.service
+  fi
+elif [[ -f "$PORTAL_CONF" ]]; then
+  log "WAN present -> removing portal hijack (${PORTAL_CONF}) + dnsmasq restart"
+  if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
+    rm -f "$PORTAL_CONF"
+  fi
+  run_or_log "$SYSTEMCTL" restart dnsmasq.service
+fi
 
 if [[ "$PREV_LAN" != "$LAN_IP" ]]; then
   log "lan_ip changed ($PREV_LAN -> $LAN_IP): try-restart travel-router-status.service"
