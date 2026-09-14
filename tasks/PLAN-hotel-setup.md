@@ -1,7 +1,7 @@
 # Project Plan — Hotel-WiFi phone setup (captive-portal + setup page)
 
 Last updated: 2026-09-13
-Status: EXECUTING — H01 + H02 done. Awaiting "execute H03".
+Status: EXECUTING — H01–H03 done. Awaiting "execute H04".
 
 Feature: configure the hotel WiFi from a phone with no SSH. Join the travel
 SSID -> phone auto-opens the setup page (captive-portal hijack while
@@ -51,7 +51,7 @@ anchors verified accurate.
 
 - [x] H01 — POST API skeleton in status-server.py + retire `no do_POST` assert ✅ `37847b3` (suite 102/0)
 - [x] H02 — /setup phone UI (setup.html asset) + fix `/` innerHTML XSS ✅ `ead073d` (suite 106/0)
-- [ ] H03 — captive-portal dnsmasq drop-in + wan-select toggle (standalone-keyed)
+- [x] H03 — captive-portal dnsmasq drop-in + wan-select toggle (standalone-keyed) ✅ `792f1b5` (suite 118/0)
 - [ ] H04 — probe-Host 302 redirect handler in status-server
 - [ ] H05 — mandatory PIN staging (.env.example, README, install.sh, unit env)
 - [ ] H06 — docs + banner (README phone-first procedure, install.sh setup URL)
