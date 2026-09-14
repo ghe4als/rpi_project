@@ -376,6 +376,39 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:18090/api/wan
 [[ "$r" == "404" ]] && ok "PUT /api/wan/connect 404 (only POST dispatched)" || bad "PUT code=$r"
 stop_srv
 
+# --- (5f) probe-Host 302 redirect battery (H04) -------------------------------
+sec "5f. probe-Host 302 redirect (H04)"
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+touch "$B/portal-active.conf"   # the TRAVELROUTER_PORTAL_CONF seam target
+PORTAL_START() {
+  TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELROUTER_STATUS_PORT=18091 TRAVELROUTER_PORTAL_CONF="$B/portal-active.conf" \
+    python3 "$A/status-server.py" >"$B/srv-h04.log" 2>&1 &
+  SPID=$!; sleep 1.5
+}
+PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
+PORTAL_START
+# R1: probe Host + active drop-in -> 302 to /setup on the same bound port
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18091/generate_204 2>/dev/null)
+loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: captive.apple.com' http://127.0.0.1:18091/generate_204 2>/dev/null)
+[[ "$r" == "302" ]] && ok "R1 probe-Host GET -> 302" || bad "R1 code=$r (srv.log: $(tail -1 "$B/srv-h04.log" 2>/dev/null))"
+[[ "$loc" == "http://127.0.0.1:18091/setup" ]] && ok "R1 Location -> /setup on bound host+port" || bad "R1 location=$loc"
+# R2: probe Host + INACTIVE drop-in -> no redirect (falls through to 404)
+TRAVELROUTER_PORTAL_CONF="$B/does-not-exist.conf" TRAVELWAN_BIN="$STW" \
+  TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18092 \
+  python3 "$A/status-server.py" >"$B/srv-h04b.log" 2>&1 &
+SPID2=$!; sleep 1.5
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18092/generate_204 2>/dev/null)
+kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null
+[[ "$r" == "404" ]] && ok "R2 inactive drop-in -> no redirect (404)" || bad "R2 code=$r (stale-cache passthrough wrong)"
+# R3: normal IP browsing unaffected while hijack active
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1' http://127.0.0.1:18091/ 2>/dev/null)
+[[ "$r" == "200" ]] && ok "R3 Host=<bind-ip> serves status page (no redirect)" || bad "R3 code=$r"
+# R4: port-suffixed probe Host still redirects
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com:18091' http://127.0.0.1:18091/generate_204 2>/dev/null)
+[[ "$r" == "302" ]] && ok "R4 Host with :port still 302" || bad "R4 code=$r"
+PORTAL_STOP
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

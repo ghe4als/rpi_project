@@ -41,6 +41,21 @@ WAN_TOOL = os.environ.get("TRAVELWAN_BIN", "/usr/local/bin/travel-wan")
 SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
 SETUP_PAGE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "setup.html")
+# Captive-portal hijack drop-in (wan-select owns + toggles it; H03). When it
+# exists, OS connectivity-probe Hosts arriving here are 302'd to /setup.
+PORTAL_CONF = os.environ.get(
+    "TRAVELROUTER_PORTAL_CONF", "/etc/dnsmasq.d/travel-router-portal.conf")
+
+# HTTP-probe hosts whose DNS the H03 drop-in points at this server. Mirrors
+# portal-dnsmasq.conf.tmpl (dns.msftncsi.com is a DNS-value probe, never here).
+PROBE_HOSTS = frozenset((
+    "captive.apple.com",
+    "connectivitycheck.gstatic.com",
+    "www.google.com",
+    "www.msftncsi.com",
+    "detectportal.firefox.com",
+    "nmcheck.gnome.org",
+))
 
 # Write verbs WITHOUT a handler stay reject-bound (404). Only POST gained a
 # real dispatcher (H01 posture change; see module docstring).
@@ -246,7 +261,25 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _portal_redirect(self):
+        """302 a connectivity-probe request to /setup. Target is the numeric
+        LAN IP (captive webviews cannot rely on mDNS); the port is included
+        whenever it is not 80, using the actually-bound port."""
+        host = _state_field("lan_ip") or DEFAULT_HOST
+        port = self.server.server_address[1]
+        if port != 80:
+            host = "%s:%d" % (host, port)
+        self.send_response(302)
+        self.send_header("Location", "http://%s/setup" % host)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_GET(self):
+        probe_host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        if probe_host in PROBE_HOSTS and os.path.exists(PORTAL_CONF):
+            self._portal_redirect()
+            return
         path = urlparse(self.path).path
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
