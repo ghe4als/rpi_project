@@ -1,16 +1,16 @@
 # RESUME — travel-router-role
 
-Where am I right now. Source of truth for a fresh session. Checkpoint: **`bec070b`**
+Where am I right now. Source of truth for a fresh session. Checkpoint: **`716b32f`**
 (HEAD, clean tree). Last updated: 2026-09-13.
 
 ## Current state
 
-**IMPLEMENTATION COMPLETE — F1–F4 final verification wave is the only remaining work.**
+**ALL IMPLEMENTATION + F-WAVE VERIFICATION COMPLETE — only F3 (user-gated hardware QA) remains.**
 
-Full arc: 6-lane audit (2026-09-13) confirmed 4 CRITICAL + ~10 MAJOR defects in the
-committed T1–T6 code (dry-run QA masked the real-execution class) → plan updated
-(todos 7–12) → dual review rr-005 (Momus APPROVE; Oracle CHANGES_REQUESTED → C1/C2 +
-M1–M4 all folded in) → repair wave executed → validation suite GREEN 88/0.
+Full arc: 6-lane audit → 4 CRITICAL + ~10 MAJOR defects confirmed in T1–T6 → plan
+todos 7–12 → dual review rr-005 (Momus APPROVE; Oracle CHANGES_REQUESTED → folded in)
+→ repair wave executed → validation suite GREEN (now 89/0) → F-wave verdicts:
+**F1 APPROVE · F2 APPROVE (gated findings fixed) · F4 APPROVE · F3 = YOURS (hardware)**.
 
 ## Commits this wave (one per todo, per repo protocol)
 
@@ -19,7 +19,8 @@ M1–M4 all folded in) → repair wave executed → validation suite GREEN 88/0.
 - `73db0a3` fix(travel-router): status parity + real recheck + travel-wan seam + dnsmasq self-DNS
 - `b4fdbb6` docs(travel-router): README + INVENTORY entries and travel workflow
 - `bec070b` test(travel-router): local validation suite for role artifacts
-- (next) docs: fix stale NATS IP in legacy task doc + checkpoint RESUME  ← T12
+- `b17ff37` docs: fix stale NATS IP in legacy task doc + checkpoint RESUME
+- `716b32f` fix(travel-router): status must survive empty dnsmasq leases file (F2 MAJOR-1)
 
 ## What is now true (was broken)
 
@@ -49,15 +50,17 @@ SYSTEMCTL stub + truncated-state resilience + atomic write, travel-wan status pa
 + real recheck, status-server bind/routes/fallback). Evidence:
 `.omo/evidence/travel-router-role/task-{7,8,9,10,11}-travel-router-role.log`.
 
-## Remaining (final wave)
+## Remaining
 
-- F1 plan compliance audit · F2 code quality review · F3 **USER-GATED** hardware QA
-  (flash + boot + hotel portal per README) · F4 scope fidelity.
-- Known documented residuals (deliberate, recorded in task-11 log): B12
-  TRAVELROUTER_STATUS_PORT not validated at install; B13 connection-name colon
-  truncation (awk -F:); B7-core (malformed role.env proceeds to late validation);
-  missing evidence logs task-2..task-6 (waiver — todo 11 battery is the durable gate);
-  STATUS_PORT≠80 firewalled (nftables hardcodes tcp/80 — port-80 documented).
+- **F3 (USER-GATED) — run the hardware QA yourself** per README "Provisioning the
+  travel-router Pi": flash Bookworm armhf Lite + ROLE=travel-router → join travel
+  SSID → verify http://192.168.50.1 + internet through WAN → hotel-portal procedure.
+  Record the result here when done.
+- Documented residuals (deliberate, recorded in task-11 log): B12 STATUS_PORT
+  unvalidated; B13 connection-name colon truncation; B7-core malformed-role.env
+  late-validation; task-2..task-6 evidence-log waiver; nftables hardcodes tcp/80
+  (STATUS_PORT≠80 firewalled); innerHTML status fields not HTML-escaped (nuisance
+  XSS on hostile SSIDs); RENDER_TMP/STATE_TMP strays on mid-script abort.
 - `.omo/` gitignored — never staged. `.env`/`inventory.yaml` gitignored — never staged.
 
 ## Gotchas carried forward
