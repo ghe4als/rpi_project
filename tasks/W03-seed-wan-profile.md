@@ -45,18 +45,23 @@ if [[ -n "${WIFI_SSID:-}" ]]; then
   elif [[ -n "${WIFI_PSK:-}" ]]; then
     nmcli connection add type wifi ifname '*' con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
       wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$WIFI_PSK" connection.autoconnect yes
-    nmcli connection reload
     log "seeded WAN bootstrap profile '${WIFI_SSID}' (autoconnect, any managed wifi device)"
   else
     nmcli connection add type wifi ifname '*' con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
       connection.autoconnect yes
-    nmcli connection reload
     log "seeded WAN bootstrap profile '${WIFI_SSID}' (open network)"
   fi
 else
   log "no WIFI_SSID in role.env — skipping WAN bootstrap profile (standalone AP first boot)"
 fi
 ```
+
+AMENDED (post-review, F1 ses_f601cd424ffesCDAhXpIhRYR7m): the original spec
+block included `nmcli connection reload` after each real-mode `nmcli
+connection add`. Dropped deliberately: `connection add` registers the profile
+with the NM daemon via D-Bus AND persists it, so a reload is redundant; and
+under install.sh's `set -euo pipefail` a spurious reload failure would abort
+role-setup for no benefit. Committed code (e6d8860) is the source of truth.
 
 ### Change 3: banner (step 10) — add one line before the NOTE lines
 ```bash
