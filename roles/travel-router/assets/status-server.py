@@ -39,6 +39,8 @@ DEFAULT_HOST = "192.168.50.1"
 TTL_SECONDS = 30.0
 WAN_TOOL = os.environ.get("TRAVELWAN_BIN", "/usr/local/bin/travel-wan")
 SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
+SETUP_PAGE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "setup.html")
 
 # Write verbs WITHOUT a handler stay reject-bound (404). Only POST gained a
 # real dispatcher (H01 posture change; see module docstring).
@@ -160,8 +162,8 @@ _STATUS_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <h1>Travel Router Status</h1>
-<p>This is a private SSID. Configuration happens over SSH. There
-are no web forms on this page.</p>
+<p>This is a private SSID. Configure it at
+<a href="/setup">/setup</a> (PIN required).</p>
 <table>
   <tbody id="rows"></tbody>
 </table>
@@ -177,12 +179,28 @@ async function refresh() {
       ["WAN IP", d.wan_ip || "—"],
       ["Internet", d.internet || "unknown"],
     ];
-    document.getElementById("rows").innerHTML =
-      rows.map(function(kv){ return "<tr><td class='label'>" +
-        kv[0] + "</td><td>" + kv[1] + "</td></tr>"; }).join("");
+    // DOM built with textContent only: wan_ssid is hotel-controlled input.
+    const tbody = document.getElementById("rows");
+    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+    for (const kv of rows) {
+      const tr = document.createElement("tr");
+      const label = document.createElement("td");
+      label.className = "label";
+      label.textContent = kv[0];
+      const value = document.createElement("td");
+      value.textContent = kv[1];
+      tr.appendChild(label);
+      tr.appendChild(value);
+      tbody.appendChild(tr);
+    }
   } catch (e) {
-    document.getElementById("rows").innerHTML =
-      "<tr><td>no /status endpoint</td></tr>";
+    const tbody = document.getElementById("rows");
+    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.textContent = "no /status endpoint";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
   }
 }
 refresh();
@@ -211,12 +229,31 @@ class StatusHandler(BaseHTTPRequestHandler):
     def _reject_write(self):
         self._send(404, b"404 not found", "text/plain")
 
+    def _serve_setup(self):
+        try:
+            with open(SETUP_PAGE, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            sys.stderr.write("[status-server] setup page missing: %s\n" % SETUP_PAGE)
+            self._send(500, b"setup page missing on this install", "text/plain")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        # The page must never be cached: WAN state and PIN behavior change
+        # between captive-portal phases.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/status":
             self._send(200, json.dumps(get_status()), "application/json")
+        elif path == "/setup" or path == "/setup/":
+            self._serve_setup()
         elif path == "/" or path == "/index.html":
             self._send(200, _STATUS_HTML, "text/html")
         else:

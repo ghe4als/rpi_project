@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<!--
+  Travel-router setup page (H02). Served by status-server.py at /setup from
+  this file's installed location. Mobile-first, zero external requests (the
+  device may be offline by design), vanilla JS.
+
+  RENDERING RULE (greppable, enforced by validate-local.sh): this page builds
+  DOM exclusively with createElement + textContent. innerHTML /
+  insertAdjacentHTML / document.write are FORBIDDEN — SSIDs and error text
+  come from outside (hotel networks are hostile input).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Travel Router Setup</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         background: #101418; color: #e8eaed; }
+  main { max-width: 30rem; margin: 0 auto; }
+  h1 { font-size: 1.25rem; }
+  section { background: #1a2027; border-radius: 10px; padding: 0.9rem;
+            margin-bottom: 0.9rem; }
+  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 2px 8px 2px 0; }
+  .label { font-weight: 600; }
+  input, button { font-size: 1rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin: 0.3rem 0;
+          border-radius: 6px; border: 1px solid #3a434e; background: #101418;
+          color: #e8eaed; }
+  button { padding: 0.55rem 1rem; margin: 0.3rem 0.3rem 0.3rem 0;
+           border-radius: 8px; border: 0; background: #2d7ff9; color: white;
+           font-weight: 600; }
+  button.secondary { background: #3a434e; }
+  button:disabled { opacity: 0.5; }
+  .scanrow { display: block; width: 100%; text-align: left;
+             background: #222a33; margin: 0.25rem 0; word-break: break-all; }
+  .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
+  .warn { color: #ffb84d; }
+  .ok { color: #5dd879; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Travel Router Setup</h1>
+
+  <section>
+    <h2>Status</h2>
+    <table><tbody id="status-rows"></tbody></table>
+    <p class="msg" id="status-msg"></p>
+  </section>
+
+  <section>
+    <h2>Networks</h2>
+    <button id="scan-btn" type="button">Scan</button>
+    <div id="scan-list"></div>
+    <p class="msg" id="scan-msg"></p>
+  </section>
+
+  <section>
+    <h2>Connect</h2>
+    <label for="ssid">Network name (SSID)</label>
+    <input id="ssid" autocomplete="off" maxlength="32">
+    <label for="psk">Password (leave empty for open networks)</label>
+    <input id="psk" type="password" autocomplete="off">
+    <label for="pin">Setup PIN</label>
+    <input id="pin" inputmode="numeric" autocomplete="off">
+    <p>
+      <button id="connect-btn" type="button">Connect</button>
+      <button id="disconnect-btn" type="button" class="secondary">Disconnect</button>
+      <button id="forget-btn" type="button" class="secondary">Forget</button>
+    </p>
+    <p class="msg" id="form-msg"></p>
+  </section>
+</main>
+
+<script>
+"use strict";
+// DOM built with createElement/textContent only (see file-header rule).
+function cellRow(tbody, label, value) {
+  var tr = document.createElement("tr");
+  var l = document.createElement("td");
+  l.className = "label";
+  l.textContent = label;
+  var v = document.createElement("td");
+  v.textContent = value;
+  tr.appendChild(l); tr.appendChild(v);
+  tbody.appendChild(tr);
+}
+
+function setMsg(id, text, cls) {
+  var el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "msg" + (cls ? " " + cls : "");
+}
+
+function api(path, body) {
+  var opts = {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json",
+               "X-Requested-With": "XMLHttpRequest" },
+    body: JSON.stringify(body || {})
+  };
+  return fetch(path, opts);
+}
+
+function pinOrNull() {
+  var pin = document.getElementById("pin").value.trim();
+  if (pin) { try { localStorage.setItem("setup-pin", pin); } catch (e) {} }
+  return pin;
+}
+
+function savedPin() {
+  try { return localStorage.getItem("setup-pin") || ""; } catch (e) { return ""; }
+}
+
+function refreshStatus() {
+  fetch("/status", { cache: "no-store" }).then(function (r) { return r.json(); })
+    .then(function (d) {
+      var tbody = document.getElementById("status-rows");
+      while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+      cellRow(tbody, "Mode", d.mode || "?");
+      if (d.wan_ssid) { cellRow(tbody, "Hotel SSID", d.wan_ssid); }
+      if (d.wan_ip) { cellRow(tbody, "WAN IP", d.wan_ip); }
+      var msg = document.getElementById("status-msg");
+      if (d.internet === "yes") {
+        cellRow(tbody, "Internet", "yes");
+        msg.textContent = "Online through " + (d.wan_ssid || d.wan_if);
+        msg.className = "msg ok";
+      } else if (d.internet === "reachable") {
+        // Portal phase: the hotel login page reaches this device through the
+        // Pi (probes pass through). Our auto-popup deliberately stays off.
+        msg.textContent = "Connected to " + (d.wan_ssid || "network") +
+          " — open any http:// site (or wait) to finish the network's own " +
+          "login page from this device.";
+        msg.className = "msg warn";
+      } else {
+        msg.textContent = "No internet yet — scan and connect below.";
+        msg.className = "msg";
+      }
+    })
+    .catch(function () {
+      document.getElementById("status-msg").textContent = "status unavailable";
+    });
+}
+
+function busy(on) {
+  ["scan-btn", "connect-btn", "disconnect-btn", "forget-btn"].forEach(
+    function (id) { document.getElementById(id).disabled = on; });
+}
+var busyOff = function () { busy(false); };
+
+function handleErr(prefix) {
+  return function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (r.status === 403 && d.error === "pin") {
+        throw new Error("PIN required — enter it below (ask the router owner if unknown)");
+      }
+      throw new Error(prefix + " (HTTP " + r.status + ")");
+    });
+  };
+}
+
+function doScan() {
+  busy(true);
+  setMsg("scan-msg", "scanning…");
+  api("/api/wan/scan", {}).then(function (r) {
+    if (!r.ok) { return handleErr("scan failed")(r); }
+    return r.json();
+  }).then(function (d) {
+    var list = document.getElementById("scan-list");
+    while (list.firstChild) { list.removeChild(list.firstChild); }
+    (d.lines || []).forEach(function (line) {
+      // line: "SSID,SIGNAL,SECURITY" (nmcli terse); textContent only.
+      var btn = document.createElement("button");
+      btn.className = "scanrow";
+      btn.type = "button";
+      btn.textContent = line;
+      btn.addEventListener("click", function () {
+        var name = line.split(",")[0];
+        var ssidInput = document.getElementById("ssid");
+        ssidInput.value = name;
+        ssidInput.focus();
+      });
+      list.appendChild(btn);
+    });
+    if (!d.lines || !d.lines.length) {
+      setMsg("scan-msg", "no networks found");
+    } else {
+      setMsg("scan-msg", "");
+    }
+  }).catch(function (e) {
+    setMsg("scan-msg", String(e.message || e), "warn");
+  }).then(busyOff, busyOff);
+}
+
+function apiWrite(path, extra) {
+  var body = extra || {};
+  var pin = pinOrNull() || savedPin();
+  if (pin) { body.pin = pin; }
+  busy(true);
+  setMsg("form-msg", "working…");
+  return api(path, body).then(function (r) {
+    if (r.status === 403) { return handleErr("access denied")(r); }
+    return r.json().then(function (d) {
+      if (!d.ok) { throw new Error((d.log && d.log.join(" ")) || "failed (rc=" + d.rc + ")"); }
+      setMsg("form-msg", "done");
+      refreshStatus();
+      return d;
+    });
+  }).catch(function (e) {
+    setMsg("form-msg", String(e.message || e), "warn");
+  }).then(busyOff, busyOff);
+}
+
+function connectSsid(ssid) {
+  var psk = document.getElementById("psk").value;
+  var body = { ssid: ssid };
+  if (psk) { body.psk = psk; }
+  apiWrite("/api/wan/connect", body);
+}
+
+document.getElementById("scan-btn").addEventListener("click", doScan);
+document.getElementById("connect-btn").addEventListener("click", function () {
+  var ssid = document.getElementById("ssid").value.trim();
+  if (!ssid) { setMsg("form-msg", "enter a network name", "warn"); return; }
+  connectSsid(ssid);
+});
+document.getElementById("disconnect-btn").addEventListener("click", function () {
+  apiWrite("/api/wan/disconnect", {});
+});
+document.getElementById("forget-btn").addEventListener("click", function () {
+  var ssid = document.getElementById("ssid").value.trim();
+  if (!ssid) { setMsg("form-msg", "enter the network name to forget", "warn"); return; }
+  apiWrite("/api/wan/forget", { ssid: ssid });
+});
+
+(function initPin() {
+  var saved = savedPin();
+  if (saved) { document.getElementById("pin").value = saved; }
+})();
+
+refreshStatus();
+setInterval(refreshStatus, 4000);
+</script>
+</body>
+</html>

@@ -58,6 +58,8 @@ done
   && ok "wan-select.sh staged 0755" || bad "wan-select.sh staged mode != 0755"
 [[ -f "$pfx/usr/local/lib/travel-router/nftables.conf.tmpl" ]] \
   && ok "nftables.conf.tmpl deployed" || bad "nftables.conf.tmpl NOT deployed"
+[[ -f "$pfx/usr/local/lib/travel-router/setup.html" ]] \
+  && ok "setup.html deployed (H02)" || bad "setup.html NOT deployed"
 grep -q 'ssid=TestNet' "$pfx/etc/hostapd/hostapd-travel.conf" && ok "hostapd ssid rendered" || bad "hostapd ssid missing"
 grep -q 'wpa_passphrase=TestPass123' "$pfx/etc/hostapd/hostapd-travel.conf" && ok "PSK rendered" || bad "PSK missing"
 if grep -rn '__[A-Z][A-Z_]*__' "$pfx/etc" "$pfx/usr/local/lib/travel-router/status-server.py" "$pfx/usr/local/bin" >/dev/null 2>&1; then
@@ -250,9 +252,24 @@ sleep 1.5
 sc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health 2>/dev/null)
 sj=$(curl -s http://127.0.0.1:18080/status 2>/dev/null)
 sp=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18080/status 2>/dev/null)
+su=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/setup 2>/dev/null)
+suc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/setup 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
 [[ "$sc" == "200" ]] && ok "status /health 200" || bad "/health=$sc (srv.log: $(tail -1 "$B/srv.log" 2>/dev/null))"
 echo "$sj" | grep -q '"mode"' && ok "/status contains mode" || bad "/status missing mode: $sj"
 [[ "$sp" == "404" || "$sp" == "405" ]] && ok "POST -> 404/405" || bad "POST code=$sp"
+[[ "$su" == "200" ]] && ok "GET /setup -> 200 (H02)" || bad "/setup code=$su"
+[[ "$suc" == "no-store" ]] && ok "/setup served Cache-Control: no-store" || bad "/setup cache-control=$suc"
+# XSS regression (H02): no HTML-injection path in either served page
+if python3 - <<'PY' 2>/dev/null; then ok "textContent-only rendering (setup.html + status HTML)"; else bad "innerHTML/insertAdjacentHTML present in UI code"; fi
+setup = open("roles/travel-router/assets/setup.html").read()
+srv = open("roles/travel-router/assets/status-server.py").read()
+code = setup.split("<script>")[1].split("</script>")[0]
+for forbidden in ("innerHTML", "insertAdjacentHTML", "document.write"):
+    assert forbidden not in code
+# status page JS block: no assignment to .innerHTML either
+page = srv.split('_STATUS_HTML = """')[1].split('"""')[0]
+assert ".innerHTML" not in page and "insertAdjacentHTML" not in page
+PY
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 # fallback seeding: dead tool -> mode/lan_ip from state still present
 TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18081 \

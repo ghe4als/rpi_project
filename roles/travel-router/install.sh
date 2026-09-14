@@ -140,6 +140,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0755 "$ASSETS/wan-select.sh"      /usr/local/lib/travel-router/wan-select.sh
   install -m 0755 "$ASSETS/status-server.py"   /usr/local/lib/travel-router/status-server.py
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
+  install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
   mkdir -p /etc/systemd/system
   for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
@@ -150,6 +151,7 @@ else
   cp "$ASSETS/wan-select.sh"     "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   cp "$ASSETS/status-server.py"  "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
+  cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
