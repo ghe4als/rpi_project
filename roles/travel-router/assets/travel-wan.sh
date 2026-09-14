@@ -501,7 +501,7 @@ main() {
             cmd_collect "$@"
             ;;
         try-psks)
-            cmd_try_psks "$1"
+            cmd_try_psks "${1:-}"
             ;;
         status)
             cmd_status "${WIFI_WAN_IF:-}" "${1:-}"
