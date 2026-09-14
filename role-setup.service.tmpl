@@ -8,6 +8,10 @@ ConditionPathExists=/boot/firmware/role/install.sh
 Type=oneshot
 ExecStart=/bin/bash /boot/firmware/role/install.sh
 ExecStartPost=/bin/systemctl disable role-setup.service
+# Broadcast "setup-complete" to NATS (best effort: '-' ignores failure when
+# no route to the broker exists). The announcer's own retry loop bounds this
+# to <= 20 x 3s inside the unit's 30min start budget.
+ExecStartPost=-/usr/local/bin/rpi-nats-announce setup-complete
 StandardOutput=append:/var/log/role-setup.log
 StandardError=append:/var/log/role-setup.log
 TimeoutStartSec=30min

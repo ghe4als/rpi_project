@@ -16,6 +16,17 @@ for role_env in /boot/firmware/role/role.env /boot/role/role.env; do
   fi
 done
 
+# Optional $1 = event override (e.g. "setup-complete" from role-setup's
+# ExecStartPost). Must be a valid NATS subject token: it is framed into the
+# PUB line, so spaces/newlines would corrupt the protocol framing.
+ARG_EVENT=""
+if [[ -n "${1:-}" ]]; then
+  case "$1" in
+    *[!A-Za-z0-9._-]*) log "invalid event name: $1" >&2; exit 2 ;;
+    *) ARG_EVENT="$1"; NATS_ANNOUNCE_EVENT="$1" ;;
+  esac
+fi
+
 json_escape() {
   local value="${1:-}"
   value="${value//\\/\\\\}"
@@ -145,7 +156,9 @@ for attempt in $(seq 1 "$NATS_ANNOUNCE_ATTEMPTS"); do
     read -r -t 2 _pong <&3 || true
     exec 3>&-
     exec 3<&-
-    touch /run/rpi-nats-announce.sent 2>/dev/null || true
+    if [[ -z "$ARG_EVENT" ]]; then
+      touch /run/rpi-nats-announce.sent 2>/dev/null || true
+    fi
     log "published $subject to $host:$port"
     exit 0
   fi
