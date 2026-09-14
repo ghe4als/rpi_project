@@ -74,8 +74,8 @@ for completion instead of guessing.
       `ExecStartPost=-... setup-complete`
 - [x] W03 — install.sh: seed WAN bootstrap profile (WIFI_SSID) + AP_COUNTRY
       fallback + banner line
-- [ ] W04 — validate-local.sh batteries for W01–W03, suite green
-- [ ] W05 — README + banner docs (first-boot simulation + notifications)
+- [x] W04 — validate-local.sh batteries for W01–W03, suite green
+- [x] W05 — README + banner docs (first-boot simulation + notifications)
 - [ ] WQ  — Hardware QA (USER-GATED: flash + dongle, verify seed/announce)
 
 Order: W01 → W02 → W03 → W04 → W05 → WQ. One commit per task
