@@ -29,7 +29,7 @@ NATS block)
 Before (existing tail of .env.example):
 ```
 # All roles: NATS broker for node self-announcement.
-NATS_URL="nats://192.168.0.76:4222"
+NATS_URL="nats://192.168.0.151:4222"
 
 # chicken-cam role only: piChick AI service config.
 ```
@@ -37,7 +37,7 @@ NATS_URL="nats://192.168.0.76:4222"
 After:
 ```
 # All roles: NATS broker for node self-announcement.
-NATS_URL="nats://192.168.0.76:4222"
+NATS_URL="nats://192.168.0.151:4222"
 
 # tailscale role only: remote-access VPN subnet router.
 # Generate a one-time auth key at https://login.tailscale.com/admin/settings/keys
