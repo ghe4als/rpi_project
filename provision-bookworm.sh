@@ -151,6 +151,15 @@ ROLE_ENV_FILE="$BOOT/role/role.env"
   for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER)_/ {print $1}'); do
     printf '%s=%q\n' "$var" "${!var}"
   done
+  # travel-router bootstraps its WAN from the provisioning WiFi: install.sh
+  # seeds it as the first NM profile ("hotel simulation"). The PSK is already
+  # plaintext on this partition (network-config), so no new exposure.
+  if [[ "$ROLE" == "travel-router" ]]; then
+    for var in WIFI_SSID WIFI_PSK WIFI_COUNTRY; do
+      val="${!var}"
+      printf '%s=%q\n' "$var" "$val"
+    done
+  fi
 } > "$ROLE_ENV_FILE"
 
 COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
