@@ -80,7 +80,7 @@ fail() {
 # AP_PSK is REQUIRED (8-63 chars of [A-Za-z0-9._-]); an empty value fails
 # below so the AP never comes up with a key nobody knows.
 pkey="${TRAVELROUTER_AP_PSK:-}"
-sid="${TRAVELROUTER_AP_SSID}"
+sid="${TRAVELROUTER_AP_SSID:-}"
 if [[ -z "${sid:-}" ]]; then
   fail "AP_SSID (TRAVELROUTER_AP_SSID) is empty" "set a non-empty TRAVELROUTER_AP_SSID (printable ASCII, <=32 chars)"
 fi
@@ -91,14 +91,21 @@ if [[ "${#sid}" -gt 32 ]]; then
   fail "AP_SSID too long (${#sid} > 32)" "TRAVELROUTER_AP_SSID must be printable ASCII, <=32 chars"
 fi
 printf '%s' "$sid" | grep -qE "$PRINTABLE_RE" || fail "AP_SSID has illegal characters" "TRAVELROUTER_AP_SSID must be printable ASCII only"
+# Same render-breaker battery as the PSK below, plus &: the SSID is sed-rendered
+# into hostapd.conf and echoed in the banner. *$'\n'* matches a REAL newline
+# (a plain *'\n'* would only match a literal backslash-n).
+case "$sid" in
+  *'|'*|*'\'*|*'$'*|*'&'*|*$'\n'*) fail "AP_SSID contains a render-breaker char (|, \, $, or &)" \
+    "remove | / \ / $ / & from TRAVELROUTER_AP_SSID; they break the sed render" ;;
+esac
 pkey_len="${#pkey}"
 if [[ "$pkey_len" -lt 8 || "$pkey_len" -gt 63 ]]; then
   fail "AP_PSK length ${pkey_len} outside 8-63" "set a TRAVELROUTER_AP_PSK between 8 and 63 characters"
 fi
 # Disallow the render-breakers and any char outside the allowed whitelist.
 case "$pkey" in
-  *'|'*|*'\\'*|*'$'*|*'\n'*) fail "AP_PSK contains a render-breaker char (|, \, or $)" \
-    "remove | / \ / $ from TRAVELROUTER_AP_PSK; they break the sed render" ;;
+  *'|'*|*'\'*|*'$'*|*'&'*|*$'\n'*) fail "AP_PSK contains a render-breaker char (|, \, $, or &)" \
+    "remove | / \ / $ / & from TRAVELROUTER_AP_PSK; they break the sed render" ;;
 esac
 pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
@@ -130,17 +137,27 @@ real_or_log apt-get install -y --no-install-recommends hostapd dnsmasq nftables 
 mkdir -p "${DRY_RUN_PREFIX}/usr/local/lib/travel-router" "${DRY_RUN_PREFIX}/usr/local/bin"
 if [[ "$DRY_RUN" -ne 1 ]]; then
   mkdir -p /usr/local/lib/travel-router
-  install -m 0644 "$ASSETS/wan-select.sh"      /usr/local/lib/travel-router/wan-select.sh
+  install -m 0755 "$ASSETS/wan-select.sh"      /usr/local/lib/travel-router/wan-select.sh
   install -m 0755 "$ASSETS/status-server.py"   /usr/local/lib/travel-router/status-server.py
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
+  install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
+  mkdir -p /etc/systemd/system
+  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
+    install -m 0644 "$ASSETS/$unit" "/etc/systemd/system/$unit"
+  done
   log "installed travel-router scripts to /usr/local/{bin,lib/travel-router}"
 else
   cp "$ASSETS/wan-select.sh"     "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   cp "$ASSETS/status-server.py"  "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
-  chmod 0644 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
-  chmod 0644 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
+  cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
+  chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
+  chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
+  mkdir -p "${DRY_RUN_PREFIX}/etc/systemd/system"
+  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
+    cp "$ASSETS/$unit" "${DRY_RUN_PREFIX}/etc/systemd/system/$unit"
+  done
   log "dry-run: staged scripts under prefix"
 fi
 
@@ -148,7 +165,7 @@ fi
 # SAME rule as wan-select: first wireless whose /sys/class/net/<if>/device path
 # does NOT contain /usb (onboard SDIO radio), fallback wlan0. On a non-Pi the
 # enumeration is empty so this degrades gracefully to wlan0.
-ap="${TRAVELROUTER_AP_IFACE:-}"
+ap=""
 if [[ -z "$ap" && -d /sys/class/net ]]; then
   for d in /sys/class/net/*; do
     [[ -d "$d" ]] || continue
@@ -200,19 +217,7 @@ chmod 0644 "$sysctl_conf"
 real_or_log sysctl --system
 log "rendered hostapd/dnsmasq/sysctl to ${DRY_RUN_PREFIX}"
 
-# --- (8) systemd units: daemon-reload, enable, RESTART dnsmasq -------------
-real_or_log systemctl daemon-reload
-real_or_log systemctl enable --now wan-select.service
-# MANDATORY restart: the stock-config dnsmasq from apt is already active; a
-# plain enable is a no-op on an already-running unit. The rendered config only
-# loads on (re)start.
-real_or_log systemctl restart dnsmasq.service
-real_or_log systemctl enable --now hostapd-travel.service
-real_or_log systemctl enable --now wan-select.timer
-real_or_log systemctl enable --now travel-router-status.service
-log "system wiring done: wan-select + hostapd-travel enabled, dnsmasq restarted"
-
-# --- (9) Sanity-assert stock dnsmasq is inert ------------------------------
+# --- (8) Sanity-assert stock dnsmasq is inert (BEFORE any enable/restart) ----
 dnsmasq_d="${DRY_RUN_PREFIX}/etc/dnsmasq.d"
 [[ -d "$dnsmasq_d" ]] || { log "ERROR: ${dnsmasq_d} does not exist"; exit 1; }
 # RPi OS ships dnsmasq.conf fully commented out; an active listen-address here
@@ -226,6 +231,19 @@ if [[ "$DRY_RUN" -ne 1 && -r /etc/dnsmasq.conf ]]; then
   fi
 fi
 log "sanity: dnsmasq.d present, stock config inert"
+
+# --- (9) systemd units: daemon-reload, enable, RESTART dnsmasq -------------
+real_or_log systemctl daemon-reload
+real_or_log systemctl enable --now wan-select.service
+real_or_log systemctl enable dnsmasq.service
+# MANDATORY restart: the stock-config dnsmasq from apt is already active; a
+# plain enable is a no-op on an already-running unit. The rendered config only
+# loads on (re)start.
+real_or_log systemctl restart dnsmasq.service
+real_or_log systemctl enable --now hostapd-travel.service
+real_or_log systemctl enable --now wan-select.timer
+real_or_log systemctl enable --now travel-router-status.service
+log "system wiring done: wan-select + hostapd-travel enabled, dnsmasq enabled+restarted"
 
 # --- (10) Final banner -----------------------------------------------------
 lan_ip=$(printf "%s" "${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}" | sed "s|/.*||")
