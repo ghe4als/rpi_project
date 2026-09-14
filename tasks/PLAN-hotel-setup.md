@@ -1,7 +1,7 @@
 # Project Plan — Hotel-WiFi phone setup (captive-portal + setup page)
 
 Last updated: 2026-09-13
-Status: EXECUTING — H01–H05 done. Awaiting "execute H06".
+Status: IMPLEMENTATION COMPLETE — H01–H06 done. HQ (hardware QA) is USER-GATED.
 
 Feature: configure the hotel WiFi from a phone with no SSH. Join the travel
 SSID -> phone auto-opens the setup page (captive-portal hijack while
@@ -54,7 +54,7 @@ anchors verified accurate.
 - [x] H03 — captive-portal dnsmasq drop-in + wan-select toggle (standalone-keyed) ✅ `792f1b5` (suite 118/0)
 - [x] H04 — probe-Host 302 redirect handler in status-server ✅ `086d81f` (suite 123/0)
 - [x] H05 — mandatory PIN staging (.env.example, README, install.sh, unit env) ✅ `1f79de3` (suite 138/0)
-- [ ] H06 — docs + banner (README phone-first procedure, install.sh setup URL)
+- [x] H06 — docs + banner (README phone-first procedure, install.sh setup URL) ✅ `1b69b68` (suite 138/0)
 - [ ] HQ  — Hardware QA (USER-GATED: re-provision Pi, verify popup/PIN/flow)
 
 Order: H01 -> H02 -> H03 -> H04 -> H05 -> H06 -> HQ. Suite
