@@ -67,6 +67,25 @@ WRITE_VERBS = ("PUT", "PATCH", "DELETE")
 MAX_BODY_BYTES = 8192
 WRITE_LOCK = threading.Lock()
 
+# C1 PIN brute-force throttle: per-source-IP fail counter with exponential
+# backoff, keyed ip -> [fail_count, blocked_until_ts]. In-memory only (resets
+# on restart), dedicated lock so a blocked-IP check never queues behind an
+# in-flight WRITE_LOCK subprocess write.
+_PIN_THROTTLE_LOCK = threading.Lock()
+_PIN_FAILS = {}
+
+
+def _pin_backoff_tier(count):
+    """Block seconds owed at the given consecutive-fail count: 5th fail -> 5s,
+    25th -> 30s, 51st -> 120s. No permanent lockout (120s is the ceiling)."""
+    if count >= 51:
+        return 120.0
+    if count >= 25:
+        return 30.0
+    if count >= 5:
+        return 5.0
+    return 0.0
+
 API_SCAN_TIMEOUT = 25
 API_WRITE_TIMEOUT = 90
 API_QUICK_TIMEOUT = 30
@@ -421,14 +440,43 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"):
             self._send(404, b"404 not found", "text/plain")
             return
+        # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
+        # parsed. A blocked attempt is still a PIN guess, so it also advances
+        # the fail count (lets a persistent brute-forcer escalate tiers).
+        ip_key = self.client_address[0]
+        now = time.time()
+        with _PIN_THROTTLE_LOCK:
+            entry = _PIN_FAILS.get(ip_key)
+            blocked_until = entry[1] if entry else 0.0
+            if now < blocked_until:
+                entry[0] += 1
+                pin_fails = entry[0]
+            else:
+                pin_fails = None
+        if pin_fails is not None:
+            # 429 fires before the body is read; like the scan/status
+            # branches, an unread body under keep-alive would be parsed as
+            # the next (smuggled) request. Close the connection instead.
+            self._send(429, json.dumps({"error": "rate_limited"}),
+                       "application/json", extra_headers=[("Connection", "close")])
+            self.close_connection = True
+            return
         body, err_code = self._read_json_body()
         if err_code is not None:
             self._send(err_code, json.dumps({"error": _code_msg(err_code)}),
                        "application/json")
             return
         if not self._pin_ok(body):
+            with _PIN_THROTTLE_LOCK:
+                entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
+                entry[0] += 1
+                tier = _pin_backoff_tier(entry[0])
+                if tier:
+                    entry[1] = time.time() + tier
             self._send(403, json.dumps({"error": "pin"}), "application/json")
             return
+        with _PIN_THROTTLE_LOCK:
+            _PIN_FAILS.pop(ip_key, None)
         with WRITE_LOCK:
             if path == "/api/wan/connect":
                 ssid = body.get("ssid")

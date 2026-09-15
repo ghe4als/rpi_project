@@ -1141,6 +1141,104 @@ grep -q 'Threat model' "$ROOT/README.md" \
   && ok "5ab README travel-router threat-model note present" \
   || bad "5ab README missing threat-model note or PSK-in-argv marker"
 
+# --- (5ac) PIN brute-force throttle: per-source backoff + reset (hardening C1) --
+sec "5ac. PIN throttle per-source backoff + reset-on-success (C1)"
+# One client IP (127.0.0.1) hammers POST /api/wan/connect with a wrong PIN.
+# Tiers: 5th fail -> 5s block, 25th -> 30s, 51st -> 120s. A blocked (429)
+# attempt still advances the counter. Success resets the IP's entry.
+# NOTE: 127.0.0.2 source binds fail on macOS (errno 49) — single client IP.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWC1="$B/stub-travel-wan-c1"
+printf '#!/bin/bash\ncase "$1" in connect|scan|status) printf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"; exit 0;; esac\nexit 0\n' > "$STWC1"; chmod +x "$STWC1"
+C1LOG="$B/c1-throttle.txt"
+: > "$C1LOG"
+echo "=== C1 PIN throttle transcript ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ===" >> "$C1LOG"
+c1_start() { # -> fresh server on 18098 (fresh in-memory throttle state)
+  TRAVELROUTER_SETUP_PIN="2468" TRAVELWAN_BIN="$STWC1" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELROUTER_STATUS_PORT=18098 python3 "$A/status-server.py" >>"$B/srv-c1.log" 2>&1 &
+  C1PID=$!
+  wait_healthy 18098 || true
+}
+c1_stop() { kill $C1PID 2>/dev/null; wait $C1PID 2>/dev/null; }
+c1_post() { # pin -> one POST attempt; echoes the HTTP code, logs to transcript
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+    -d "{\"pin\":\"$1\",\"ssid\":\"HotelNet\"}" http://127.0.0.1:18098/api/wan/connect 2>/dev/null)
+  echo "POST /api/wan/connect pin=<redacted:len=${#1}> -> $code" >> "$C1LOG"
+  echo "$code"
+}
+
+# --- part A: 5 wrong -> 403 each; 6th within window -> 429 ----------------------
+c1_start
+codes_a=""
+for i in 1 2 3 4 5; do codes_a="$codes_a$(c1_post wrong$i) "; done
+echo "--- attempts 1-5 codes: $codes_a" >> "$C1LOG"
+[[ "$codes_a" == "403 403 403 403 403 " ]] \
+  && ok "5ac first 5 wrong PINs -> 403 (under 5-tier)" || bad "5ac first-5 codes=[$codes_a] (want 403 x5)"
+r6=$(c1_post wrong6)
+[[ "$r6" == "429" ]] || r6=$(c1_post wrong6)
+[[ "$r6" == "429" ]] && ok "5ac 6th wrong within window -> 429" || bad "5ac 6th wrong code=$r6 (want 429)"
+body429=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"wrongbody","ssid":"HotelNet"}' \
+  http://127.0.0.1:18098/api/wan/connect 2>/dev/null)
+echo "--- 429 body (further blocked attempt): $body429" >> "$C1LOG"
+echo "$body429" | grep -q 'rate_limited' && echo "$body429" | grep -q '429$' \
+  && ok "5ac 429 body is {\"error\":\"rate_limited\"}" || bad "5ac 429 body=[$body429]"
+
+# --- part B: blocked attempts still count -> block window GROWS (escalation) ----
+# Count is >= 7 after part A. 22 more wrong attempts (429s while the 5s block
+# holds) push it past the 25-tier. Whether the 30s re-block arms on the next
+# post-expiry attempt or was already armed depends on request timing, so the
+# proof runs two sleep-5.5s cycles: after the second, a 5s-tier server would
+# answer 403 (every 5s window has expired); the real server must still 429
+# because the armed window is 30s.
+codes_b=""
+for i in $(seq 1 22); do codes_b="$codes_b$(c1_post flood$i)"; done
+n429=$(printf '%s' "$codes_b" | grep -o '429' | wc -l | tr -d ' ')
+echo "--- 22 flood attempts, 429 count: $n429 (all: $codes_b)" >> "$C1LOG"
+t0=$(date +%s); r0=$(c1_post escalate0); t1=$(date +%s)
+[[ "$r0" == "429" || "$r0" == "403" ]] \
+  && ok "5ac wrong attempts still rejected past 25-fail (escalated count, code=$r0)" \
+  || bad "5ac escalation code=$r0 (want 403/429)"
+echo "--- escalation0 @$t0 = $r0 (gap $((t1 - t0))s)" >> "$C1LOG"
+sleep 5.5
+r1=$(c1_post rearm1); echo "--- rearm1 (post 5.5s) = $r1" >> "$C1LOG"
+sleep 5.5
+t2=$(date +%s); r2=$(c1_post rearm2); t3=$(date +%s)
+echo "--- rearm2 @$t2 = $r2 after two 5.5s waits (gap $((t3 - t2))s)" >> "$C1LOG"
+[[ "$r2" == "429" ]] && ok "5ac still 429 after two 5s-tier expiries (window grew to 30s)" \
+  || bad "5ac post-expiry code=$r2 (want 429; block did not grow)"
+c1_stop
+
+# --- part C: reset-on-success from the SAME source IP ---------------------------
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+c1_start
+echo "=== part C: fresh server (fresh throttle state), same client IP ===" >> "$C1LOG"
+codes_c1=""
+for i in 1 2 3 4 5; do codes_c1="$codes_c1$(c1_post wrongc1$i) "; done
+r6=$(c1_post wrongc1-6)
+echo "--- part C attempts 1-5: $codes_c1 6th: $r6" >> "$C1LOG"
+[[ "$codes_c1" == "403 403 403 403 403 " && "$r6" == "429" ]] \
+  && ok "5ac block re-armed on fresh server (5x403 then 429)" || bad "5ac re-arm codes=[$codes_c1] 6th=$r6"
+# wait out the 5s block (client-side sleep; server has no sleeps)
+sleep 5.5
+r=$(c1_post 2468)
+echo "--- correct PIN after block expiry -> $r" >> "$C1LOG"
+[[ "$r" == "200" ]] && ok "5ac correct PIN after block expiry -> 200 (entry reset)" || bad "5ac correct-pin code=$r (want 200)"
+codes_c2=""
+for i in 1 2 3 4 5; do codes_c2="$codes_c2$(c1_post wrongc2$i) "; done
+echo "--- part C post-reset 5 wrong: $codes_c2" >> "$C1LOG"
+[[ "$codes_c2" == "403 403 403 403 403 " ]] \
+  && ok "5ac post-reset 5 wrong PINs -> 403 NOT 429 (counter reset proven)" || bad "5ac post-reset codes=[$codes_c2]"
+c1_stop
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+# no PIN in the transcript (server must never log the PIN)
+grep -q '2468' "$C1LOG" && bad "5ac PIN leaked into throttle transcript (forbidden)" \
+  || ok "5ac transcript free of PIN"
+echo "5ac throttle transcript: $C1LOG"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
