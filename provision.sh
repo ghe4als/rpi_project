@@ -203,7 +203,11 @@ ROLE_ENV_FILE="$BOOT/role/role.env"
 } > "$ROLE_ENV_FILE"
 chmod 0644 "$ROLE_ENV_FILE"
 
-COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
+# travel-router setup-v2: optional PSK seed file (.psksecret, gitignored) —
+# staged next to role.env so install.sh can find it via the role-tree path.
+if [[ "$ROLE" == "travel-router" && -f "$REPO/.psksecret" ]]; then
+  cp "$REPO/.psksecret" "$BOOT/role/.psksecret"
+fi
 
 rm -f "$BOOT/custom.toml" "$BOOT/firstrun.sh" "$BOOT/firstrun.log" \
       "$BOOT/wpa_supplicant.conf"

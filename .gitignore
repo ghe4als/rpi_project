@@ -5,3 +5,4 @@ inventory.yaml
 .omo/
 
 __pycache__/
+.psksecret

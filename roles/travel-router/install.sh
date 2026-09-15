@@ -205,8 +205,42 @@ for kv in ${KPSK_ARR[@]+"${KPSK_ARR[@]}"}; do
     esac
     KPSK_VALS+="${KPSK_VALS:+$'\n'}$kv"
 done
+# setup-v2 M4: optional .psksecret seed file — TRAVELROUTER_PSKSECRET_FILE
+# env wins; default lookup uses the same two-path idiom as ROLE_ENV (the
+# provisioner stages .psksecret next to role.env). Absent -> no file d-rows.
+PSKSECRET_SRC="${TRAVELROUTER_PSKSECRET_FILE:-}"
+if [[ -z "$PSKSECRET_SRC" ]]; then
+  for cand in "${ROLE_ENV%/*}/.psksecret" /boot/firmware/role/.psksecret /boot/role/.psksecret; do
+    [[ -f "$cand" ]] && { PSKSECRET_SRC="$cand"; break; }
+  done
+fi
+KPSK_SECRET_STAGE="$KPSK_DIR/psksecret"
+if [[ -n "$PSKSECRET_SRC" && -f "$PSKSECRET_SRC" ]]; then
+    while IFS= read -r kv; do
+        kv="${kv#"${kv%%[![:space:]]*}"}"
+        kv="${kv%"${kv##*[![:space:]]}"}"
+        [[ -n "$kv" ]] || continue
+        case "$kv" in
+            '#'*) continue ;;
+            *$'\t'*|*$'\r'*|*$'\n'*|*$'\v'*|*$'\f'*) KPSK_BAD=1; continue ;;
+        esac
+        KPSK_VALS+="${KPSK_VALS:+$'\n'}$kv"
+    done < "$PSKSECRET_SRC"
+elif [[ -n "${TRAVELROUTER_PSKSECRET_FILE:-}" ]]; then
+  fail "TRAVELROUTER_PSKSECRET_FILE points at a missing file ($TRAVELROUTER_PSKSECRET_FILE)" \
+    "stage .psksecret next to role.env (or set TRAVELROUTER_PSKSECRET_FILE to an existing file)"
+fi
+# de-dupe d-row values (env first, file appended; keep first occurrence)
+if [[ -n "$KPSK_VALS" ]]; then
+    KPSK_DEDUPED=""
+    while IFS= read -r kv; do
+        [[ -n "$kv" ]] || continue
+        KPSK_DEDUPED+="${KPSK_DEDUPED:+$'\n'}$kv"
+    done <<< "$(printf '%s\n' "$KPSK_VALS" | awk '!seen[$0]++')"
+    KPSK_VALS="$KPSK_DEDUPED"
+fi
 if [[ "$KPSK_BAD" -eq 1 ]]; then
-  fail "TRAVELROUTER_DEFAULT_PSKS contains a PSK with TAB/CR/LF" \
+  fail "TRAVELROUTER_DEFAULT_PSKS/.psksecret contains a PSK with TAB/CR/LF" \
     "remove the offending PSK value and re-run (store not modified)"
 fi
 # build the new store content: existing s-rows first (preserved verbatim),
@@ -228,10 +262,17 @@ printf '%s' "$KPSK_OUT" > "$KPSK_TMP"
 chmod 0600 "$KPSK_TMP"
 mv -f "$KPSK_TMP" "$KPSK_FILE"
 if [[ -n "$KPSK_VALS" ]]; then
-  log "known-psks store seeded with $(printf '%s\n' "$KPSK_VALS" | grep -c .) default PSK candidate(s) (values redacted)"
+  log "known-psks store seeded with $(printf '%s\n' "$KPSK_VALS" | grep -c .) default PSK candidate(s) from env + .psksecret (values redacted)"
 else
   touch "$KPSK_FILE" && chmod 0600 "$KPSK_FILE"
   log "known-psks store present, no default PSK candidates to seed"
+fi
+# setup-v2 M4: stage the psksecret copy itself (0600) for runtime provenance;
+# absent source -> skip staging quietly (never an error).
+if [[ -n "$PSKSECRET_SRC" && -f "$PSKSECRET_SRC" ]]; then
+    cp "$PSKSECRET_SRC" "$KPSK_SECRET_STAGE"
+    chmod 0600 "$KPSK_SECRET_STAGE"
+    log "staged .psksecret copy (0600) from '$PSKSECRET_SRC' (values redacted)"
 fi
 
 # --- (5) Install scripts to their final locations --------------------------
