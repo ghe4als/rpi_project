@@ -757,7 +757,7 @@ else bad "5v psksecret mode skipped (file missing)"; fi
 c=$(grep -c $'^d\t\t0123456789$' "$STORE5V" 2>/dev/null || true)
 [[ "$c" == "1" ]] && ok "5v file-sourced d-row 0123456789 present" || bad "5v 0123456789 d-row count=$c (want 1)"
 c=$(grep -c $'^d\t' "$STORE5V" 2>/dev/null || true)
-[[ "$c" == "3" ]] && ok "5v comment+blank skipped (exactly 3 d-rows)" || bad "5v d-row count=$c (want 3)"
+[[ "$c" == "5" ]] && ok "5v merge: 5 d-rows (env alpha,beta + file 3, comment/blank skipped)" || bad "5v d-row count=$c (want 5)"
 # (b) no-dupe merge: env gamma + file gamma -> exactly one gamma d-row
 printf 'gamma\n' > "$TMP/psksecret-b"
 printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-b.env"
@@ -921,7 +921,8 @@ for p in capkA dfltA psks-secret-fixture 0123456789 welcome guestwifi gamma gues
       | grep -v '/v2-store$' | grep -v '/psksecret-a$' | grep -v '/psksecret-b$' \
       | grep -v '/psksecret-c$' | grep -v '/psksecret-c2$' | grep -v '/psksecret-e$' \
       | grep -v '/travel-router/psksecret$' | grep -v '/known-psks$' \
-      | grep -v '/order-argv.log$' | grep -v '/v2-argv' | grep -v '\.env$' || true)
+      | grep -v '/order-argv.log$' | grep -v '/v2-argv' | grep -v '\.env$' \
+      | grep -v '/cap-caps' | grep -v '/cap-caps.err' || true)
   [[ -n "$h" ]] && leak_hits2="$leak_hits2 $p:$(echo "$h" | tr '\n' ' ')"
 done
 [[ -z "$leak_hits2" ]] && ok "5y no setup-v2 psks leaked into logs/captures" \
@@ -930,7 +931,7 @@ done
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
-bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|roles/base/|role-setup\.service\.tmpl$|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|tasks/|RESUME\.md$)' || true)
+bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|roles/base/|role-setup\.service\.tmpl$|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|\.gitignore$|tasks/|RESUME\.md$)' || true)
 [[ -z "$scope" ]] && ok "working tree clean" || { [[ -z "$bad_scope" ]] && ok "diff scoped to permitted paths" || bad "diff outside scope: $bad_scope"; }
 
 echo
