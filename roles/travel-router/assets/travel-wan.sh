@@ -555,6 +555,7 @@ cmd_ap_apply() {
     if ! mv -f "$tmp" "$AP_CONF" 2>/dev/null; then
         rm -f "$tmp"
         log "ap-apply: cannot replace '$AP_CONF' (conf unchanged)"
+        rm -f "$AP_CONF.bak" 2>/dev/null || true
         return 2
     fi
     local apdir="." aptmp

@@ -209,6 +209,8 @@ if [[ "$ROLE" == "travel-router" && -f "$REPO/.psksecret" ]]; then
   cp "$REPO/.psksecret" "$BOOT/role/.psksecret"
 fi
 
+COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
+
 rm -f "$BOOT/custom.toml" "$BOOT/firstrun.sh" "$BOOT/firstrun.log" \
       "$BOOT/wpa_supplicant.conf"
 
