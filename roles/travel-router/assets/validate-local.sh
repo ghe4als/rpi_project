@@ -733,6 +733,200 @@ done
 [[ -z "$leak_hits" ]] && ok "5u no battery psks leaked into logs/captures" \
   || bad "5u leaks:$leak_hits"
 
+# --- (5v) .psksecret staging + d-row merge battery (setup-v2 M4) ---------------
+sec "5v. .psksecret staging + merge (setup-v2)"
+# Contract: install.sh stages <prefix>/etc/rpi-project/travel-router/psksecret
+# (0600) from TRAVELROUTER_PSKSECRET_FILE (or the role-tree .psksecret, same
+# two-path idiom as ROLE_ENV at install.sh:64-67) and merges file-sourced
+# d-rows into known-psks alongside env TRAVELROUTER_DEFAULT_PSKS (env first,
+# file appended, no dupes). Absent file -> skip + no file d-rows.
+printf '# setup-v2 battery\n\n0123456789\nwelcome\nguestwifi\n' > "$TMP/psksecret-a"
+pfxv="$TMP/pskv-run1"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxv" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+   TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-a" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskv-run1.log" 2>&1; then
+  ok "5v psksecret dry-run rc=0"
+else bad "5v psksecret dry-run exited $?"; fi
+S5V="$pfxv/etc/rpi-project/travel-router/psksecret"
+STORE5V="$pfxv/etc/rpi-project/travel-router/known-psks"
+[[ -f "$S5V" ]] && ok "5v psksecret staged" || bad "5v psksecret MISSING (staging unimplemented)"
+if [[ -f "$S5V" ]]; then
+  m=$(stat -f%Lp "$S5V" 2>/dev/null || stat -c%a "$S5V" 2>/dev/null)
+  [[ "$m" == "600" ]] && ok "5v psksecret mode 0600" || bad "5v psksecret mode=$m (want 600)"
+else bad "5v psksecret mode skipped (file missing)"; fi
+c=$(grep -c $'^d\t\t0123456789$' "$STORE5V" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5v file-sourced d-row 0123456789 present" || bad "5v 0123456789 d-row count=$c (want 1)"
+c=$(grep -c $'^d\t' "$STORE5V" 2>/dev/null || true)
+[[ "$c" == "3" ]] && ok "5v comment+blank skipped (exactly 3 d-rows)" || bad "5v d-row count=$c (want 3)"
+# (b) no-dupe merge: env gamma + file gamma -> exactly one gamma d-row
+printf 'gamma\n' > "$TMP/psksecret-b"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-b.env"
+pfxvb="$TMP/pskv-run-b"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxvb" TRAVELROUTER_ROLE_ENV="$TMP/pskv-b.env" \
+  TRAVELROUTER_DEFAULT_PSKS="gamma" TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-b" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskv-b.log" 2>&1
+STORE5VB="$pfxvb/etc/rpi-project/travel-router/known-psks"
+c=$(grep -c $'^d\t\tgamma$' "$STORE5VB" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5v no-dupe merge: exactly one gamma d-row" || bad "5v gamma d-row count=$c (want 1)"
+# (c) second install preserves s-row, refreshes d-rows env-first + file-appended
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-c.env"
+pfxvc="$TMP/pskv-run-c"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxvc" TRAVELROUTER_ROLE_ENV="$TMP/pskv-c.env" \
+  TRAVELROUTER_DEFAULT_PSKS="gamma" TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-c" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskv-c1.log" 2>&1
+STORE5VC="$pfxvc/etc/rpi-project/travel-router/known-psks"
+printf 's\tKeepNet\toldpsk\n' > "$STORE5VC"
+printf 'guestwifi\n' > "$TMP/psksecret-c2"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxvc" TRAVELROUTER_ROLE_ENV="$TMP/pskv-c.env" \
+  TRAVELROUTER_DEFAULT_PSKS="gamma" TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-c2" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskv-c2.log" 2>&1
+c=$(grep -c $'^s\tKeepNet\toldpsk$' "$STORE5VC" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5v re-run preserves s-row" || bad "5v s-row clobbered (count=$c)"
+c=$(grep -c $'^d\t' "$STORE5VC" 2>/dev/null || true)
+[[ "$c" == "2" ]] && ok "5v refresh: exactly 2 d-rows (gamma + guestwifi)" || bad "5v d-row count=$c (want 2)"
+l1=$(grep -n $'^d\t\tgamma$' "$STORE5VC" 2>/dev/null | head -1 | cut -d: -f1)
+l2=$(grep -n $'^d\t\tguestwifi$' "$STORE5VC" 2>/dev/null | head -1 | cut -d: -f1)
+[[ -n "$l1" && -n "$l2" && "$l1" -lt "$l2" ]] && ok "5v env-first file-appended order" || bad "5v d-row order l1=$l1 l2=$l2"
+# (d) gitignore
+grep -q '^\.psksecret$' "$ROOT/.gitignore" && ok "5v .psksecret gitignored" || bad "5v .gitignore missing ^\.psksecret$"
+# (e) TAB in psksecret -> rc=1 remediation
+printf 'bad\tvalue\n' > "$TMP/psksecret-e"
+pfxve="$TMP/pskv-run-e"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxve" TRAVELROUTER_ROLE_ENV="$TMP/pskv-c.env" \
+  TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-e" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskv-e.log" 2>&1
+rcve=$?
+[[ "$rcve" -eq 1 ]] && grep -q 'remediation:' "$TMP/pskv-e.log" \
+  && ok "5v TAB PSK rejected rc=1 + remediation" || bad "5v TAB rc=$rcve (want 1 + remediation)"
+
+# --- (5w) psks-manage + apconfig battery (setup-v2 M5/M8) ----------------------
+sec "5w. psks-manage verbs + endpoints + apconfig (setup-v2)"
+# CLI part: real travel-wan.sh against a fresh store (stub nmcli/sudo, §5o idiom)
+PSKV="$B/v2-store"; : > "$PSKV"
+twrun() {
+  env "${TWENV[@]}" TRAVELROUTER_PSK_FILE="$PSKV" bash "$A/travel-wan.sh" \
+    "$1" "${2:-}" "${3:-}" >>"$PSKCAP" 2>>"$PSKCERR"
+}
+twrun psks-add TestNet capkA >/dev/null 2>&1
+c=$(grep -c $'^s\tTestNet\tcapkA$' "$PSKV" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5w psks-add s-row stored" || bad "5w psks-add row count=$c (want 1)"
+twrun psks-add TestNet capkA >/dev/null 2>&1
+c=$(grep -c $'^s\tTestNet\tcapkA$' "$PSKV" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5w psks-add dedup (still 1 row)" || bad "5w dedup count=$c (want 1)"
+twrun psks-add-default dfltA >/dev/null 2>&1
+c=$(grep -c $'^d\t\tdfltA$' "$PSKV" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5w psks-add-default d-row stored" || bad "5w add-default count=$c (want 1)"
+twrun psks-add-default dfltA >/dev/null 2>&1
+c=$(grep -c $'^d\t\tdfltA$' "$PSKV" 2>/dev/null || true)
+[[ "$c" == "1" ]] && ok "5w psks-add-default dedup" || bad "5w add-default dedup count=$c (want 1)"
+twrun psks-list >/dev/null 2>&1
+l=$(TRAVELROUTER_PSK_FILE="$PSKV" env "${TWENV[@]}" bash "$A/travel-wan.sh" psks-list 2>/dev/null)
+echo "$l" | grep -q $'^s\tTestNet\tcapkA$' && echo "$l" | grep -q $'^d\t\tdfltA$' \
+  && ok "5w psks-list prints TYPE<TAB>SSID<TAB>PSK rows" || bad "5w psks-list output wrong: $(echo "$l" | head -2)"
+twrun psks-del 1 >/dev/null 2>&1
+c=$(grep -c $'capkA' "$PSKV" 2>/dev/null || true)
+[[ "$c" == "0" ]] && ok "5w psks-del removed row 1" || bad "5w del row1 count=$c (want 0)"
+grep -q $'^d\t\tdfltA$' "$PSKV" && ok "5w psks-del keeps remaining rows" || bad "5w del lost dfltA"
+TRAVELROUTER_PSK_FILE="$PSKV" env "${TWENV[@]}" bash "$A/travel-wan.sh" psks-del 99 >>"$PSKCAP" 2>>"$PSKCERR"
+[[ $? -ne 0 ]] && ok "5w psks-del 99 -> rc!=0" || bad "5w del 99 should fail"
+printf 's\tOtherNet\tzzz\n' > "$PSKV"; chmod 000 "$PSKV"
+TRAVELROUTER_PSK_FILE="$PSKV" env "${TWENV[@]}" bash "$A/travel-wan.sh" psks-list >>"$PSKCAP" 2>>"$PSKCERR"
+[[ $? -ne 0 ]] && ok "5w psks-list unreadable store degrades rc!=0" || bad "5w unreadable store rc=0"
+chmod 600 "$PSKV"
+# endpoint part: live server on 18096 (§5t pattern, PIN 1234, stub ap-apply exit 0)
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+STWV2="$B/stub-travel-wan-v2"
+printf '#!/bin/bash\ncase "$1" in try-psks) exit 0;; ap-apply) exit 0;; psks-list) printf "s\\tX\\tpk1\\nd\\t\\tdk\\n"; exit 0;; known) printf "X\\t1\\tyes\\n"; exit 0;; esac\nexit 1\n' > "$STWV2"; chmod +x "$STWV2"
+KNOWN_STATE2="$B/known-state2.json"
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$KNOWN_STATE2"
+TRAVELROUTER_SETUP_PIN="1234" TRAVELWAN_BIN="$STWV2" TRAVELROUTER_STATE_FILE="$KNOWN_STATE2" \
+  TRAVELROUTER_STATUS_PORT=18096 python3 "$A/status-server.py" >"$B/srv-v2.log" 2>&1 &
+SPID=$!; sleep 1.5
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18096/api/wan/psks-manage)
+[[ "$r" == "403" ]] && ok "5w GET psks-manage no X-Pin -> 403" || bad "5w no-pin code=$r (want 403)"
+r=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 1234' http://127.0.0.1:18096/api/wan/psks-manage 2>/dev/null)
+code="${r##*$'\n'}"; body="${r%$'\n'*}"
+[[ "$code" == "200" ]] && ok "5w GET psks-manage X-Pin -> 200" || bad "5w GET code=$code (want 200)"
+echo "$body" | grep -q 'psks-secret-fixture' && bad "5w GET body leaks fixture psk" || ok "5w GET body clean of fixture psk"
+python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert 'rows' in d and isinstance(d['rows'], list); assert all('psk' not in row for row in d['rows'])" "$body" 2>/dev/null \
+  && ok "5w GET rows carry no psk key" || bad "5w GET rows contain psk key or bad JSON"
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Pin: 9' http://127.0.0.1:18096/api/wan/psks-manage)
+[[ "$r" == "403" ]] && ok "5w GET wrong X-Pin -> 403" || bad "5w wrong-pin code=$r (want 403)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","action":"add","ssid":"S","psk":"p"}' http://127.0.0.1:18096/api/wan/psks-manage)
+[[ "$r" == "200" ]] && ok "5w POST psks-manage add -> 200" || bad "5w POST add code=$r (want 200)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"NewName","psk":"newpsk9"}' http://127.0.0.1:18096/api/wan/apconfig)
+[[ "$r" == "200" ]] && ok "5w POST apconfig happy -> 200" || bad "5w apconfig code=$r (want 200)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"a|b","psk":"newpsk9"}' http://127.0.0.1:18096/api/wan/apconfig)
+[[ "$r" == "400" ]] && ok "5w apconfig render-breaker ssid -> 400" || bad "5w render-breaker code=$r (want 400)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"NewName","psk":"short"}' http://127.0.0.1:18096/api/wan/apconfig)
+[[ "$r" == "400" ]] && ok "5w apconfig short psk -> 400" || bad "5w short-psk code=$r (want 400)"
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18096/api/wan/apconfig 2>/dev/null)
+[[ "$r" == "404" ]] && ok "5w GET apconfig -> 404" || bad "5w GET apconfig code=$r"
+for verb in PUT PATCH DELETE; do
+  r=$(curl -s -o /dev/null -w '%{http_code}' -X "$verb" http://127.0.0.1:18096/api/wan/psks-manage 2>/dev/null)
+  [[ "$r" == "404" ]] && ok "5w $verb psks-manage -> 404" || bad "5w $verb psks-manage code=$r"
+done
+kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+
+# --- (5x) exclusions + UI contract battery (setup-v2 M2/M3/M6/M7/M1) -----------
+sec "5x. profile exclusions + UI contracts (setup-v2)"
+# (a) cmd_known excludes preconfigured + tr-probe (Brook must survive).
+printf 'preconfigured:802-11-wireless:1697100000:yes\nBrook:802-11-wireless:1697000000:no\ntr-probe:802-11-wireless:1696000000:yes\n' > "$B/v2-nmcli-in"
+printf '#!/bin/bash\ncat "%s"\n' "$B/v2-nmcli-in" > "$B/v2-stub-nmcli"; chmod +x "$B/v2-stub-nmcli"
+known_out=$(NMCLI="$B/v2-stub-nmcli" TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$A/travel-wan.sh" known 2>/dev/null)
+echo "$known_out" | grep -q $'^Brook\t' && ! echo "$known_out" | grep -q 'preconfigured' \
+  && ! echo "$known_out" | grep -q 'tr-probe' \
+  && ok "5x known excludes preconfigured + tr-probe, keeps Brook" || bad "5x exclusion wrong: $(echo "$known_out" | head -3 | tr '\n' '|')"
+# (b) cmd_scan self-SSID guard: structural seam assert (iface gate blocks the
+# runner, so the contract is the seam reference inside cmd_scan's body)
+scan_start=$(grep -n '^cmd_scan()' "$A/travel-wan.sh" | cut -d: -f1)
+scan_end=$(awk -v s="$scan_start" 'NR>s && /^[a-zA-Z_]+\(\)/ {print NR; exit}' "$A/travel-wan.sh")
+[[ -n "$scan_start" && -n "$scan_end" ]] || scan_end=$((scan_start+12))
+if sed -n "${scan_start},${scan_end}p" "$A/travel-wan.sh" | grep -q 'AP_SSID_FILE'; then
+  ok "5x scan references AP_SSID_FILE (self-SSID guard seam)"
+else bad "5x scan self-SSID guard MISSING (AP_SSID_FILE not referenced in cmd_scan)"; fi
+# (c) setup.html UI contracts
+grep -q '<dialog' "$A/setup.html" && ok "5x native dialog present" || bad "5x <dialog MISSING (setup-v2 M7)"
+grep -q 'escape-aware SSID splitter' "$A/setup.html" \
+  && ok "5x escape-aware splitter marker stays" || bad "5x splitter marker LOST"
+if python3 - <<'PY'
+code = open("roles/travel-router/assets/setup.html").read().split("<script>")[1].split("</script>")[0]
+for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+    assert forbidden not in code, forbidden
+PY
+then ok "5x XSS forbidden list stays clean"; else bad "5x XSS forbidden list violated"; fi
+anchor=$(grep -n -F 'api("/api/wan/psks"' "$A/setup.html" | head -1 | cut -d: -f1)
+found=0
+if [[ -n "$anchor" ]]; then
+  seg=$(sed -n "$((anchor)),$((anchor+15))p" "$A/setup.html")
+  echo "$seg" | grep -q 'd.log' && found=1
+fi
+[[ "$found" == "1" ]] && ok "5x psks handler renders d.log fallback (scoped)" \
+  || bad "5x psks handler d.log fallback MISSING (rc=1 diagnostics opaque)"
+grep -q 'psks-manage' "$A/setup.html" && ok "5x psks-manage referenced" || bad "5x psks-manage MISSING from setup.html"
+
+# --- (5y) setup-v2 psk leak sweep (M8-h extension) -----------------------------
+sec "5y. setup-v2 psk leak sweep"
+# Extends the §5u family to the setup-v2 fixture psks; runs AFTER §5v-§5x so
+# the new fixture files exist. Excludes: psk stores, staged psksecret copies,
+# fixture psksecret sources, argv logs, .env fixtures.
+leak_hits2=""
+for p in capkA dfltA psks-secret-fixture 0123456789 welcome guestwifi gamma guestwifi2 oldpsk; do
+  h=$(grep -rl "$p" "$TMP" 2>/dev/null \
+      | grep -v '/v2-store$' | grep -v '/psksecret-a$' | grep -v '/psksecret-b$' \
+      | grep -v '/psksecret-c$' | grep -v '/psksecret-c2$' | grep -v '/psksecret-e$' \
+      | grep -v '/travel-router/psksecret$' | grep -v '/known-psks$' \
+      | grep -v '/order-argv.log$' | grep -v '/v2-argv' | grep -v '\.env$' || true)
+  [[ -n "$h" ]] && leak_hits2="$leak_hits2 $p:$(echo "$h" | tr '\n' ' ')"
+done
+[[ -z "$leak_hits2" ]] && ok "5y no setup-v2 psks leaked into logs/captures" \
+  || bad "5y leaks:$leak_hits2"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
