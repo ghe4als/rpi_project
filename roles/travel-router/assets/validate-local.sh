@@ -291,7 +291,7 @@ SUDO="$STUB/sudo" SYSTEMCTL="$STUB/systemctl" TRAVELROUTER_STATE_FILE="$B/tw-sta
 # 192.168.50.1 is not an address on the runner (bind would fail errno 49).
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STW="$B/stub-travel-wan"; printf '#!/bin/bash\nprintf %s "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"; chmod +x "$STW"
-TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18080 \
+TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18080 TRAVELROUTER_BIND_HOST=127.0.0.1 \
   python3 "$A/status-server.py" >"$B/srv.log" 2>&1 &
 SPID=$!
 sleep 1.5
@@ -319,7 +319,7 @@ assert ".innerHTML" not in page and "insertAdjacentHTML" not in page
 PY
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 # fallback seeding: dead tool -> mode/lan_ip from state still present
-TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18081 \
+TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18081 TRAVELROUTER_BIND_HOST=127.0.0.1 \
   python3 "$A/status-server.py" >"$B/sfb.log" 2>&1 &
 SPID=$!
 sleep 1.5
@@ -344,7 +344,7 @@ srv_case() { # method path pin ssid psk -> emits "code body" on stdout
 }
 start_srv() { # pin -> starts server on 18090 with TRAVELROUTER_SETUP_PIN=$1
   TRAVELROUTER_SETUP_PIN="$1" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_STATE" \
-    TRAVELROUTER_STATUS_PORT=18090 python3 "$A/status-server.py" >"$B/srv-h01.log" 2>&1 &
+    TRAVELROUTER_STATUS_PORT=18090 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-h01.log" 2>&1 &
   SPID=$!; sleep 1.5
   wait_healthy 18090 || true
 }
@@ -398,7 +398,7 @@ sec "5f. probe-Host 302 redirect (H04)"
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 touch "$B/portal-active.conf"   # the TRAVELROUTER_PORTAL_CONF seam target
 PORTAL_START() {
-  TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_BIND_HOST=127.0.0.1 \
   TRAVELROUTER_STATUS_PORT=18091 TRAVELROUTER_PORTAL_CONF="$B/portal-active.conf" \
     python3 "$A/status-server.py" >"$B/srv-h04.log" 2>&1 &
   SPID=$!; sleep 1.5
@@ -413,7 +413,7 @@ loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: captive.apple.com' htt
 [[ "$loc" == "http://127.0.0.1:18091/setup" ]] && ok "R1 Location -> /setup on bound host+port" || bad "R1 location=$loc"
 # R2: probe Host + INACTIVE drop-in -> no redirect (falls through to 404)
 TRAVELROUTER_PORTAL_CONF="$B/does-not-exist.conf" TRAVELWAN_BIN="$STW" \
-  TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18092 \
+  TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18092 TRAVELROUTER_BIND_HOST=127.0.0.1 \
   python3 "$A/status-server.py" >"$B/srv-h04b.log" 2>&1 &
 SPID2=$!; sleep 1.5
 wait_healthy 18092 || true
@@ -457,7 +457,7 @@ grep -qF '9876' "$TMP/pinrun.log" && bad "PIN leaked to install log" || ok "PIN 
 SRV_PIN_STATE="$B/srv-state.json"
 PORTAL_START() {
   TRAVELROUTER_SETUP_PIN="2468" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_PIN_STATE" \
-  TRAVELROUTER_STATUS_PORT=18094 python3 "$A/status-server.py" >"$B/srv-h05.log" 2>&1 &
+  TRAVELROUTER_STATUS_PORT=18094 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-h05.log" 2>&1 &
   SPID=$!; sleep 1.5
   wait_healthy 18094 || true
 }
@@ -694,7 +694,7 @@ printf 's\tFixtureNet\tsup3rsecret\n' > "$TRAVELWAN_PSK_STORE"
 start_known_srv() { # pin -> server on 18095 with TRAVELWAN_PSK_STORE fixture
   TRAVELROUTER_SETUP_PIN="$1" TRAVELWAN_BIN="$STWT" TRAVELROUTER_STATE_FILE="$KNOWN_STATE" \
   TRAVELWAN_PSK_STORE="$TRAVELWAN_PSK_STORE" \
-  TRAVELROUTER_STATUS_PORT=18095 python3 "$A/status-server.py" >"$B/srv-m8g.log" 2>&1 &
+  TRAVELROUTER_STATUS_PORT=18095 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-m8g.log" 2>&1 &
   SPID=$!; sleep 1.5
   wait_healthy 18095 || true
 }
@@ -860,7 +860,7 @@ printf '#!/bin/bash\ncase "$1" in try-psks) exit 0;; ap-apply) exit 0;; psks-lis
 KNOWN_STATE2="$B/known-state2.json"
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$KNOWN_STATE2"
 TRAVELROUTER_SETUP_PIN="1234" TRAVELWAN_BIN="$STWV2" TRAVELROUTER_STATE_FILE="$KNOWN_STATE2" \
-  TRAVELROUTER_STATUS_PORT=18096 python3 "$A/status-server.py" >"$B/srv-v2.log" 2>&1 &
+  TRAVELROUTER_STATUS_PORT=18096 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-v2.log" 2>&1 &
 SPID=$!; sleep 1.5
 wait_healthy 18096 || true
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18096/api/wan/psks-manage)
@@ -1057,7 +1057,7 @@ STWT="$B/stub-travel-wan-c4"
 # (3 tab-separated fields so the known parser would echo it back.)
 printf '#!/bin/bash\nif [[ "$1" == known ]]; then printf "KNOWN\\tSMUGGLED-KNOWN-TOKEN\\tyes\\n"; exit 0; fi\nprintf "{\\"mode\\":\\"routed\\",\\"internet\\":\\"yes\\"}"\n' > "$STWT"; chmod +x "$STWT"
 TRAVELWAN_BIN="$STWT" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
-TRAVELROUTER_STATUS_PORT=18097 python3 "$A/status-server.py" >"$B/srv-c4.log" 2>&1 &
+TRAVELROUTER_STATUS_PORT=18097 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-c4.log" 2>&1 &
 C4PID=$!
 wait_healthy 18097 || true
 
@@ -1156,7 +1156,7 @@ C1LOG="$B/c1-throttle.txt"
 echo "=== C1 PIN throttle transcript ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ===" >> "$C1LOG"
 c1_start() { # -> fresh server on 18098 (fresh in-memory throttle state)
   TRAVELROUTER_SETUP_PIN="2468" TRAVELWAN_BIN="$STWC1" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
-  TRAVELROUTER_STATUS_PORT=18098 python3 "$A/status-server.py" >>"$B/srv-c1.log" 2>&1 &
+  TRAVELROUTER_STATUS_PORT=18098 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >>"$B/srv-c1.log" 2>&1 &
   C1PID=$!
   wait_healthy 18098 || true
 }
@@ -1238,6 +1238,152 @@ pkill -f status-server.py 2>/dev/null; sleep 0.3
 grep -q '2468' "$C1LOG" && bad "5ac PIN leaked into throttle transcript (forbidden)" \
   || ok "5ac transcript free of PIN"
 echo "5ac throttle transcript: $C1LOG"
+
+# --- (5ad) state.json escape + bind-host allowlist + seam (C2) ----------------
+sec "5ad. state.json heredoc escape + bind-host allowlist + seam (C2)"
+B5="$TMP/c2ad"; mkdir -p "$B5/bin" "$B5/etc" "$B5/dnsmasq.d" "$B5/ip-addr" \
+  "$B5/sys/class/net/lo" "$B5/sys/class/net/wlan0/wireless" "$B5/sys/class/net/eth0" \
+  "$B5/sys/devices/platform/scb/usb/1-1/1-1.1" "$B5/sys/devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1"
+# wan-select seams (§5b idiom): eth0 = USB WAN (drives the NMCLI seam), wlan0
+# = AP (LAN). WAN_SSID via nmcli is line-grepped, so a bare LF cannot survive
+# into the heredoc value; the control-char path is exercised with TAB + CR.
+ln -sf "$B5/sys/devices/platform/scb/usb/1-1/1-1.1" "$B5/sys/class/net/eth0/device"
+ln -sf "$B5/sys/devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1" "$B5/sys/class/net/wlan0/device"
+printf '2: wlan0    inet 192.168.50.1/24 brd 192.168.50.255 scope global wlan0\n       valid_lft forever' > "$B5/ip-addr/wlan0"
+printf '2: eth0    inet 10.0.0.2/24 brd 10.0.0.255 scope global eth0\n       valid_lft forever' > "$B5/ip-addr/eth0"
+for t in iw nft rfkill systemctl; do
+  printf '#!/bin/bash\nexit 0\n' > "$B5/bin/$t"
+done
+printf '#!/bin/bash\ndev=""; prev=""; for a in "$@"; do [ "$prev" = dev ] && dev="$a"; prev="$a"; done\nif [ -n "$dev" ] && [ -f %s/ip-addr/"$dev" ]; then cat %s/ip-addr/"$dev"; exit 0; fi\nexit 1\n' "$B5" "$B5" > "$B5/bin/ip"
+# NMCLI stub emits a hostile WAN_SSID on one grep-survivable line: quote,
+# backslash, TAB, CR, and an injected "lan_ip" needle -- the real attack shape.
+cat > "$B5/bin/nmcli" <<'NMEOF'
+#!/bin/bash
+ssid=$'Evil"lan_ip":"6.6.6.6 \\Quo"ted\t5GHz\rHostel'
+printf 'GENERAL.CONNECTION:%s\n' "$ssid"
+exit 0
+NMEOF
+chmod +x "$B5"/bin/*
+run_wan_c2() { SYSFS_ROOT="$B5/sys" TRAVELROUTER_WAN_PREFER=ethernet TRAVELROUTER_STATE_FILE="$B5/c2-state.json" \
+  NFTABLES_TARGET="$B5/etc/nftables.conf" DNSMASQ_CONF_DIR="$B5/dnsmasq.d" PATH="$B5/bin:$PATH" ASSETS="$A" \
+  bash "$A/wan-select.sh" 2>&1; }
+run_wan_c2 >/dev/null 2>&1
+# attack shape really entered the pipeline (nmcli stub emitted the needle)
+hostile_input=$("$B5/bin/nmcli" -t -f GENERAL.CONNECTION dev show eth0 2>/dev/null)
+grep -qF 'Evil"lan_ip":"6.6.6.6' <<<"$hostile_input" \
+  && ok "5ad hostile SSID with injected lan_ip needle entered the pipeline" \
+  || bad "5ad stub did not emit the needle"
+# (A1) the heredoc render must be VALID JSON despite the hostile SSID
+python3 -m json.tool "$B5/c2-state.json" >"$B5/c2-pretty.json" 2>"$B5/c2-parse.err" \
+  && ok "5ad hostile-SSID state.json parses (json.tool)" || bad "5ad json.tool: $(cat "$B5/c2-parse.err")"
+# (A2) first-match parsers must find the REAL lan_ip, not the injected needle
+real_ip=$(python3 -c 'import json;print(json.load(open("'"$B5"'/c2-state.json"))["lan_ip"])')
+[[ "$real_ip" == "192.168.50.1" ]] && ok "5ad json.load lan_ip=192.168.50.1 (real)" || bad "5ad json.load lan_ip=$real_ip"
+# status-server's own first-match parser against the raw file (the real one,
+# imported -- no hand-rolled replica)
+c2_first_match=$(python3 - "$B5/c2-state.json" "$A" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location(
+    "c2statusfm", sys.argv[2] + "/status-server.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod._json_field(open(sys.argv[1]).read(), "lan_ip"))
+PYEOF
+)
+[[ "$c2_first_match" == "192.168.50.1" ]] && ok "5ad _json_field first-match lan_ip=192.168.50.1 (not injected)" \
+  || bad "5ad _json_field first-match lan_ip=$c2_first_match"
+# raw first-match awk idiom (what legacy parsers do against the raw file)
+raw_first=$(grep -o '"lan_ip"[[:space:]]*:[[:space:]]*"[^"]*"' "$B5/c2-state.json" | head -1 \
+  | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
+[[ "$raw_first" == "192.168.50.1" ]] && ok "5ad raw-awk first-match lan_ip=192.168.50.1" \
+  || bad "5ad raw-awk first-match lan_ip=$raw_first"
+# escaped SSID survives (not truncated/rejected) -- parsed value must equal
+# the input minus control chars (TAB/CR dropped), quotes+backslash intact
+python3 - "$B5" <<'PYEOF' && ok "5ad SSID round-trips escaped (no truncation/rejection)" \
+  || bad "5ad SSID round-trip mismatch"
+import json
+import os
+import sys
+
+state = json.load(open(os.path.join(sys.argv[1], "c2-state.json")))
+expected = 'Evil"lan_ip":"6.6.6.6 \\Quo"ted5GHzHostel'
+if state["wan_ssid"] == expected:
+    print("SSID OK: %r" % state["wan_ssid"])
+    sys.exit(0)
+print("SSID BAD: %r != %r" % (state["wan_ssid"], expected))
+sys.exit(1)
+PYEOF
+# (B) resolve_host_and_port matrix: bad lan_ip -> DEFAULT_HOST fallback;
+# legit RFC1918 -> kept; seam overrides regardless of state lan_ip.
+c2_matrix() {
+python3 - "$B5" "$A" <<'PYEOF'
+import importlib.util
+import json
+import os
+import sys
+
+b5, adir = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location(
+    "c2status", os.path.join(adir, "status-server.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+cases = ["0.0.0.0", "127.0.0.1", "8.8.8.8", "evil", "169.254.1.1",
+         "255.255.255.255"]
+for val in cases:
+    with open(os.path.join(b5, "m-state.json"), "w") as fh:
+        fh.write('{"mode":"routed","wan_if":"eth0","lan_ip":"%s"}' % val)
+    os.environ["TRAVELROUTER_STATE_FILE"] = os.path.join(b5, "m-state.json")
+    os.environ.pop("TRAVELROUTER_BIND_HOST", None)
+    host, _ = mod.resolve_host_and_port()
+    tag = "fallback" if host == mod.DEFAULT_HOST else "KEPT"
+    print("FALLBACK %s -> %s [%s]" % (val, host, tag))
+for val in ["192.168.50.9", "10.0.0.5"]:
+    with open(os.path.join(b5, "m-state.json"), "w") as fh:
+        fh.write('{"mode":"routed","wan_if":"eth0","lan_ip":"%s"}' % val)
+    host, _ = mod.resolve_host_and_port()
+    tag = "accepted" if host == val else "FELLBACK"
+    print("ACCEPT %s -> %s [%s]" % (val, host, tag))
+os.environ["TRAVELROUTER_BIND_HOST"] = "127.0.0.1"
+with open(os.path.join(b5, "m-state.json"), "w") as fh:
+    fh.write('{"mode":"routed","wan_if":"eth0","lan_ip":"0.0.0.0"}')
+host, _ = mod.resolve_host_and_port()
+tag = "seam" if host == "127.0.0.1" else "SEAM-FAILED"
+print("SEAM 0.0.0.0-state -> %s [%s]" % (host, tag))
+os.environ.pop("TRAVELROUTER_BIND_HOST", None)
+PYEOF
+}
+c2_matrix_out=$(c2_matrix)
+echo "$c2_matrix_out"
+for c in "0.0.0.0" "127.0.0.1" "8.8.8.8" "evil" "169.254.1.1" "255.255.255.255"; do
+  line=$(printf '%s\n' "$c2_matrix_out" | grep -F "FALLBACK $c ->" || true)
+  [[ "$line" == *"[fallback]"* ]] \
+    && ok "5ad lan_ip=$c -> DEFAULT_HOST fallback" || bad "5ad lan_ip=$c: $line"
+done
+for c in "192.168.50.9" "10.0.0.5"; do
+  line=$(printf '%s\n' "$c2_matrix_out" | grep -F "ACCEPT $c ->" || true)
+  [[ "$line" == *"[accepted]"* ]] \
+    && ok "5ad lan_ip=$c accepted (private unicast)" || bad "5ad lan_ip=$c: $line"
+done
+line=$(printf '%s\n' "$c2_matrix_out" | grep -F "SEAM 0.0.0.0-state ->" || true)
+[[ "$line" == *"[seam]"* ]] && ok "5ad TRAVELROUTER_BIND_HOST=127.0.0.1 overrides rejected state lan_ip" \
+  || bad "5ad seam: $line"
+# seam must NOT honor garbage/non-IPv4 values (falls through to state path)
+seam_garbage=$(TRAVELROUTER_STATE_FILE="$B5/m-state.json" TRAVELROUTER_BIND_HOST="not-an-ip" \
+  python3 - "$A" <<'PYEOF'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location(
+    "c2status", os.path.join(sys.argv[1], "status-server.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.resolve_host_and_port()[0])
+PYEOF
+)
+[[ "$seam_garbage" == "192.168.50.1" ]] && ok "5ad garbage seam value ignored (state lan_ip 0.0.0.0 still falls back)" \
+  || bad "5ad garbage seam -> $seam_garbage"
+echo "5ad hostile render: $(head -c 300 "$B5/c2-state.json")"
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"

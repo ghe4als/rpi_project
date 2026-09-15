@@ -235,6 +235,22 @@ fi
 run_or_log "$NFT" -f "$NFTABLES_TARGET"
 rm -f "$RENDER_TMP"
 
+# json_escape VAL : make a shell string safe to interpolate into a JSON
+# double-quoted string in the state.json heredoc. ORDER IS LOAD-BEARING:
+# backslash-then-quote. Escaping the quote first would turn the NEW backslash
+# into \\ on the second pass, double-escaping and corrupting the JSON.
+# Control characters (all < 0x20, incl. tab/lf/cr in a hostile SSID) are
+# dropped, never truncated or rejected: a 32-byte SSID with a quote must still
+# appear (escaped) so the legacy first-match parsers keep finding real fields
+# after it.
+json_escape() {
+  local v="${1:-}"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  v=$(printf '%s' "$v" | LC_ALL=C tr -d '\001-\037')
+  printf '%s' "$v"
+}
+
 # --- (5) Emit state.json + try-restart status server on LAN IP change --------
 PREV_LAN=$(read_state_json lan_ip)
 
@@ -252,20 +268,31 @@ LAN_IP="${LAN_IP:-${TRAVELROUTER_LAN_CIDR%%/*}}"
 
 STATE_MODE="standalone"
 [[ -n "$WAN_IF" ]] && STATE_MODE="routed"
+E_STATE_MODE="$STATE_MODE"
+
+# Escape EVERY interpolated value defensively (hostile WAN_SSID is the
+# realistic attacker-controlled one; the rest come from the box).
+E_WAN_IF=$(json_escape "$WAN_IF")
+E_WAN_SSID=$(json_escape "$WAN_SSID")
+E_WAN_IP=$(json_escape "$WAN_IP")
+E_LAN_IP=$(json_escape "$LAN_IP")
+E_LAN_IF=$(json_escape "$LAN_IF")
+E_WAN_PREFER=$(json_escape "$TRAVELROUTER_WAN_PREFER")
+E_TS=$(json_escape "$TS")
 
 # Atomic write: tmp file in the SAME directory (same filesystem) + mv, so a
 # crash mid-write can never leave a truncated state.json behind.
 STATE_TMP="${TRAVELROUTER_STATE_FILE}.tmp.$$"
 cat >"$STATE_TMP" <<EOF
 {
-  "mode": "${STATE_MODE}",
-  "wan_if": "${WAN_IF}",
-  "wan_ssid": "${WAN_SSID}",
-  "wan_ip": "${WAN_IP}",
-  "lan_ip": "${LAN_IP}",
-  "ap_interface": "${LAN_IF}",
-  "wan_pref": "${TRAVELROUTER_WAN_PREFER}",
-  "timestamp": "${TS}"
+  "mode": "${E_STATE_MODE}",
+  "wan_if": "${E_WAN_IF}",
+  "wan_ssid": "${E_WAN_SSID}",
+  "wan_ip": "${E_WAN_IP}",
+  "lan_ip": "${E_LAN_IP}",
+  "ap_interface": "${E_LAN_IF}",
+  "wan_pref": "${E_WAN_PREFER}",
+  "timestamp": "${E_TS}"
 }
 EOF
 mv -f "$STATE_TMP" "$TRAVELROUTER_STATE_FILE"

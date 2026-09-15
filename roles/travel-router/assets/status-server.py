@@ -26,6 +26,7 @@ stale; port comes from TRAVELROUTER_STATUS_PORT (default 80).
 """
 
 import hmac
+import ipaddress
 import json
 import os
 import subprocess
@@ -576,9 +577,38 @@ _make_handler()
 
 
 def resolve_host_and_port():
+    # C2 test-only bind seam: TRAVELROUTER_BIND_HOST (TEST-ONLY, never set in
+    # the systemd unit) forces the bind address and IGNORES the state-file
+    # lan_ip. Permits loopback deliberately -- that is its whole purpose (the
+    # 255-assertion suite binds 127.0.0.1), so it does NOT reuse the strict
+    # lan_ip allowlist below (loopback is rejected there by design). Any other
+    # non-IPv4/multicast/reserved/unspecified value falls through to the
+    # state-file path instead of being honored.
+    seam = os.environ.get("TRAVELROUTER_BIND_HOST")
+    if seam:
+        try:
+            sv = ipaddress.ip_address(seam)
+            if (sv.version == 4 and not sv.is_unspecified
+                    and not sv.is_multicast and not sv.is_reserved):
+                return str(sv), _resolve_port()
+        except ValueError:
+            pass
     host = _state_field("lan_ip")
-    if not host:
+    try:
+        v = ipaddress.ip_address(host) if host else None
+    except ValueError:
+        v = None
+    if (v is None
+            or v.version != 4
+            or not v.is_private
+            or v.is_loopback or v.is_link_local or v.is_multicast
+            or v.is_reserved or v.is_unspecified
+            or str(v) == "255.255.255.255"):
         host = DEFAULT_HOST
+    return host, _resolve_port()
+
+
+def _resolve_port():
     port = 80
     port_env = os.environ.get("TRAVELROUTER_STATUS_PORT")
     if port_env:
@@ -586,7 +616,7 @@ def resolve_host_and_port():
             port = int(port_env)
         except ValueError:
             port = 80
-    return host, port
+    return port
 
 
 def main():
