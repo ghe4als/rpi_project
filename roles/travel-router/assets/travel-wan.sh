@@ -33,6 +33,7 @@ TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.jso
 SUDO="${SUDO:-sudo}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PSK_FILE="${TRAVELROUTER_PSK_FILE:-/etc/rpi-project/travel-router/known-psks}"
+AP_SSID_FILE="${TRAVELROUTER_AP_SSID_FILE:-/etc/rpi-project/travel-router/ap-ssid}"
 
 # --- PSK candidate store (wifi-ui-known-psk wave) -----------------------------
 # Schema: one row per line, 3 TAB-separated fields:
@@ -176,6 +177,54 @@ psk_collect() {
     return 0
 }
 
+# Upsert one DEFAULT candidate (d-row). Same contract as psk_store_upsert:
+# rc 0 = stored/dedup/dry-run, 1 = validation reject, 2 = write failure.
+# Exact-row dedup (no dupes); global cap 32 d-rows, oldest evicted.
+psk_store_upsert_default() {
+    local psk="$1"
+    psk_field_ok "$psk" || return 1
+    local row="d$PSK_TAB$PSK_TAB$psk"
+    local rows=() r
+    if [[ -f "$PSK_FILE" ]]; then
+        while IFS= read -r r || [[ -n "$r" ]]; do
+            [[ -n "$r" ]] || continue
+            psk_row_ok "$r" || continue
+            [[ "$r" == "$row" ]] && return 0
+            rows[${#rows[@]}]="$r"
+        done < "$PSK_FILE"
+    fi
+    rows[${#rows[@]}]="$row"
+    local ntot=0 r2 out=() drop
+    for r2 in ${rows[@]+"${rows[@]}"}; do
+        [[ "$r2" == "d$PSK_TAB$PSK_TAB"* ]] && ntot=$((ntot+1))
+    done
+    drop=$((ntot-32)); [[ "$drop" -lt 0 ]] && drop=0
+    for r2 in ${rows[@]+"${rows[@]}"}; do
+        if [[ "$drop" -gt 0 && "$r2" == "d$PSK_TAB$PSK_TAB"* ]]; then
+            drop=$((drop-1)); continue
+        fi
+        out[${#out[@]}]="$r2"
+    done
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "psk store: dry-run: would record default candidate"
+        return 0
+    fi
+    local dir="." tmp
+    case "$PSK_FILE" in */*) dir="${PSK_FILE%/*}" ;; esac
+    tmp="$dir/.known-psks.$$"
+    if ! { for r2 in ${out[@]+"${out[@]}"}; do printf '%s\n' "$r2"; done; } > "$tmp" 2>/dev/null; then
+        log "psk store: cannot write '$dir' (store unchanged)"
+        return 2
+    fi
+    chmod 0600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$PSK_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log "psk store: cannot replace '$PSK_FILE' (store unchanged)"
+        return 2
+    fi
+    return 0
+}
+
 # --- helpers ---------------------------------------------------------------
 
 # Read a JSON string field from the state file (the one wan-select writes).
@@ -204,6 +253,10 @@ Usage:
   travel-wan forget <SSID>                delete a saved hotel profile
   travel-wan known                       list saved wifi networks (NM profiles)
   travel-wan collect <SSID> <PSK>        record a PSK candidate for try-psks
+  travel-wan psks-add <SSID> <PSK>       record a PSK candidate (setup API)
+  travel-wan psks-add-default <PSK>      record a default PSK candidate
+  travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
+  travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
@@ -229,7 +282,17 @@ cmd_scan() {
     log "scanning WiFi on '${if_name}' ..."
     # stderr (nmcli warnings) must NOT become a row: it flows to our stderr
     # (status-server routes it to the envelope `log` field), never into sort.
-    "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" | sort -t: -k2 -nr
+    # setup-v2 M3: rows whose SSID equals the AP's own SSID are dropped (the
+    # WAN radio can see our own travel AP; connecting to it would be a trap).
+    # Missing/empty AP_SSID_FILE -> no filtering (never an error).
+    local scan_apssid=""
+    [[ -s "$AP_SSID_FILE" ]] && scan_apssid="$(head -1 "$AP_SSID_FILE" 2>/dev/null || true)"
+    if [[ -n "$scan_apssid" ]]; then
+        "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" \
+            | grep -vF "${scan_apssid}:" | sort -t: -k2 -nr
+    else
+        "$NMCLI" -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$if_name" | sort -t: -k2 -nr
+    fi
 }
 
 cmd_connect() {
@@ -313,6 +376,102 @@ cmd_collect() {
     return 0
 }
 
+# --- setup-v2 M5: runtime PSK-store management --------------------------------
+# psks-add / psks-add-default / psks-list / psks-del operate on the same
+# 0600 store as collect/try-psks. No sudo (unchanged posture: SSH callers
+# run as pi and degrade with a clear note when the store is root-owned).
+cmd_psks_add() {
+    local ssid="${1:-}"
+    local psk="${2:-}"
+    if [[ -z "$ssid" || -z "$psk" ]]; then
+        log "psks-add: SSID and PSK are required"
+        usage
+        return 2
+    fi
+    local rc=0
+    psk_store_upsert "$ssid" "$psk" || rc=$?
+    case "$rc" in
+        0) log "psk store: recorded candidate for '${ssid}'" ;;
+        1) log "psk store: rejected candidate for '${ssid}' (SSID/PSK must not contain TAB/CR/LF)" ;;
+        2) log "psk store: write failed (see stderr above)" ;;
+    esac
+    [[ "$rc" -eq 0 ]] || return 1
+    return 0
+}
+
+cmd_psks_add_default() {
+    local psk="${1:-}"
+    if [[ -z "$psk" ]]; then
+        log "psks-add-default: PSK is required"
+        usage
+        return 2
+    fi
+    local rc=0
+    psk_store_upsert_default "$psk" || rc=$?
+    case "$rc" in
+        0) log "psk store: recorded default candidate" ;;
+        1) log "psk store: rejected default candidate (PSK must not contain TAB/CR/LF)" ;;
+        2) log "psk store: write failed (see stderr above)" ;;
+    esac
+    [[ "$rc" -eq 0 ]] || return 1
+    return 0
+}
+
+cmd_psks_list() {
+    # Prints every valid row as TYPE<TAB>SSID<TAB>PSK (d-row SSID column
+    # empty). Root-only surface: the store is 0600 root; a non-root caller
+    # degrades with rc 1 (never a crash).
+    if [[ ! -r "$PSK_FILE" ]]; then
+        log "psks-list: store '$PSK_FILE' missing or not readable (root-owned 0600; run as root or via the setup API)"
+        return 1
+    fi
+    local r
+    while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        psk_row_ok "$r" || continue
+        printf '%s\n' "$r"
+    done < "$PSK_FILE"
+    return 0
+}
+
+cmd_psks_del() {
+    local n="${1:-}"
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || [[ "$n" -lt 1 ]]; then
+        log "psks-del: a 1-based row index from 'psks-list' is required"
+        usage
+        return 2
+    fi
+    if [[ ! -r "$PSK_FILE" ]]; then
+        log "psks-del: store '$PSK_FILE' missing or not readable (root-owned 0600; run as root or via the setup API)"
+        return 1
+    fi
+    local rows=() r keep=0
+    while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        psk_row_ok "$r" || continue
+        rows[${#rows[@]}]="$r"
+    done < "$PSK_FILE"
+    if [[ "$n" -gt ${#rows[@]} ]]; then
+        log "psks-del: index ${n} out of range (store has ${#rows[@]} rows; run 'travel-wan psks-list')"
+        return 1
+    fi
+    local dir="." tmp
+    case "$PSK_FILE" in */*) dir="${PSK_FILE%/*}" ;; esac
+    tmp="$dir/.known-psks.$$"
+    for r in ${rows[@]+"${rows[@]}"}; do
+        keep=$((keep+1))
+        [[ "$keep" == "$n" ]] && continue
+        printf '%s\n' "$r"
+    done > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "psks-del: cannot write '$dir'"; return 2; }
+    chmod 0600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$PSK_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log "psks-del: cannot replace '$PSK_FILE' (store unchanged)"
+        return 2
+    fi
+    return 0
+}
+
 # try-psks (M4): probe each stored candidate for SSID (SSID s-rows in file
 # order, then d-row defaults) via a throwaway probe profile. Reserved con-name
 # `tr-probe` (autoconnect no) is deleted before AND after every attempt, so it
@@ -388,7 +547,10 @@ cmd_known() {
         type="${rest##*:}"
         name="${rest%:*}"
         [[ "$type" == "802-11-wireless" ]] || continue
-        [[ "$name" == "tr-probe" ]] && continue
+        # setup-v2 M2: boilerplate profiles never belong in the known list —
+        # the reserved probe (tr-probe) and the Pi Imager helper's seed profile
+        # (preconfigured) are dropped before any rendering.
+        [[ "$name" == "tr-probe" || "$name" == "preconfigured" ]] && continue
         # Unescape nmcli terse escaping (\\ -> \, \: -> :) in NAME.
         nameu=""
         while [[ "$name" == *'\'* ]]; do
@@ -499,6 +661,18 @@ main() {
             ;;
         collect)
             cmd_collect "$@"
+            ;;
+        psks-add)
+            cmd_psks_add "${1:-}" "${2:-}"
+            ;;
+        psks-add-default)
+            cmd_psks_add_default "${1:-}"
+            ;;
+        psks-list)
+            cmd_psks_list
+            ;;
+        psks-del)
+            cmd_psks_del "${1:-}"
             ;;
         try-psks)
             cmd_try_psks "${1:-}"
