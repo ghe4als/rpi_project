@@ -899,7 +899,6 @@ document.getElementById("ap-save").addEventListener("click", function () {
   }).catch(function (e) { apMsg(String(e.message || e), "warn"); });
 });
 
-function apiWrite(path, extra) {
 document.getElementById("pm-add").addEventListener("click", function () {
   var psk = document.getElementById("pm-psk").value;
   if (!psk) { setMsg("pskmanage-msg", "enter a password to add", "warn"); return; }

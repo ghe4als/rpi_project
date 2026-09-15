@@ -473,10 +473,10 @@ class StatusHandler(BaseHTTPRequestHandler):
                         self._send(400, json.dumps({"error": "apconfig"}), "application/json")
                         return
                 args = ["ap-apply"]
-                if ssid is not None:
-                    args.append(ssid)
-                if psk is not None:
-                    args.append(psk)
+                # Always 2 args in fixed slots: empty string = "keep current"
+                # (a psk-only change must not land in the SSID slot).
+                args.append(ssid if ssid is not None else "")
+                args.append(psk if psk is not None else "")
                 rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
             elif path == "/api/wan/disconnect":
                 rc, out, err = self._run_tool(["disconnect"], API_QUICK_TIMEOUT)

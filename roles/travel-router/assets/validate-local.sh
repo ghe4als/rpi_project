@@ -18,6 +18,19 @@ ok()   { PASS=$((PASS+1)); echo "  [PASS] $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "  [FAIL] $*"; }
 sec()  { echo; echo "### $*"; }
 
+# wait_healthy PORT [tries]: poll /health until the live server responds
+# (fixed sleeps race slow binds — §5t/§5w flaked at ~1/5 on code=000).
+wait_healthy() {
+  local port="$1" i=0
+  for i in $(seq 1 20); do
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" 2>/dev/null)" == "200" ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 # --- (1) syntax -------------------------------------------------------------
 sec "1. syntax"
 for f in "$ROOT"/roles/travel-router/*.sh "$ROOT"/roles/travel-router/assets/*.sh "$ROOT"/roles/travel-router/assets/validate-local.sh; do
@@ -282,6 +295,7 @@ TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_ST
   python3 "$A/status-server.py" >"$B/srv.log" 2>&1 &
 SPID=$!
 sleep 1.5
+wait_healthy 18080 || true
 sc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health 2>/dev/null)
 sj=$(curl -s http://127.0.0.1:18080/status 2>/dev/null)
 sp=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18080/status 2>/dev/null)
@@ -309,6 +323,7 @@ TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.js
   python3 "$A/status-server.py" >"$B/sfb.log" 2>&1 &
 SPID=$!
 sleep 1.5
+wait_healthy 18081 || true
 sj=$(curl -s http://127.0.0.1:18081/status 2>/dev/null)
 echo "$sj" | grep -q '"mode"' && echo "$sj" | grep -q '"lan_ip"' && ok "fallback payload carries mode/lan_ip" || bad "fallback: $sj"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
@@ -331,6 +346,7 @@ start_srv() { # pin -> starts server on 18090 with TRAVELROUTER_SETUP_PIN=$1
   TRAVELROUTER_SETUP_PIN="$1" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_STATE" \
     TRAVELROUTER_STATUS_PORT=18090 python3 "$A/status-server.py" >"$B/srv-h01.log" 2>&1 &
   SPID=$!; sleep 1.5
+  wait_healthy 18090 || true
 }
 stop_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; : > "$B/tw-args.log" 2>/dev/null; }
 
@@ -386,6 +402,7 @@ PORTAL_START() {
   TRAVELROUTER_STATUS_PORT=18091 TRAVELROUTER_PORTAL_CONF="$B/portal-active.conf" \
     python3 "$A/status-server.py" >"$B/srv-h04.log" 2>&1 &
   SPID=$!; sleep 1.5
+  wait_healthy 18091 || true
 }
 PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
 PORTAL_START
@@ -399,6 +416,7 @@ TRAVELROUTER_PORTAL_CONF="$B/does-not-exist.conf" TRAVELWAN_BIN="$STW" \
   TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18092 \
   python3 "$A/status-server.py" >"$B/srv-h04b.log" 2>&1 &
 SPID2=$!; sleep 1.5
+wait_healthy 18092 || true
 r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18092/generate_204 2>/dev/null)
 kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null
 [[ "$r" == "404" ]] && ok "R2 inactive drop-in -> no redirect (404)" || bad "R2 code=$r (stale-cache passthrough wrong)"
@@ -441,6 +459,7 @@ PORTAL_START() {
   TRAVELROUTER_SETUP_PIN="2468" TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$SRV_PIN_STATE" \
   TRAVELROUTER_STATUS_PORT=18094 python3 "$A/status-server.py" >"$B/srv-h05.log" 2>&1 &
   SPID=$!; sleep 1.5
+  wait_healthy 18094 || true
 }
 PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
 PORTAL_START
@@ -677,6 +696,7 @@ start_known_srv() { # pin -> server on 18095 with TRAVELWAN_PSK_STORE fixture
   TRAVELWAN_PSK_STORE="$TRAVELWAN_PSK_STORE" \
   TRAVELROUTER_STATUS_PORT=18095 python3 "$A/status-server.py" >"$B/srv-m8g.log" 2>&1 &
   SPID=$!; sleep 1.5
+  wait_healthy 18095 || true
 }
 stop_known_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; sleep 0.3; }
 # gate matrix on POST /api/wan/psks with NO pin in env -> 403
@@ -842,6 +862,7 @@ printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127
 TRAVELROUTER_SETUP_PIN="1234" TRAVELWAN_BIN="$STWV2" TRAVELROUTER_STATE_FILE="$KNOWN_STATE2" \
   TRAVELROUTER_STATUS_PORT=18096 python3 "$A/status-server.py" >"$B/srv-v2.log" 2>&1 &
 SPID=$!; sleep 1.5
+wait_healthy 18096 || true
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18096/api/wan/psks-manage)
 [[ "$r" == "403" ]] && ok "5w GET psks-manage no X-Pin -> 403" || bad "5w no-pin code=$r (want 403)"
 r=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 1234' http://127.0.0.1:18096/api/wan/psks-manage 2>/dev/null)

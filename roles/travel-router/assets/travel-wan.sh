@@ -512,9 +512,12 @@ cmd_ap_apply() {
     local r_channel="${TRAVELROUTER_AP_CHANNEL:-6}"
     local r_iface="${TRAVELROUTER_AP_INTERFACE:-}"
     [[ -n "$r_ssid" && -n "$r_psk" ]] || { log "ap-apply: current AP SSID/PSK unknown (role.env missing or incomplete)"; return 1; }
-    # Missing optional args keep the current value.
-    [[ -n "$new_ssid" ]] || new_ssid="$r_ssid"
+    # Missing optional args keep the LIVE value: the SSID comes from the
+    # ap-ssid file (updated by every ap-apply), NOT from role.env — otherwise
+    # a psk-only change would silently revert a prior runtime SSID rename.
+    [[ -n "$new_ssid" ]] || { if [[ -s "$AP_SSID_FILE" ]]; then new_ssid="$(head -1 "$AP_SSID_FILE" 2>/dev/null || true)"; else new_ssid="$r_ssid"; fi; }
     [[ -n "$new_psk" ]] || new_psk="$r_psk"
+    [[ -n "$new_ssid" ]] || { log "ap-apply: live AP SSID unknown (ap-ssid file missing)"; return 1; }
     # Locate the template: ASSETS dir next to this script, or the staged copy.
     local tmpl="$AP_TEMPLATE"
     if [[ ! -f "$tmpl" ]]; then
