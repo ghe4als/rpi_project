@@ -349,6 +349,7 @@ sed -e "s|__AP_INTERFACE__|${ap}|g" \
     -e "s|__AP_CHANNEL__|${TRAVELROUTER_AP_CHANNEL:-6}|g" \
     -e "s|__AP_PSK__|${pkey}|g" \
     "$ASSETS/hostapd.conf.tmpl" > "$hostapd_conf"
+chmod 0600 "$hostapd_conf"
 
 dnsmasq_conf="${DRY_RUN_PREFIX}/etc/dnsmasq.d/travel-router.conf"
 sed -e "s|__LAN_INTERFACE__|${ap}|g" \

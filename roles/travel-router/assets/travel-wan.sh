@@ -552,12 +552,14 @@ cmd_ap_apply() {
         -e "s|${m_channel}|${r_channel}|g" \
         -e "s|${m_psk}|${new_psk}|g" \
         "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "ap-apply: cannot render new conf"; return 2; }
+    chmod 0600 "$tmp"
     if ! "$HOSTAPD_BIN" -t "$tmp" >/dev/null 2>&1; then
         rm -f "$tmp"
         log "ap-apply: new hostapd config is invalid (hostapd -t rejected it); nothing changed"
         return 1
     fi
     cp "$AP_CONF" "$AP_CONF.bak" 2>/dev/null || true
+    chmod 0600 "$AP_CONF.bak" 2>/dev/null || true
     if ! mv -f "$tmp" "$AP_CONF" 2>/dev/null; then
         rm -f "$tmp"
         log "ap-apply: cannot replace '$AP_CONF' (conf unchanged)"

@@ -949,6 +949,100 @@ done
 [[ -z "$leak_hits2" ]] && ok "5y no setup-v2 psks leaked into logs/captures" \
   || bad "5y leaks:$leak_hits2"
 
+# --- (5z) hostapd conf file modes (hardening C3) -------------------------------
+sec "5z. hostapd-travel.conf 0600 (install render + ap-apply lifecycle)"
+
+# (1) install.sh render: the rendered conf must land 0600 even under a lax umask.
+c3="$TMP/c3"; mkdir -p "$c3"
+if ( umask 022
+     TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$c3/pfx" TRAVELROUTER_ROLE_ENV="$TMP/role.env" \
+       bash "$ROOT/roles/travel-router/install.sh" >"$c3/install.log" 2>&1 ); then
+  m=$(stat -f%Lp "$c3/pfx/etc/hostapd/hostapd-travel.conf" 2>/dev/null || stat -c%a "$c3/pfx/etc/hostapd/hostapd-travel.conf" 2>/dev/null)
+  [[ "$m" == "600" ]] && ok "5z install render conf 0600 (umask 022)" || bad "5z install conf mode=$m (want 600)"
+else bad "5z install render run exited nonzero"; fi
+# Negative control: a bare render (no chmod) stays 644 under umask 022 — proves
+# the 600 assertion above is load-bearing on this runner, not vacuous.
+( umask 022; sed -e "s|__AP_INTERFACE__|uap0|g" "$A/hostapd.conf.tmpl" >"$c3/bare.conf" )
+m=$(stat -f%Lp "$c3/bare.conf" 2>/dev/null || stat -c%a "$c3/bare.conf" 2>/dev/null)
+[[ "$m" == "644" ]] && ok "5z control: bare render is 644 (assertion not vacuous)" || bad "5z control bare mode=$m (want 644)"
+
+# (2) cmd_ap_apply success path. HOSTAPD_BIN is a stub that stats the candidate
+# conf (and its sibling .bak) DURING hostapd -t — capturing their modes while
+# they exist, before the mv/rm removes them (stale-state guard).
+c3stat="$c3/stat-stub.sh"
+cat > "$c3stat" <<'EOF'
+#!/bin/bash
+# hostapd -t stub: record candidate (and sibling .bak) modes while they exist.
+f="${2:-}"
+[[ -f "$f" ]] && printf 'tmp %s\n' "$(stat -f%Lp "$f" 2>/dev/null || stat -c%a "$f" 2>/dev/null)" >>"$MODELOG"
+ap="${f%.new.*}"
+[[ -f "$ap.bak" ]] && printf 'bak %s\n' "$(stat -f%Lp "$ap.bak" 2>/dev/null || stat -c%a "$ap.bak" 2>/dev/null)" >>"$MODELOG"
+exit 0
+EOF
+chmod +x "$c3stat"
+printf '#!/bin/bash\nexit 0\n' > "$c3/restart-ok.sh";  chmod +x "$c3/restart-ok.sh"
+printf '#!/bin/bash\nexit 1\n' > "$c3/restart-fail.sh"; chmod +x "$c3/restart-fail.sh"
+# sudo passthrough: execs its args so the SYSTEMCTL stub actually runs
+# (bare `true` ignores argv — the §5o suite uses the same sudo-stub idiom).
+printf '#!/bin/bash\nexec "$@"\n' > "$c3/sudo.sh"; chmod +x "$c3/sudo.sh"
+# The restart stub stats $AP_CONF.bak DURING its lifetime: at restart time the
+# cp+chmod have run and the rm happens only after a successful restart, so a
+# logged `bak 600` proves the unconditional .bak chmod (stale-state guard).
+mk_restart_stub() {  # $1 = stub path, $2 = exit code
+  { printf '#!/bin/bash\n'
+    printf 'ap="${TRAVELROUTER_AP_CONF:?}"\n'
+    printf '[[ -f "$ap.bak" ]] && printf '"'"'bak %%s\\n'"'"' "$(stat -f%%Lp "$ap.bak" 2>/dev/null || stat -c%%a "$ap.bak" 2>/dev/null)" >>"$MODELOG"\n'
+    printf 'exit %s\n' "$2"
+  } > "$1"; chmod +x "$1"
+}
+mk_restart_stub "$c3/restart-ok.sh" 0
+mk_restart_stub "$c3/restart-fail.sh" 1
+mkdir -p "$c3/ap-etc"
+# Fixture live conf is deliberately 0644 so the 600 asserts below prove the
+# chmods ran (a 0644->0644 no-op would pass vacuously).
+printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
+chmod 0644 "$c3/ap-etc/hostapd-travel.conf"
+printf 'OldNet\n' > "$c3/ap-ssid"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\n' > "$c3/role.env"
+c3aprun() {  # $1 = MODELOG target, $2 = SYSTEMCTL stub
+  ( umask 022
+    export TRAVELROUTER_AP_CONF="$c3/ap-etc/hostapd-travel.conf"
+    export TRAVELROUTER_AP_TEMPLATE="$A/hostapd.conf.tmpl"
+    export TRAVELROUTER_HOSTAPD_BIN="$c3stat"
+    export TRAVELROUTER_AP_SSID_FILE="$c3/ap-ssid"
+    export SUDO="$c3/sudo.sh" SYSTEMCTL="$2" MODELOG="$1"
+    export TRAVELROUTER_AP_SSID=TestNet TRAVELROUTER_AP_PSK=TestPass123 TRAVELROUTER_AP_INTERFACE=uap0
+    set -- ap-apply NewNet NewPass456
+    source "$A/travel-wan.sh"
+  )
+}
+: > "$c3/modes1.log"
+c3aprun "$c3/modes1.log" "$c3/restart-ok.sh" >"$c3/ap1.out" 2>"$c3/ap1.err"
+rc=$?
+[[ $rc -eq 0 ]] && ok "5z ap-apply success rc=0" || bad "5z ap-apply rc=$rc (want 0)"
+grep -q '^tmp 600$' "$c3/modes1.log" \
+  && ok "5z rendered tmp conf was 0600 while alive (hostapd -t stat)" \
+  || bad "5z tmp conf mode during life not 600: $(tr '\n' ' ' <"$c3/modes1.log" 2>/dev/null)"
+grep -q '^bak 600$' "$c3/modes1.log" \
+  && ok "5z .bak was 0600 while it existed (stub stat during lifetime)" \
+  || bad "5z .bak mode during life not 600: $(tr '\n' ' ' <"$c3/modes1.log" 2>/dev/null)"
+m=$(stat -f%Lp "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null || stat -c%a "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null)
+[[ "$m" == "600" ]] && ok "5z installed conf 0600 after mv (644 fixture overwritten)" || bad "5z final conf mode=$m (want 600)"
+[[ ! -e "$c3/ap-etc/hostapd-travel.conf.bak" ]] && ok "5z .bak removed on success path" || bad "5z .bak still present on success"
+m=$(stat -f%Lp "$c3/ap-ssid" 2>/dev/null || stat -c%a "$c3/ap-ssid" 2>/dev/null)
+[[ "$m" == "600" ]] && ok "5z ap-ssid file stays 0600" || bad "5z ap-ssid mode=$m (want 600)"
+
+# (3) restart-failure path: the 0600 .bak is mv'd back over the conf — the
+# restored conf must be 0600 (proves the .bak chmod is unconditional).
+: > "$c3/modes2.log"
+printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
+chmod 0644 "$c3/ap-etc/hostapd-travel.conf"
+rc=0
+c3aprun "$c3/modes2.log" "$c3/restart-fail.sh" >"$c3/ap2.out" 2>"$c3/ap2.err" || rc=$?
+[[ $rc -eq 1 ]] && ok "5z ap-apply restart-fail rc=1" || bad "5z fail path rc=$rc (want 1)"
+m=$(stat -f%Lp "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null || stat -c%a "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null)
+[[ "$m" == "600" ]] && ok "5z restored conf 0600 (bak chmod unconditional)" || bad "5z restored conf mode=$m (want 600)"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
