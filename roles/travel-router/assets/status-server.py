@@ -230,12 +230,14 @@ setInterval(refresh, 4000);
 class StatusHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra_headers=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        for h, v in (extra_headers or []):
+            self.send_header(h, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -384,23 +386,33 @@ class StatusHandler(BaseHTTPRequestHandler):
         err = [l for l in (proc.stderr or "").splitlines() if l.strip()]
         return proc.returncode, out, err
 
-    def _api_response(self, rc, out, err, http_ok=200):
+    def _api_response(self, rc, out, err, http_ok=200, extra_headers=None):
         """Standard envelope. PSKs never pass through here (travel-wan never
         echoes them; stderr from our own wrappers carries no PSK either)."""
         if rc is None:
-            self._send(504, json.dumps({"error": "timeout"}), "application/json")
+            self._send(504, json.dumps({"error": "timeout"}), "application/json",
+                       extra_headers=extra_headers)
             return
         self._send(200, json.dumps({"ok": rc == 0, "rc": rc, "lines": out, "log": err}),
-                   "application/json")
+                   "application/json", extra_headers=extra_headers)
 
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/wan/scan" or path == "/api/wan/status":
+            # These branches never read their request body, so with
+            # HTTP/1.1 keep-alive an unsent body would be parsed as the
+            # next (smuggled) request on the same socket. Close the
+            # connection instead: header must be emitted between
+            # send_response and end_headers (send_header buffers in call
+            # order), and close_connection=True is defense-in-depth.
             if path == "/api/wan/status":
-                self._send(200, json.dumps(get_status()), "application/json")
+                self._send(200, json.dumps(get_status()), "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
                 return
             rc, out, err = self._run_tool(["scan"], API_SCAN_TIMEOUT)
-            self._api_response(rc, out, err)
+            self._api_response(rc, out, err, extra_headers=[("Connection", "close")])
+            self.close_connection = True
             return
         if not (path == "/api/wan/connect" or path == "/api/wan/psks"
                 or path == "/api/wan/psks-manage"

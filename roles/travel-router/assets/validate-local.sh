@@ -1043,6 +1043,94 @@ c3aprun "$c3/modes2.log" "$c3/restart-fail.sh" >"$c3/ap2.out" 2>"$c3/ap2.err" ||
 m=$(stat -f%Lp "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null || stat -c%a "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null)
 [[ "$m" == "600" ]] && ok "5z restored conf 0600 (bak chmod unconditional)" || bad "5z restored conf mode=$m (want 600)"
 
+# --- (5aa) scan/status POST desync: connection closed, no smuggled request ----
+sec "5aa. scan/status POST closes connection (smuggled keep-alive body not served)"
+# POST /api/wan/scan and /api/wan/status never read their request body; under
+# HTTP/1.1 keep-alive the unsent body would be parsed as the next request on
+# the same socket. The response must carry Connection: close (after the status
+# line) and the server must close the socket so the smuggled request never
+# executes. One socket, one smuggled GET /api/wan/known inside the body.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWT="$B/stub-travel-wan-c4"
+# known) -> the smuggled request, if served, returns this distinctive token.
+# (3 tab-separated fields so the known parser would echo it back.)
+printf '#!/bin/bash\nif [[ "$1" == known ]]; then printf "KNOWN\\tSMUGGLED-KNOWN-TOKEN\\tyes\\n"; exit 0; fi\nprintf "{\\"mode\\":\\"routed\\",\\"internet\\":\\"yes\\"}"\n' > "$STWT"; chmod +x "$STWT"
+TRAVELWAN_BIN="$STWT" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+TRAVELROUTER_STATUS_PORT=18097 python3 "$A/status-server.py" >"$B/srv-c4.log" 2>&1 &
+C4PID=$!
+wait_healthy 18097 || true
+
+python3 - "$B/c4-transcript.txt" <<'PYEOF'
+import socket, sys
+
+transcript = open(sys.argv[1], "w")
+
+def post_scan():
+    # Content-Length says 45; the body IS the smuggled request. The server
+    # must never hand it to the request parser.
+    smuggled = b"GET /api/wan/known HTTP/1.1\r\nHost: x\r\n\r\n"
+    req = (b"POST /api/wan/scan HTTP/1.1\r\nHost: 127.0.0.1:18097\r\n"
+           + b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n\r\n"
+           + smuggled)
+    s = socket.create_connection(("127.0.0.1", 18097), timeout=10)
+    s.sendall(req)
+    first = b""
+    try:
+        while b"\r\n\r\n" not in first:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            first += chunk
+    except socket.timeout:
+        pass
+    # Then attempt to read the NEXT response on the SAME socket.
+    rest = b""
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    except socket.timeout:
+        pass
+    except OSError:
+        pass
+    s.close()
+    return first, rest
+
+first, rest = post_scan()
+transcript.write("--- first response ---\n" + first.decode("utf-8", "replace"))
+transcript.write("--- after scan response (rest of socket) ---\n"
+                 + (rest.decode("utf-8", "replace") if rest else "<EOF: connection closed>"))
+transcript.close()
+
+line1 = first.split(b"\r\n", 1)[0]
+ok_hdr = line1.startswith(b"HTTP/1.") and b" 200 " in line1
+# Status line must come FIRST (Connection header after send_response, not
+# before it): the parsed status line is HTTP/1.x, and Connection appears
+# among the headers after it.
+ok_order = first.startswith(b"HTTP/1.")
+ok_close = b"\r\nConnection: close\r\n" in first
+ok_eof = not (rest.startswith(b"HTTP/") or b"SMUGGLED-KNOWN-TOKEN" in rest)
+if not (ok_hdr and ok_order and ok_close and ok_eof):
+    print("DESYNC-FAIL first=%r rest=%r hdr=%s order=%s close=%s eof=%s"
+          % (first, rest, ok_hdr, ok_order, ok_close, ok_eof))
+    sys.exit(1)
+print("DESYNC-OK")
+PYEOF
+rc=$?
+[[ $rc -eq 0 ]] && ok "5aa scan POST: 200 status line first + Connection: close, socket EOF (smuggled GET not served)" \
+  || bad "5aa desync battery failed rc=$rc (smuggled request may have executed; see $B/c4-transcript.txt)"
+transcript=$(cat "$B/c4-transcript.txt" 2>/dev/null | head -c 400)
+echo "$transcript" | grep -q '^HTTP/1' && ok "5aa transcript captures real socket bytes" \
+  || bad "5aa transcript missing HTTP bytes"
+echo "$transcript" | grep -q 'SMUGGLED-KNOWN-TOKEN' && bad "5aa smuggled GET /api/wan/known WAS served (connection not closed)" \
+  || ok "5aa smuggled request not executed"
+
+kill $C4PID 2>/dev/null; wait $C4PID 2>/dev/null
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
