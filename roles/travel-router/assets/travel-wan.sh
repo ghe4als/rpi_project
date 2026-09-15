@@ -325,6 +325,12 @@ cmd_connect() {
     fi
     if [[ -n "$psk" ]]; then
         log "connecting to '${ssid}' — the network may offer captive-portal auth, in which case finish login from a device ON the travel SSID"
+        # PSK-in-argv accepted risk: nmcli gets the PSK as a command-line argument,
+        # so it is world-readable via /proc/<pid>/cmdline for the duration of this
+        # connect (the status-server write path allows up to API_WRITE_TIMEOUT=90s).
+        # Exposure is local-only: only the `pi` and root accounts exist on the unit,
+        # both already privileged, so no privilege boundary is crossed. Accepted
+        # risk; the proper fix (stdin or NM D-Bus password delivery) is deferred.
         "$SUDO" "$NMCLI" dev wifi connect "$ssid" ifname "$if_name" password "$psk"
     else
         log "connecting to '${ssid}' (open network, no PSK)"
@@ -630,6 +636,12 @@ cmd_try_psks() {
         fi
         idx=$((idx+1))
         "$SUDO" "$NMCLI" connection delete tr-probe >/dev/null 2>&1 || true
+        # PSK-in-argv accepted risk: each candidate PSK is passed as a command-line
+        # argument (`wifi-sec.psk`), so it is world-readable via /proc/<pid>/cmdline
+        # while this probe profile exists (try-psks runs within a 60s wall budget).
+        # Exposure is local-only: only the `pi` and root accounts exist on the unit,
+        # both already privileged, so no privilege boundary is crossed. Accepted
+        # risk; the proper fix (stdin or NM D-Bus password delivery) is deferred.
         if "$SUDO" "$NMCLI" connection add type wifi ifname '*' con-name tr-probe ssid "$ssid" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$cand" connection.autoconnect no >/dev/null 2>&1; then
             if "$SUDO" "$NMCLI" --wait 15 connection up tr-probe >/dev/null 2>&1; then
                 log "try-psks: candidate ${idx}/${total} OK — connected to '${ssid}'"

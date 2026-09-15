@@ -257,6 +257,15 @@ ROLE="travel-router"
    internet flows through the WAN. On the Zero W the first boot is slow
    (ARMv6 + full apt) — wait for the travel SSID before assuming failure.
 
+**Threat model.** The router's management plane (status/setup pages, SSH) is
+only reachable from the private travel AP — nftables drops traffic arriving
+from the WAN side to the router. The setup PIN is the gate against other
+guests joining your travel AP. Saved PSKs sit at rest as 0600 (root-owned)
+on the Pi, but during `connect`/`try-psks` they are transiently visible in
+process arguments (`/proc/<pid>/cmdline`); the only local accounts are `pi`
+and root, both already privileged, so no privilege boundary is crossed today
+— PSK-in-argv accepted risk.
+
 ### First-boot simulation (provisioning WiFi becomes the first WAN)
 
 The provisioning WiFi (`WIFI_SSID`/`WIFI_PSK` from `.env`) does double duty:

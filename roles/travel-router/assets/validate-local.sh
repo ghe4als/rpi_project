@@ -1131,6 +1131,16 @@ echo "$transcript" | grep -q 'SMUGGLED-KNOWN-TOKEN' && bad "5aa smuggled GET /ap
 kill $C4PID 2>/dev/null; wait $C4PID 2>/dev/null
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 
+# --- (5ab) PSK-in-argv accepted-risk documentation -----------------------------
+sec "5ab. PSK-in-argv accepted-risk markers (doc-only, C5)"
+n=$(grep -c 'PSK-in-argv accepted risk' "$A/travel-wan.sh")
+[[ "$n" == "2" ]] && ok "5ab travel-wan.sh has exactly 2 PSK-in-argv accepted-risk markers" \
+  || bad "5ab travel-wan.sh PSK-in-argv marker count=$n (want exactly 2)"
+grep -q 'Threat model' "$ROOT/README.md" \
+  && grep -q 'PSK-in-argv accepted risk' "$ROOT/README.md" \
+  && ok "5ab README travel-router threat-model note present" \
+  || bad "5ab README missing threat-model note or PSK-in-argv marker"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
