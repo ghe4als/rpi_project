@@ -6,19 +6,31 @@ export DEBIAN_FRONTEND=noninteractive
 ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS="$ROLE_DIR/assets"
 
-# Wait for a sane clock before apt. Pi 3/Zero have no RTC, so on first boot the
-# clock starts at the image build date (~1.5y in the past). apt then rejects
-# repo metadata as "not valid yet" and fails. Block until NTP sync (or a
-# plausibly-recent date) so apt accepts the signed Release files.
-echo "[base] waiting for clock/NTP sync before apt"
-for _ in $(seq 1 60); do
+# Wait for a real NTP sync before apt. Pi 3/Zero have no RTC, so on first
+# boot the clock starts at the image build date — possibly a WRONG-but-recent
+# year (e.g. a build from Jun 2026 booted in Sep 2026), which a plain
+# "year >= 2025" fallback would wrongly accept. apt then rejects repo metadata
+# as "not valid yet" and fails. There is no trusted clock source without NTP,
+# so require an actual NTPSynchronized=yes; if it never syncs (e.g. no NTP
+# route at first boot), FAIL the unit rather than run apt on a wrong clock —
+# a failed role-setup stays enabled and is retried on the next boot once NTP
+# is reachable. The wait window is bounded by BASE_NTP_WAIT_SEC (default 120,
+# settable by tests so a no-sync run doesn't sleep the full 2 minutes).
+echo "[base] waiting for NTP sync before apt (bounded; fails if never syncs)"
+wait_sec="${BASE_NTP_WAIT_SEC:-120}"
+# ceil(wait_sec/2) iterations of a 2s sleep per pass
+for _ in $(seq 1 $(((wait_sec + 1) / 2))); do
   if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+    echo "[base] NTP synchronized"
     break
   fi
-  # Fallback sanity check: year >= 2025 means the clock is plausibly correct.
-  [ "$(date +%Y)" -ge 2025 ] && break
   sleep 2
 done
+if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+  echo "[base] ERROR: NTP did not synchronize within the wait window; refusing to run apt on an unverified clock."
+  echo "[base] remediation: ensure the network/upstream allows NTP (udp/123 to the configured servers), then reboot or re-run role-setup."
+  exit 1
+fi
 echo "[base] clock now: $(date)"
 
 echo "[base] apt update"

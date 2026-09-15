@@ -523,6 +523,49 @@ sec "5k. role-setup.service.tmpl ExecStartPost"
 c=$(grep -cF 'ExecStartPost=-/usr/local/bin/rpi-nats-announce setup-complete' "$ROOT/role-setup.service.tmpl")
 [[ "$c" == "1" ]] && ok "tmpl has best-effort announce ExecStartPost (1 hit)" || bad "ExecStartPost hits=$c"
 
+# --- (5k2) role-setup NTP-wait + base clock-refuse (first-boot stale-clock) ---
+sec "5k2. role-setup NTP-wait + base clock gate (first-boot stale clock)"
+# Regression: Pi Zero W has no RTC; at first boot the clock may be a WRONG but
+# recent year (e.g. build dated Jun 2026 booted in Sep 2026). Older base code
+# used a `year >= 2025` fallback that WRONGLY accepts that clock, then apt
+# fails with "Release file is not valid yet". Requirements:
+#   (a) role-setup declares Wants=time-sync.target so systemd actually waits.
+#   (b) base/install.sh requires real NTPSynchronized=yes and FAILS (exit 1)
+#       before apt when NTP never syncs.
+w=$(grep -cE 'Wants=.*time-sync\.target' "$ROOT/role-setup.service.tmpl")
+[[ "$w" == "1" ]] && ok "5k2 tmpl Wants=time-sync.target" || bad "5k2 tmpl Wants=time-sync.target count=$w"
+# Behavioral: with timedatectl faked to report NTPSynchronized=no forever and
+# apt-get faked to leave a marker, base/install.sh must exit nonzero BEFORE
+# running apt (marker must be absent). Proves the >=-year fallback is gone.
+B2B="$TMP/5k2bin"; mkdir -p "$B2B"; B2APT="$TMP/5k2-apt-ran"
+printf '#!/bin/bash\ntimedatectl(){ printf "no\\n"; }\nexport -f timedatectl\n' >/dev/null
+cat > "$B2B/timedatectl" <<'SH'
+#!/bin/bash
+echo "NTPSynchronized=no"
+exit 0
+SH
+cat > "$B2B/apt-get" <<EOF
+#!/bin/bash
+touch "$B2APT"
+exit 0
+EOF
+chmod +x "$B2B/timedatectl" "$B2B/apt-get"
+rm -f "$B2APT"
+(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2.log" 2>&1); rc=$?
+[[ "$rc" -ne 0 ]] && ok "5k2 base refuses when NTP never syncs (rc=$rc)" || bad "5k2 base DID NOT refuse (rc=$rc)"
+[[ ! -f "$B2APT" ]] && ok "5k2 apt not reached when clock unverified" || bad "5k2 apt WAS reached (marker present)"
+# Positive control: with timedatectl reporting NTPSynchronized=yes, base must
+# proceed to apt (marker present, rc=0).
+cat > "$B2B/timedatectl" <<'SH'
+#!/bin/bash
+echo "NTPSynchronized=yes"
+exit 0
+SH
+rm -f "$B2APT"
+(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2-ok.log" 2>&1); rc2=$?
+[[ -f "$B2APT" ]] && ok "5k2 base proceeds to apt when NTP synced" || bad "5k2 base did NOT proceed to apt (rc=$rc2)"
+rm -rf "$B2B" "$B2APT"
+
 # --- (5l) provisioner gating asserts (W01, structural) ------------------------
 sec "5l. provisioner WIFI_* gating (W01)"
 for pf in provision.sh provision-bookworm.sh; do
