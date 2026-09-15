@@ -1239,6 +1239,108 @@ grep -q '2468' "$C1LOG" && bad "5ac PIN leaked into throttle transcript (forbidd
   || ok "5ac transcript free of PIN"
 echo "5ac throttle transcript: $C1LOG"
 
+# --- (5ac2) GET psks-manage X-Pin throttle: oracle closed (hardening C1b) ------
+sec "5ac2. GET psks-manage X-Pin throttle: oracle closed, shared counter (C1b)"
+# The GET /api/wan/psks-manage X-Pin check must feed the SAME per-IP
+# _PIN_FAILS counter as the POST path: >5 wrong GET guesses must block a
+# subsequent correct-PIN POST (429) on the SAME live server. Blocked GETs
+# answer 403 {"error":"pin"} (indistinguishable from wrong-PIN). Correct
+# X-Pin resets the IP entry; no permanent lockout.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWC1B="$B/stub-travel-wan-c1b"
+printf '#!/bin/bash\ncase "$1" in connect|scan|status) printf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"; exit 0;; esac\nexit 0\n' > "$STWC1B"; chmod +x "$STWC1B"
+C1BLOG="$B/c1b-get-throttle.txt"
+: > "$C1BLOG"
+echo "=== C1b GET psks-manage X-Pin throttle transcript ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ===" >> "$C1BLOG"
+c1b_start() { # -> ONE live server for the whole part (shared in-memory counter)
+  TRAVELROUTER_SETUP_PIN="1357" TRAVELWAN_BIN="$STWC1B" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELROUTER_STATUS_PORT=18099 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >>"$B/srv-c1b.log" 2>&1 &
+  C1BPID=$!
+  wait_healthy 18099 || true
+}
+c1b_stop() { kill $C1BPID 2>/dev/null; wait $C1BPID 2>/dev/null; }
+c1b_get() { # pin(or empty) -> one GET /api/wan/psks-manage; echoes the code
+  local code hdr
+  hdr=""
+  [[ -n "$1" ]] && hdr="-H X-Pin:$1"
+  code=$(curl -s -o /dev/null -w '%{http_code}' $hdr http://127.0.0.1:18099/api/wan/psks-manage 2>/dev/null)
+  echo "GET /api/wan/psks-manage pin=<redacted:len=${#1}> -> $code" >> "$C1BLOG"
+  echo "$code"
+}
+c1b_post() { # pin -> one POST /api/wan/connect attempt; echoes the code
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+    -d "{\"pin\":\"$1\",\"ssid\":\"HotelNet\"}" http://127.0.0.1:18099/api/wan/connect 2>/dev/null)
+  echo "POST /api/wan/connect pin=<redacted:len=${#1}> -> $code" >> "$C1BLOG"
+  echo "$code"
+}
+c1b_start
+# baseline GET behaviors before any throttling
+g_nopin=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18099/api/wan/psks-manage 2>/dev/null)
+echo "--- GET no X-Pin: $g_nopin" >> "$C1BLOG"
+echo "$g_nopin" | tail -1 | grep -q '^403$' && echo "$g_nopin" | head -1 | grep -q '"pin"' \
+  && ok "5ac2 GET no X-Pin -> 403 {\"error\":\"pin\"}" || bad "5ac2 GET no-pin: [$g_nopin]"
+g_wrong=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 0000' http://127.0.0.1:18099/api/wan/psks-manage 2>/dev/null)
+echo "--- GET wrong X-Pin: $g_wrong" >> "$C1BLOG"
+echo "$g_wrong" | tail -1 | grep -q '^403$' \
+  && ok "5ac2 GET wrong X-Pin -> 403" || bad "5ac2 GET wrong X-Pin code=[$g_wrong]"
+g_ok=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 1357' http://127.0.0.1:18099/api/wan/psks-manage 2>/dev/null)
+echo "--- GET correct X-Pin: $g_ok" >> "$C1BLOG"
+echo "$g_ok" | tail -1 | grep -q '^200$' && echo "$g_ok" | head -1 | grep -q '"rows"' \
+  && ok "5ac2 GET correct X-Pin -> 200 with rows JSON" || bad "5ac2 GET correct X-Pin: [$g_ok]"
+# THE ORACLE: 5 more wrong GET guesses arm the 5s tier (count was reset by the
+# correct GET above, so exactly these 5 arm it); the 6th must be 403 (blocked,
+# NOT 429 — GET must not reveal throttling), and a correct-PIN POST from the
+# same IP must now hit the SHARED counter -> 429.
+g_codes=""
+for i in 1 2 3 4 5; do g_codes="$g_codes$(c1b_get wrongg$i) "; done
+echo "--- 5 wrong GET guesses: $g_codes" >> "$C1BLOG"
+[[ "$g_codes" == "403 403 403 403 403 " ]] \
+  && ok "5ac2 5 wrong GET guesses -> 403 x5 (arming the shared counter)" \
+  || bad "5ac2 wrong-GET codes=[$g_codes] (want 403 x5)"
+g6=$(c1b_get wrongg6)
+echo "--- 6th wrong GET guess (blocked): $g6" >> "$C1BLOG"
+[[ "$g6" == "403" ]] && ok "5ac2 6th wrong GET while blocked -> 403 (not 429; throttling not revealed)" \
+  || bad "5ac2 6th wrong GET code=$g6 (want 403)"
+body_g=$(curl -s -H 'X-Pin: 1357' http://127.0.0.1:18099/api/wan/psks-manage 2>/dev/null)
+echo "--- blocked correct-PIN GET body: $body_g" >> "$C1BLOG"
+echo "$body_g" | grep -q '"pin"' \
+  && ok "5ac2 blocked correct-PIN GET body is {\"error\":\"pin\"} (no oracle leak)" || bad "5ac2 blocked GET body=[$body_g]"
+p_shared=$(c1b_post 1357)
+echo "--- correct-PIN POST after >5 wrong GETs (SHARED counter): $p_shared" >> "$C1BLOG"
+[[ "$p_shared" == "429" ]] \
+  && ok "5ac2 correct-PIN POST blocked 429 after wrong GETs (GET+POST share one counter)" \
+  || bad "5ac2 shared-counter POST code=$p_shared (want 429)"
+body_p429=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1357","ssid":"HotelNet"}' \
+  http://127.0.0.1:18099/api/wan/connect 2>/dev/null)
+echo "--- shared 429 body: $body_p429" >> "$C1BLOG"
+echo "$body_p429" | grep -q 'rate_limited' && echo "$body_p429" | grep -q '429$' \
+  && ok "5ac2 shared 429 body is {\"error\":\"rate_limited\"}" || bad "5ac2 shared 429 body=[$body_p429]"
+# wait out the 5s tier, then correct-PIN POST -> 200 (no permanent lockout)
+sleep 5.5
+p_ok=$(c1b_post 1357)
+echo "--- correct-PIN POST after 5s tier expiry: $p_ok" >> "$C1BLOG"
+[[ "$p_ok" == "200" ]] \
+  && ok "5ac2 correct-PIN POST -> 200 after tier expiry (no permanent lockout)" \
+  || bad "5ac2 post-expiry POST code=$p_ok (want 200)"
+# reset proof: a correct-PIN GET clears the entry; a fresh wrong guess is 403 not 429
+g_reset=$(c1b_get 1357)
+echo "--- correct-PIN GET (reset): $g_reset" >> "$C1BLOG"
+[[ "$g_reset" == "200" ]] && ok "5ac2 correct-PIN GET -> 200 (entry reset)" || bad "5ac2 reset GET code=$g_reset"
+g_after=$(c1b_get wrongafter)
+echo "--- wrong GET after reset: $g_after" >> "$C1BLOG"
+[[ "$g_after" == "403" ]] \
+  && ok "5ac2 wrong GET after reset -> 403 not 429 (counter reset works)" \
+  || bad "5ac2 post-reset GET code=$g_after (want 403)"
+c1b_stop
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+grep -q '1357' "$C1BLOG" && bad "5ac2 PIN leaked into GET-throttle transcript (forbidden)" \
+  || ok "5ac2 transcript free of PIN"
+echo "5ac2 GET-throttle transcript: $C1BLOG"
+
 # --- (5ad) state.json escape + bind-host allowlist + seam (C2) ----------------
 sec "5ad. state.json heredoc escape + bind-host allowlist + seam (C2)"
 B5="$TMP/c2ad"; mkdir -p "$B5/bin" "$B5/etc" "$B5/dnsmasq.d" "$B5/ip-addr" \
