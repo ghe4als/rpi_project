@@ -16,8 +16,8 @@
   rows into [ssid, signal, security]; its semantics are pinned by a python
   replica in validate-local.sh §5r — keep both in lockstep.
 
-  KNOWN NETWORKS feed: GET /api/wan/known -> {known:[{name,timestamp,
-  autoconnect}]}. Scan cards for SSIDs also present in the known list get a
+  KNOWN NETWORKS feed (PIN-gated; skipped entirely until a PIN is entered):
+  GET -> {known:[{name,timestamp, autoconnect}]}. Scan cards for SSIDs also present in the known list get a
   "known" badge. Hidden networks (empty ssid) and enterprise networks
   (security contains 802.1X) render as NON-CONNECTABLE cards. The RAW
   (unescaped) SSID is carried in element.dataset for API calls and is NEVER
@@ -516,8 +516,10 @@ function doScan() {
   SCAN_BUSY = true;
   setMsg("scan-msg", "scanning…");
   // refresh known alongside scan so cards can show the "known" badge
-  // (C6: /api/wan/known is PIN-gated — degrade to empty + message on 403)
-  var knownP = fetch("/api/wan/known", { cache: "no-store",
+  // (C6: the known endpoint is PIN-gated — degrade to empty + message on 403)
+  // With no PIN yet the fetch is skipped entirely: an empty X-Pin would
+  // count as a wrong-PIN attempt and feed this IP's fail counter.
+  var knownP = (pinOrNull() || savedPin()) ? fetch("/api/wan/known", { cache: "no-store",
     headers: { "X-Pin": pinOrNull() || savedPin() } })
     .then(function (r) {
       if (r.status === 403) {
@@ -527,7 +529,8 @@ function doScan() {
       return r.json();
     })
     .then(function (d) { return d ? (d.known || []) : null; })
-    .catch(function () { return []; });
+    .catch(function () { return []; })
+    : Promise.resolve([]);   // no PIN: no request, no fail-counter increment
   knownP.then(function (known) { if (known) { renderKnown(known); } });
   // Scan is POST but the server never reads the request body. Send NO body:
   // a JSON "{}" body left unread in the keep-alive buffer poisons the next
@@ -706,8 +709,14 @@ function renderKnown(known) {
 }
 
 function refreshKnown() {
-  // C6: /api/wan/known is PIN-gated — recover when the user enters the PIN
-  // (init/refresh cadence retries; 403 degrades to a message, page stays up)
+  // C6: the known endpoint is PIN-gated — recover when the user enters the PIN
+  // With no PIN yet, skip the fetch entirely: an empty X-Pin would count as
+  // a wrong-PIN attempt and feed this IP's fail counter (the ~4s refresh
+  // cadence would rack up fails and throttle the later real connect).
+  if (!(pinOrNull() || savedPin())) {
+    setMsg("known-msg", "known networks require PIN", "warn");
+    return;
+  }
   fetch("/api/wan/known", { cache: "no-store",
     headers: { "X-Pin": pinOrNull() || savedPin() } })
     .then(function (r) {
