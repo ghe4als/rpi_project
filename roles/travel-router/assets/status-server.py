@@ -7,8 +7,10 @@ Stdlib only (http.server + json). Serves:
                       reachability cached in-process with a 30s TTL so an
                       offline WAN does not stall every page load)
   GET /health      -> 200 {"status":"ok"}
-  GET /api/wan/known -> PIN-free known-networks JSON (travel-wan known rows:
+  GET /api/wan/known -> PIN-gated known-networks JSON (C6; X-Pin, same
+                      throttle as POST / psks-manage; travel-wan known rows:
                       NAME/TIMESTAMP/AUTOCONNECT metadata, never a PSK)
+  GET /api/wan/psks-manage -> PIN-gated metadata read (X-Pin, throttled)
   POST /api/wan/*  -> PIN-gated setup API (H01 posture change; see below)
 Anything else (other path or method) -> 404.
 
@@ -310,6 +312,43 @@ class StatusHandler(BaseHTTPRequestHandler):
         elif path == "/status":
             self._send(200, json.dumps(get_status()), "application/json")
         elif path == "/api/wan/known":
+            # PIN-gated metadata read (C6): mirrors the /api/wan/psks-manage
+            # GET branch — same X-Pin check, same per-source-IP counter
+            # (_PIN_FAILS shared with POST + the psks-manage GET): an
+            # unlimited 200 here would be a known-SSID oracle for a guest.
+            ip_key = self.client_address[0]
+            now = time.time()
+            with _PIN_THROTTLE_LOCK:
+                entry = _PIN_FAILS.get(ip_key)
+                blocked_until = entry[1] if entry else 0.0
+                if now < blocked_until:
+                    entry[0] += 1
+                    pin_fails = entry[0]
+                else:
+                    pin_fails = None
+            if pin_fails is not None:
+                # Same 403 {"error":"pin"} as a wrong PIN (must not reveal
+                # throttled vs wrong); keep-alive would misparse the next
+                # pipelined request, so close the connection.
+                self._send(403, json.dumps({"error": "pin"}), "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            supplied = self.headers.get("X-Pin")
+            if not SETUP_PIN or not isinstance(supplied, str) \
+                    or not hmac.compare_digest(supplied, SETUP_PIN):
+                with _PIN_THROTTLE_LOCK:
+                    entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
+                    entry[0] += 1
+                    tier = _pin_backoff_tier(entry[0])
+                    if tier:
+                        entry[1] = time.time() + tier
+                self._send(403, json.dumps({"error": "pin"}), "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            with _PIN_THROTTLE_LOCK:
+                _PIN_FAILS.pop(ip_key, None)
             rc, out, err = self._run_tool(["known"], API_QUICK_TIMEOUT)
             if rc is None:
                 self._send(504, json.dumps({"error": "timeout"}), "application/json")

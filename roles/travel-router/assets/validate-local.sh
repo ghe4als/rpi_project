@@ -713,10 +713,19 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
 [[ "$r" == "403" ]] && ok "5t POST psks missing X-Requested-With -> 403" || bad "5t csrf code=$r (want 403)"
-# GET /api/wan/known: 200 + fixture SSID present, fixture PSK absent.
+# GET /api/wan/known (C6: PIN-gated): no/wrong X-Pin -> 403 pin; correct
+# X-Pin -> 200 + fixture SSID present, fixture PSK absent.
 resp=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
 code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
-[[ "$code" == "200" ]] && ok "5t GET /api/wan/known -> 200" || bad "5t known code=$code (want 200)"
+[[ "$code" == "403" ]] && echo "$body" | grep -q '"pin"' \
+  && ok "5t GET /api/wan/known no X-Pin -> 403 {\"error\":\"pin\"} (C6 gate)" \
+  || bad "5t known no-pin: [$code|$(echo "$body" | head -c 60)]"
+resp=$(curl -s -w '\n%{http_code}' -H 'X-Pin: wrongpin' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
+code="${resp##*$'\n'}"
+[[ "$code" == "403" ]] && ok "5t GET /api/wan/known wrong X-Pin -> 403" || bad "5t known wrong-pin code=$code (want 403)"
+resp=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 1234' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
+code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+[[ "$code" == "200" ]] && ok "5t GET /api/wan/known correct X-Pin -> 200" || bad "5t known correct-pin code=$code (want 200)"
 echo "$body" | grep -q 'FixtureNet' && ok "5t known body carries SSID" || bad "5t known body missing SSID: $(echo "$body" | head -c 120)"
 echo "$body" | grep -q 'sup3rsecret' && bad "5t known body LEAKS psk (forbidden)" || ok "5t known body free of psk"
 # POST /api/wan/psks happy path: PIN + header -> 200 (endpoint RED now: 404)
@@ -1340,6 +1349,109 @@ pkill -f status-server.py 2>/dev/null; sleep 0.3
 grep -q '1357' "$C1BLOG" && bad "5ac2 PIN leaked into GET-throttle transcript (forbidden)" \
   || ok "5ac2 transcript free of PIN"
 echo "5ac2 GET-throttle transcript: $C1BLOG"
+
+# --- (5ac3) GET known X-Pin gate: shared counter, no oracle (C6) ---------------
+sec "5ac3. GET known X-Pin gate: shared counter, rows only with correct PIN (C6)"
+# GET /api/wan/known must mirror the psks-manage GET gate (C6): no/wrong
+# X-Pin -> 403 {"error":"pin"} (Connection: close, same body throttled or
+# not), correct X-Pin -> 200 rows JSON, and the SAME per-IP _PIN_FAILS
+# counter (shared with POST + psks-manage GET). One live server for the
+# whole part; wrong guesses here must not corrupt other batteries (isolated
+# port + fresh server).
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWC6="$B/stub-travel-wan-c6"
+printf '#!/bin/bash\nif [[ "$1" == known ]]; then printf "HotelNet\\t1690000000\\tyes\\n"; exit 0; fi\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' > "$STWC6"; chmod +x "$STWC6"
+C6LOG="$B/c6-known-gate.txt"
+: > "$C6LOG"
+echo "=== C6 GET known X-Pin gate transcript ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ===" >> "$C6LOG"
+c6_start() { # -> ONE live server for the whole part (shared in-memory counter)
+  TRAVELROUTER_SETUP_PIN="1357" TRAVELWAN_BIN="$STWC6" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELROUTER_STATUS_PORT=18100 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >>"$B/srv-c6.log" 2>&1 &
+  C6PID=$!
+  wait_healthy 18100 || true
+}
+c6_stop() { kill $C6PID 2>/dev/null; wait $C6PID 2>/dev/null; }
+c6_get() { # pin(or empty) -> one GET /api/wan/known; echoes "code|body"
+  local resp hdr
+  hdr=""
+  [[ -n "$1" ]] && hdr="-H X-Pin:$1"
+  resp=$(curl -s -w '\n%{http_code}' $hdr http://127.0.0.1:18100/api/wan/known 2>/dev/null)
+  echo "GET /api/wan/known pin=<redacted:len=${#1}> -> ${resp##*$'\n'}" >> "$C6LOG"
+  echo "${resp##*$'\n'}|${resp%$'\n'*}"
+}
+c6_start
+k_nopin=$(c6_get "")
+echo "--- GET known no X-Pin: $k_nopin" >> "$C6LOG"
+[[ "$k_nopin" == 403*'"pin"'* ]] \
+  && ok "5ac3 GET known no X-Pin -> 403 {\"error\":\"pin\"}" \
+  || bad "5ac3 no-pin: [$k_nopin]"
+k_conn=$(curl -s -D - -o /dev/null -H 'X-Pin: nope' http://127.0.0.1:18100/api/wan/known 2>/dev/null | tr -d '\r')
+echo "--- GET known wrong X-Pin (headers): $(echo "$k_conn" | head -1)" >> "$C6LOG"
+echo "$k_conn" | grep -qi '^connection: close$' \
+  && echo "$k_conn" | head -1 | grep -q ' 403 ' \
+  && ok "5ac3 GET known wrong X-Pin -> 403 + Connection: close" \
+  || bad "5ac3 wrong-pin close: $(echo "$k_conn" | head -3 | tr '\n' '|')"
+k_wrong=$(c6_get wrongpin)
+echo "--- GET known wrong X-Pin: $k_wrong" >> "$C6LOG"
+[[ "$k_wrong" == 403*'"pin"'* ]] && ok "5ac3 GET known wrong X-Pin -> 403 body pin" || bad "5ac3 wrong-pin body: [$k_wrong]"
+k_ok=$(c6_get 1357)
+echo "--- GET known correct X-Pin: $k_ok" >> "$C6LOG"
+[[ "$k_ok" == 200*'"known"'*'"HotelNet"'*'"1690000000"'*'"yes"'* ]] \
+  && ok "5ac3 GET known correct X-Pin -> 200 rows JSON (name/timestamp/autoconnect)" \
+  || bad "5ac3 correct-pin: [$k_ok]"
+# THE GATE: 5 wrong guesses arm the 5s tier on the SHARED counter (the
+# correct GET above reset it); the 6th wrong guess must be 403 (not 429),
+# and a correct-PIN POST from the same IP must hit the shared counter -> 429.
+k_codes=""
+for i in 1 2 3 4 5; do k_codes="$k_codes$(c6_get wrongk$i | cut -d'|' -f1) "; done
+echo "--- 5 wrong known guesses: $k_codes" >> "$C6LOG"
+[[ "$k_codes" == "403 403 403 403 403 " ]] \
+  && ok "5ac3 5 wrong known guesses -> 403 x5 (arming the shared counter)" \
+  || bad "5ac3 wrong-GET codes=[$k_codes] (want 403 x5)"
+k6=$(c6_get wrongk6 | cut -d'|' -f1)
+echo "--- 6th wrong known guess (blocked): $k6" >> "$C6LOG"
+[[ "$k6" == "403" ]] \
+  && ok "5ac3 6th wrong known guess while blocked -> 403 (not 429)" \
+  || bad "5ac3 6th known code=$k6 (want 403)"
+k_shared=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+  -d '{"pin":"1357","ssid":"HotelNet"}' http://127.0.0.1:18100/api/wan/connect 2>/dev/null)
+echo "--- correct-PIN POST while known-gate blocked: $k_shared" >> "$C6LOG"
+[[ "$k_shared" == "429" ]] \
+  && ok "5ac3 correct-PIN POST blocked 429 while known-gate blocked (SHARED counter)" \
+  || bad "5ac3 shared-counter POST code=$k_shared (want 429)"
+# wait out the 5s tier so the row-shape assert below is not swallowed by it
+sleep 5.5
+k_rows=$(c6_get 1357)
+echo "--- GET known correct X-Pin after tier expiry: $k_rows" >> "$C6LOG"
+k_body="${k_rows#*|}"
+echo "$k_body" | grep -q 'SMUGGLED\|secret\|psk' \
+  && bad "5ac3 known body leaks non-metadata: [$k_body]" \
+  || ok "5ac3 known body carries metadata only (no psk/secret)"
+grep -q '1357' "$C6LOG" && bad "5ac3 PIN leaked into known-gate transcript (forbidden)" \
+  || ok "5ac3 transcript free of PIN"
+c6_stop
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+echo "5ac3 known-gate transcript: $C6LOG"
+
+# setup.html C6 contract: EXACTLY two /api/wan/known fetch sites (doScan +
+# refreshKnown), each PIN-sourced from pinOrNull() || savedPin(); no new
+# fetch call site added.
+c6_sites=$(grep -c '"/api/wan/known"' "$A/setup.html")
+[[ "$c6_sites" == "2" ]] \
+  && ok "5ac3 setup.html has exactly 2 /api/wan/known fetch sites" \
+  || bad "5ac3 known fetch sites=$c6_sites (want 2)"
+c6_pin_sites=$(grep -A2 '"/api/wan/known"' "$A/setup.html" \
+  | grep -c 'X-Pin.*pinOrNull() || savedPin()')
+[[ "$c6_pin_sites" == "2" ]] \
+  && ok "5ac3 both known fetch sites carry X-Pin from pinOrNull() || savedPin()" \
+  || bad "5ac3 X-Pin sites=$c6_pin_sites (want 2)"
+c6_fetch_known=$(grep -c 'fetch("/api/wan/known"' "$A/setup.html")
+[[ "$c6_fetch_known" == "2" ]] \
+  && ok "5ac3 exactly 2 fetch(\"/api/wan/known\") sites; no other-method site added" \
+  || bad "5ac3 fetch-known count=$c6_fetch_known"
+echo "5ac3 setup.html fetch census: known=$c6_sites pin-sourced=$c6_pin_sites fetch-known=$c6_fetch_known"
 
 # --- (5ad) state.json escape + bind-host allowlist + seam (C2) ----------------
 sec "5ad. state.json heredoc escape + bind-host allowlist + seam (C2)"

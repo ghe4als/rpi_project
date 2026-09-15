@@ -516,11 +516,19 @@ function doScan() {
   SCAN_BUSY = true;
   setMsg("scan-msg", "scanning…");
   // refresh known alongside scan so cards can show the "known" badge
-  var knownP = fetch("/api/wan/known", { cache: "no-store" })
-    .then(function (r) { return r.json(); })
-    .then(function (d) { return d.known || []; })
+  // (C6: /api/wan/known is PIN-gated — degrade to empty + message on 403)
+  var knownP = fetch("/api/wan/known", { cache: "no-store",
+    headers: { "X-Pin": pinOrNull() || savedPin() } })
+    .then(function (r) {
+      if (r.status === 403) {
+        setMsg("known-msg", "known networks require PIN", "warn");
+        return { known: [] };
+      }
+      return r.json();
+    })
+    .then(function (d) { return d ? (d.known || []) : null; })
     .catch(function () { return []; });
-  knownP.then(renderKnown);  // also render the Known section
+  knownP.then(function (known) { if (known) { renderKnown(known); } });
   // Scan is POST but the server never reads the request body. Send NO body:
   // a JSON "{}" body left unread in the keep-alive buffer poisons the next
   // request on the same connection ("{}POST /api/wan/psks ..." → 501). Same
@@ -698,9 +706,21 @@ function renderKnown(known) {
 }
 
 function refreshKnown() {
-  fetch("/api/wan/known", { cache: "no-store" })
-    .then(function (r) { return r.json(); })
-    .then(function (d) { renderKnown(d.known || []); })
+  // C6: /api/wan/known is PIN-gated — recover when the user enters the PIN
+  // (init/refresh cadence retries; 403 degrades to a message, page stays up)
+  fetch("/api/wan/known", { cache: "no-store",
+    headers: { "X-Pin": pinOrNull() || savedPin() } })
+    .then(function (r) {
+      if (r.status === 403) {
+        setMsg("known-msg", "known networks require PIN", "warn");
+        return null;
+      }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { renderKnown(d.known || []); }
+      else { KNOWN_NAMES = {}; }
+    })
     .catch(function () { setMsg("known-msg", "known networks unavailable", "warn"); });
 }
 
