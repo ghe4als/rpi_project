@@ -154,6 +154,7 @@
     <p>
       <button id="pm-add" type="button">Add default password</button>
       <button id="pm-refresh" type="button" class="secondary">Refresh list</button>
+      <button id="ap-open" type="button" class="secondary">AP settings</button>
     </p>
   </section>
 </main>
@@ -169,6 +170,20 @@
     <button id="d-cancel" type="button" class="secondary">Cancel</button>
   </p>
   <p class="dmsg" id="d-msg"></p>
+</dialog>
+
+<dialog id="ap-dialog">
+  <h2>AP settings</h2>
+  <div class="drow"><span class="label">Current:</span> <span id="ap-current"></span></div>
+  <label for="ap-ssid">New network name (SSID, optional)</label>
+  <input id="ap-ssid" autocomplete="off" maxlength="32">
+  <label for="ap-psk">New password (8-63 chars, optional)</label>
+  <input id="ap-psk" type="password" autocomplete="off">
+  <p>
+    <button id="ap-save" type="button">Save &amp; restart AP</button>
+    <button id="ap-cancel" type="button" class="secondary">Cancel</button>
+  </p>
+  <p class="dmsg" id="ap-msg"></p>
 </dialog>
 
 <script>
@@ -264,9 +279,12 @@ function securityLabel(sec) {
   return sec;
 }
 
+var LAST_STATUS = null;
+function refreshStatusLast() { return LAST_STATUS; }
 function refreshStatus() {
   fetch("/status", { cache: "no-store" }).then(function (r) { return r.json(); })
     .then(function (d) {
+      LAST_STATUS = d;
       var tbody = document.getElementById("status-rows");
       while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
       cellRow(tbody, "Mode", d.mode || "?");
@@ -648,25 +666,9 @@ function renderKnown(known) {
     card.appendChild(cMsg);
 
     cBtn.addEventListener("click", function () {
-      var pin = pinOrNull() || savedPin();
-      if (!pin) { setCardMsg(card, "PIN required — enter it in the PIN section", "warn"); return; }
-      setCardBusy(card, true);
-      setCardMsg(card, "connecting…", "");
-      api("/api/wan/connect", { pin: pin, ssid: k.name }).then(function (r) {
-        if (r.status === 403) { return handleErr("connect denied")(r); }
-        return r.json();
-      }).then(function (d) {
-        if (!d.ok) {
-          var log = (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")");
-          setCardMsg(card, log, "warn");
-        } else {
-          setCardMsg(card, "connected", "ok");
-          refreshStatus();
-        }
-      }).catch(function (e) {
-        setCardMsg(card, String(e.message || e), "warn");
-      }).then(function () { setCardBusy(card, false); },
-              function () { setCardBusy(card, false); });
+      // setup-v2 M7: Known-row Connect opens the same connect dialog (PSK
+      // entry + Try saved passwords) instead of a blind connect.
+      openNetDialog(k.name);
     });
 
     fBtn.addEventListener("click", function () {
@@ -827,6 +829,77 @@ function refreshPskManage() {
     .catch(function () { setMsg("pskmanage-msg", "saved passwords unavailable", "warn"); });
 }
 document.getElementById("pm-refresh").addEventListener("click", refreshPskManage);
+
+// --- setup-v2 M8: AP settings dialog -----------------------------------------
+// POST /api/wan/apconfig {pin, ssid?, psk?} — travel-wan ap-apply validates
+// (hostapd -t), re-renders, restarts the AP, and restores the previous
+// config if the restart fails. The radio drop kills this page's TCP
+// connection mid-restart, so the dialog does NOT treat the HTTP response
+// as proof: it shows "reconfiguring — reconnecting…" and polls /status
+// every 2s for up to 30s (any /status response = the AP is back).
+function apMsg(text, cls) { setMsg("ap-msg", text, cls); }
+document.getElementById("ap-open").addEventListener("click", function () {
+  document.getElementById("ap-current").textContent =
+    (refreshStatusLast() || {}).ap_ssid || "(unknown)";
+  document.getElementById("ap-ssid").value = "";
+  document.getElementById("ap-psk").value = "";
+  apMsg("");
+  document.getElementById("ap-dialog").showModal();
+});
+document.getElementById("ap-cancel").addEventListener("click", function () {
+  document.getElementById("ap-dialog").close();
+});
+document.getElementById("ap-save").addEventListener("click", function () {
+  var pin = pinOrNull() || savedPin();
+  if (!pin) { apMsg("PIN required — enter it in the PIN section", "warn"); return; }
+  var ssidVal = document.getElementById("ap-ssid").value.trim();
+  var pskVal = document.getElementById("ap-psk").value;
+  var body = { pin: pin };
+  if (ssidVal) { body.ssid = ssidVal; }
+  if (pskVal) { body.psk = pskVal; }
+  if (!body.ssid && !body.psk) {
+    apMsg("enter a new SSID and/or password", "warn");
+    return;
+  }
+  busy(true);
+  apMsg("reconfiguring — reconnecting…", "");
+  api("/api/wan/apconfig", body).then(function (r) {
+    if (r.status === 403) { return handleErr("apconfig denied")(r); }
+    if (r.status === 400) { return r.json().then(function (e) {
+      apMsg("rejected: " + (e.error || "bad request"), "warn");
+    }); }
+    return r.json();
+  }).then(function (d) {
+    if (d && d.ok === false) {
+      apMsg((d.log && d.log.join(" ")) || "failed", "warn");
+      return;
+    }
+    // The response (and this page) die with the AP restart — poll instead.
+    var waited = 0;
+    var poll = setInterval(function () {
+      waited += 2000;
+      fetch("/status", { cache: "no-store" })
+        .then(function (r) { return r.ok; })
+        .catch(function () { return false; })
+        .then(function (up) {
+          if (up) {
+            clearInterval(poll);
+            apMsg("AP reconfigured", "ok");
+            refreshStatus();
+            if (ssidVal) {
+              apMsg("AP reconfigured as '" + ssidVal + "' — join the new network, then reopen this page", "ok");
+            }
+            setTimeout(function () { document.getElementById("ap-dialog").close(); }, 2500);
+          } else if (waited >= 30000) {
+            clearInterval(poll);
+            apMsg("no response after 30s — check the router", "warn");
+          }
+        });
+    }, 2000);
+  }).catch(function (e) { apMsg(String(e.message || e), "warn"); });
+});
+
+function apiWrite(path, extra) {
 document.getElementById("pm-add").addEventListener("click", function () {
   var psk = document.getElementById("pm-psk").value;
   if (!psk) { setMsg("pskmanage-msg", "enter a password to add", "warn"); return; }

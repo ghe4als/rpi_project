@@ -45,6 +45,8 @@ AP_SSID_FILE="${TRAVELROUTER_AP_SSID_FILE:-/etc/rpi-project/travel-router/ap-ssi
 # degrades best-effort (one redacted stderr line, connect rc untouched).
 PSK_TAB=$'\t'
 PSK_CR=$'\r'
+# setup-v2 M2: NM profile names that must never appear in the known list.
+EXCLUDED_PROFILES="tr-probe preconfigured"
 
 # Storeable value: non-empty, no TAB/CR/LF (field/row separators).
 psk_field_ok() {
@@ -258,6 +260,7 @@ Usage:
   travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
   travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan ap-apply <SSID> [PSK]       re-render + restart the AP (setup API)
+  travel-wan ap-ssid                     print the live AP SSID
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
@@ -659,7 +662,7 @@ cmd_known() {
         # setup-v2 M2: boilerplate profiles never belong in the known list —
         # the reserved probe (tr-probe) and the Pi Imager helper's seed profile
         # (preconfigured) are dropped before any rendering.
-        [[ "$name" == "tr-probe" || "$name" == "preconfigured" ]] && continue
+        case " $EXCLUDED_PROFILES " in *" $name "*) continue ;; esac
         # Unescape nmcli terse escaping (\\ -> \, \: -> :) in NAME.
         nameu=""
         while [[ "$name" == *'\'* ]]; do
@@ -785,6 +788,14 @@ main() {
             ;;
         ap-apply)
             cmd_ap_apply "${1:-}" "${2:-}"
+            ;;
+        ap-ssid)
+            if [[ -s "$AP_SSID_FILE" ]]; then
+                head -1 "$AP_SSID_FILE" 2>/dev/null || true
+                return 0
+            fi
+            log "ap-ssid: no live AP SSID recorded ('$AP_SSID_FILE' missing or empty)"
+            return 1
             ;;
         try-psks)
             cmd_try_psks "${1:-}"
