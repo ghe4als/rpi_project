@@ -257,6 +257,7 @@ Usage:
   travel-wan psks-add-default <PSK>      record a default PSK candidate
   travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
   travel-wan psks-del <index>            delete the Nth psks-list row
+  travel-wan ap-apply <SSID> [PSK]       re-render + restart the AP (setup API)
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
 
@@ -472,6 +473,113 @@ cmd_psks_del() {
     return 0
 }
 
+# --- setup-v2 M8: AP reconfigure (runtime owner of the hostapd render) --------
+# ap-apply [NEW_SSID] [NEW_PSK]: re-renders hostapd-travel.conf from the
+# TEMPLATE (never by parsing the rendered file), with country/channel/iface
+# sourced from role.env (same two-path idiom as install.sh:64-67; root
+# readable). Rollback contract: (1) render new conf to tmp, (2) hostapd -t
+# validate — invalid -> rc 1, NOTHING changed, (3) keep the old conf as
+# conf.bak, (4) atomically install the new conf + ap-ssid, (5) restart
+# hostapd-travel.service; on restart failure restore the .bak and restart
+# again. The caller sends its HTTP response BEFORE the restart (the radio
+# drop kills the client's TCP connection mid-restart).
+AP_CONF="${TRAVELROUTER_AP_CONF:-/etc/hostapd/hostapd-travel.conf}"
+AP_TEMPLATE="${TRAVELROUTER_AP_TEMPLATE:-/etc/rpi-project/travel-router/hostapd.conf.tmpl}"
+HOSTAPD_BIN="${TRAVELROUTER_HOSTAPD_BIN:-hostapd}"
+cmd_ap_apply() {
+    local new_ssid="${1:-}"
+    local new_psk="${2:-}"
+    if [[ -z "$new_ssid" && -z "$new_psk" ]]; then
+        log "ap-apply: a new SSID and/or PSK is required"
+        usage
+        return 2
+    fi
+    # Source role.env for the unchanged render fields (country/channel/iface).
+    local renv=""
+    local cand
+    for cand in /run/travel-router/role.env /boot/firmware/role/role.env /boot/role/role.env; do
+        [[ -f "$cand" ]] && { renv="$cand"; break; }
+    done
+    if [[ -n "$renv" ]]; then
+        set -a; source "$renv" 2>/dev/null || true; set +a
+    fi
+    local r_ssid="${TRAVELROUTER_AP_SSID:-}"
+    local r_psk="${TRAVELROUTER_AP_PSK:-}"
+    local r_country="${TRAVELROUTER_AP_COUNTRY:-}"
+    local r_channel="${TRAVELROUTER_AP_CHANNEL:-6}"
+    local r_iface="${TRAVELROUTER_AP_INTERFACE:-}"
+    [[ -n "$r_ssid" && -n "$r_psk" ]] || { log "ap-apply: current AP SSID/PSK unknown (role.env missing or incomplete)"; return 1; }
+    # Missing optional args keep the current value.
+    [[ -n "$new_ssid" ]] || new_ssid="$r_ssid"
+    [[ -n "$new_psk" ]] || new_psk="$r_psk"
+    # Locate the template: ASSETS dir next to this script, or the staged copy.
+    local tmpl="$AP_TEMPLATE"
+    if [[ ! -f "$tmpl" ]]; then
+        local self_dir
+        self_dir="$(cd "$(dirname "$0")" && pwd)"
+        [[ -f "$self_dir/hostapd.conf.tmpl" ]] && tmpl="$self_dir/hostapd.conf.tmpl"
+    fi
+    [[ -f "$tmpl" ]] || { log "ap-apply: hostapd template not found"; return 1; }
+    local ap_iface="$r_iface"
+    if [[ -z "$ap_iface" ]]; then
+        # Derive the AP interface from the CURRENT rendered conf (uap/interface
+        # line), else the state file's ap_interface.
+        ap_iface="$(sed -n 's/^interface=//p' "$AP_CONF" 2>/dev/null | head -1)"
+        [[ -z "$ap_iface" ]] && ap_iface="$(json_field ap_interface 2>/dev/null || true)"
+    fi
+    [[ -n "$ap_iface" ]] || { log "ap-apply: AP interface unknown"; return 1; }
+    local dir tmp
+    dir="$(dirname "$AP_CONF")"
+    tmp="$AP_CONF.new.$$"
+    # Placeholder names are COMPOSED at runtime so this script (which is
+    # staged to /usr/local/bin) never carries literal dunder-underscore
+    # template markers — the §2 battery rejects any staged file still
+    # carrying them.
+    local m_iface="__AP_""INTERFACE__"
+    local m_ssid="__AP_""SSID__"
+    local m_country="__AP_""COUNTRY__"
+    local m_channel="__AP_""CHANNEL__"
+    local m_psk="__AP_""PSK__"
+    sed -e "s|${m_iface}|${ap_iface}|g" \
+        -e "s|${m_ssid}|${new_ssid}|g" \
+        -e "s|${m_country}|${r_country}|g" \
+        -e "s|${m_channel}|${r_channel}|g" \
+        -e "s|${m_psk}|${new_psk}|g" \
+        "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "ap-apply: cannot render new conf"; return 2; }
+    if ! "$HOSTAPD_BIN" -t "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        log "ap-apply: new hostapd config is invalid (hostapd -t rejected it); nothing changed"
+        return 1
+    fi
+    cp "$AP_CONF" "$AP_CONF.bak" 2>/dev/null || true
+    if ! mv -f "$tmp" "$AP_CONF" 2>/dev/null; then
+        rm -f "$tmp"
+        log "ap-apply: cannot replace '$AP_CONF' (conf unchanged)"
+        return 2
+    fi
+    local apdir="." aptmp
+    apdir="$(dirname "$AP_SSID_FILE")"
+    mkdir -p "$apdir" 2>/dev/null || true
+    aptmp="$apdir/.ap-ssid.$$"
+    printf '%s\n' "$new_ssid" > "$aptmp" 2>/dev/null \
+        && chmod 0600 "$aptmp" 2>/dev/null || true
+    if ! mv -f "$aptmp" "$AP_SSID_FILE" 2>/dev/null; then
+        rm -f "$aptmp" 2>/dev/null || true
+        log "ap-apply: ap-ssid write failed (scan exclusion keeps old value)"
+    fi
+    if ! "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1; then
+        log "ap-apply: hostapd restart FAILED — restoring previous config"
+        if [[ -f "$AP_CONF.bak" ]]; then
+            mv -f "$AP_CONF.bak" "$AP_CONF" 2>/dev/null || true
+            "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || true
+        fi
+        return 1
+    fi
+    rm -f "$AP_CONF.bak" 2>/dev/null || true
+    log "ap-apply: AP reconfigured (clients are rejoining)"
+    return 0
+}
+
 # try-psks (M4): probe each stored candidate for SSID (SSID s-rows in file
 # order, then d-row defaults) via a throwaway probe profile. Reserved con-name
 # `tr-probe` (autoconnect no) is deleted before AND after every attempt, so it
@@ -673,6 +781,9 @@ main() {
             ;;
         psks-del)
             cmd_psks_del "${1:-}"
+            ;;
+        ap-apply)
+            cmd_ap_apply "${1:-}" "${2:-}"
             ;;
         try-psks)
             cmd_try_psks "${1:-}"

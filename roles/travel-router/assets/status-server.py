@@ -299,6 +299,24 @@ class StatusHandler(BaseHTTPRequestHandler):
                     known.append({"name": parts[0], "timestamp": parts[1],
                                   "autoconnect": parts[2]})
             self._send(200, json.dumps({"known": known}), "application/json")
+        elif path == "/api/wan/psks-manage":
+            # PIN-gated metadata read (X-Pin doubles as the CSRF gate: custom
+            # headers need a preflight, and this server never answers one).
+            supplied = self.headers.get("X-Pin")
+            if not SETUP_PIN or not isinstance(supplied, str) \
+                    or not hmac.compare_digest(supplied, SETUP_PIN):
+                self._send(403, json.dumps({"error": "pin"}), "application/json")
+                return
+            rc, out, err = self._run_tool(["psks-list"], API_QUICK_TIMEOUT)
+            if rc is None:
+                self._send(504, json.dumps({"error": "timeout"}), "application/json")
+                return
+            rows = []
+            for i, line in enumerate(out, start=1):
+                parts = line.split("\t")
+                if len(parts) == 3:
+                    rows.append({"type": parts[0], "index": i, "ssid": parts[1]})
+            self._send(200, json.dumps({"rows": rows}), "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_setup()
         elif path == "/" or path == "/index.html":
@@ -385,6 +403,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._api_response(rc, out, err)
             return
         if not (path == "/api/wan/connect" or path == "/api/wan/psks"
+                or path == "/api/wan/psks-manage"
+                or path == "/api/wan/apconfig"
                 or path == "/api/wan/disconnect"
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"):
             self._send(404, b"404 not found", "text/plain")
@@ -412,6 +432,52 @@ class StatusHandler(BaseHTTPRequestHandler):
                     self._send(400, json.dumps({"error": "ssid"}), "application/json")
                     return
                 rc, out, err = self._run_tool(["try-psks", ssid], API_WRITE_TIMEOUT)
+            elif path == "/api/wan/psks-manage":
+                action = body.get("action")
+                if action == "add":
+                    ssid = body.get("ssid")
+                    psk = body.get("psk")
+                    if not self._ssid_valid(ssid) or not isinstance(psk, str) or not psk.strip():
+                        self._send(400, json.dumps({"error": "psks-manage"}), "application/json")
+                        return
+                    rc, out, err = self._run_tool(["psks-add", ssid, psk], API_WRITE_TIMEOUT)
+                elif action == "add-default":
+                    psk = body.get("psk")
+                    if not isinstance(psk, str) or not psk.strip():
+                        self._send(400, json.dumps({"error": "psks-manage"}), "application/json")
+                        return
+                    rc, out, err = self._run_tool(["psks-add-default", psk], API_WRITE_TIMEOUT)
+                elif action == "del":
+                    n = body.get("n")
+                    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+                        self._send(400, json.dumps({"error": "psks-manage"}), "application/json")
+                        return
+                    rc, out, err = self._run_tool(["psks-del", str(n)], API_WRITE_TIMEOUT)
+                else:
+                    self._send(400, json.dumps({"error": "psks-manage"}), "application/json")
+                    return
+            elif path == "/api/wan/apconfig":
+                ssid = body.get("ssid")
+                psk = body.get("psk")
+                if ssid is None and psk is None:
+                    self._send(400, json.dumps({"error": "apconfig"}), "application/json")
+                    return
+                if ssid is not None:
+                    if not self._ssid_valid(ssid) or len(ssid) > 32 \
+                            or not all(c.isprintable() and c not in '|\\$&' for c in ssid):
+                        self._send(400, json.dumps({"error": "apconfig"}), "application/json")
+                        return
+                if psk is not None:
+                    if not isinstance(psk, str) or not (8 <= len(psk) <= 63) \
+                            or not all(c.isalnum() or c in '._-' for c in psk):
+                        self._send(400, json.dumps({"error": "apconfig"}), "application/json")
+                        return
+                args = ["ap-apply"]
+                if ssid is not None:
+                    args.append(ssid)
+                if psk is not None:
+                    args.append(psk)
+                rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
             elif path == "/api/wan/disconnect":
                 rc, out, err = self._run_tool(["disconnect"], API_QUICK_TIMEOUT)
             elif path == "/api/wan/forget":

@@ -856,7 +856,7 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application
   -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","action":"add","ssid":"S","psk":"p"}' http://127.0.0.1:18096/api/wan/psks-manage)
 [[ "$r" == "200" ]] && ok "5w POST psks-manage add -> 200" || bad "5w POST add code=$r (want 200)"
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"NewName","psk":"newpsk9"}' http://127.0.0.1:18096/api/wan/apconfig)
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"NewName","psk":"newpsk9x"}' http://127.0.0.1:18096/api/wan/apconfig)
 [[ "$r" == "200" ]] && ok "5w POST apconfig happy -> 200" || bad "5w apconfig code=$r (want 200)"
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"a|b","psk":"newpsk9"}' http://127.0.0.1:18096/api/wan/apconfig)
