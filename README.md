@@ -284,7 +284,50 @@ and offers "Try saved passwords" per network: it cycles that network's
 saved candidates, then the defaults, via a throwaway probe profile and
 connects with the winner — no re-typing. `travel-wan forget <SSID>`
 removes the profile but KEEPS the saved PSKs, so forgetting a hotel
-network never loses its password.
+network never loses its password. "Try saved passwords" reports its
+progress lines on the phone (which candidates failed, which connected)
+instead of a bare failure code.
+
+The scan list is a table of the **ten strongest** networks (scrollable),
+with a Connect button that opens a dialog for the password plus
+"Try saved passwords". Hidden networks and enterprise (802.1X) networks
+are shown as notes — the page never joins those.
+
+### Pre-seeded passwords (.psksecret) and the saved-passwords manager
+
+Starter passwords live in an optional, **gitignored** repo-root file
+`.psksecret` (one PSK per line; `#` comments and blank lines are skipped):
+
+```
+0123456789
+welcome
+guestwifi
+```
+
+At provisioning the file is staged next to `role.env` and install.sh seeds
+its values into the store as default (`d`) rows alongside
+`TRAVELROUTER_DEFAULT_PSKS` (env first, file appended, no duplicates). The
+file is read **once at install** — the router and phone never modify it.
+Afterwards the store itself is managed at runtime:
+
+- **Phone**: the setup page's "Saved passwords" section lists the store
+  rows (type/index/SSID only — passwords never leave the device) and can
+  add default passwords or remove rows (PIN-gated).
+- **SSH**: `travel-wan psks-add <SSID> <PSK>`,
+  `travel-wan psks-add-default <PSK>`, `travel-wan psks-list`
+  (TYPE⟨TAB⟩SSID⟨TAB⟩PSK, root only — the store is 0600),
+  `travel-wan psks-del <index>`.
+
+### Changing the router's own network (AP rename)
+
+The setup page's "AP settings" flow (and `POST /api/wan/apconfig`) changes
+the travel SSID and/or AP password at runtime: the new config is validated
+(`hostapd -t`) and rendered from the template, the AP service restarts
+(connected devices drop and must rejoin), and on a failed restart the
+previous config is restored automatically. If you changed the SSID, join
+the new SSID manually — the phone re-checks the router over the new
+connection. **Re-provisioning resets the AP name/password to your `.env`
+values by design.**
 
 ### First-boot notifications (NATS)
 
