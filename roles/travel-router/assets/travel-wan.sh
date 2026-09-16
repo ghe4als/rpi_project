@@ -242,6 +242,50 @@ json_field() {
 
 WIFI_WAN_IF="$(json_field wan_if 2>/dev/null || true)"
 
+# json_escape VAL : make a shell string safe to interpolate into a JSON
+# double-quoted string (same idiom as wan-select.sh's state.json heredoc).
+# ORDER IS LOAD-BEARING: backslash-then-quote — escaping the quote first would
+# turn the NEW backslash into \\ on the second pass, double-escaping the JSON.
+# Control characters (< 0x20, incl. tab/lf/cr in a hostile hostname) are
+# dropped, never truncated or rejected, so the row still parses as JSON.
+json_escape() {
+    local v="${1:-}"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    v=$(printf '%s' "$v" | LC_ALL=C tr -d '\001-\037')
+    printf '%s' "$v"
+}
+
+LEASES_FILE="${TRAVELROUTER_LEASES_FILE:-/var/lib/misc/dnsmasq.leases}"
+
+# lease_rows : emit one TAB-separated row per DHCP lease
+#   lease_expires<TAB>mac<TAB>ip<TAB>hostname
+# The leases file splits on whitespace: [expires, mac, ip, hostname, ...rest];
+# the remainder is joined back with spaces because hostnames may contain them
+# (a fixed-column awk would mangle those). A missing file degrades to no rows
+# (status must never abort on it); a line with too few fields is skipped.
+lease_rows() {
+    [[ -f "$LEASES_FILE" ]] || return 0
+    local row expires mac ip hostname rest
+    while IFS= read -r row || [[ -n "$row" ]]; do
+        [[ -n "$row" ]] || continue
+        expires="${row%%[[:space:]]*}"; row="${row#"$expires"}"
+        row="${row#[[:space:]]}"
+        [[ -n "$row" ]] || continue
+        mac="${row%%[[:space:]]*}"; row="${row#"$mac"}"
+        row="${row#[[:space:]]}"
+        [[ -n "$row" ]] || continue
+        ip="${row%%[[:space:]]*}"; row="${row#"$ip"}"
+        row="${row#[[:space:]]}"
+        [[ -n "$row" ]] || continue
+        hostname="${row%%[[:space:]]*}"; rest="${row#"$hostname"}"
+        rest="${rest#[[:space:]]}"
+        hostname="$hostname${rest:+ $rest}"
+        printf '%s\t%s\t%s\t%s\n' "$expires" "$mac" "$ip" "$hostname"
+    done < "$LEASES_FILE"
+    return 0
+}
+
 # Print this script's header comment block as the usage banner.
 usage() {
     sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
@@ -258,6 +302,7 @@ Usage:
   travel-wan psks-add <SSID> <PSK>       record a PSK candidate (setup API)
   travel-wan psks-add-default <PSK>      record a default PSK candidate
   travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
+  travel-wan clients [--json]            list connected clients (leases + AP assoc)
   travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan ap-apply <SSID> [PSK]       re-render + restart the AP (setup API)
   travel-wan ap-ssid                     print the live AP SSID
@@ -708,11 +753,34 @@ cmd_status() {
     local standalone="false"
     [[ "$state_mode" != "routed" ]] && standalone="true"
 
+    # Connected clients: lease rows joined with hostapd's associated MACs
+    # (associated iff the MAC appears in `hostapd_cli all_sta`). Computed
+    # BEFORE the degraded-WAN early return: a missing WAN adapter says nothing
+    # about the AP side, whose clients must still be listed (one all_sta run,
+    # cached — a per-lease call would multiply the process cost).
+    local assoc_list=""
+    if [[ -x "$(command -v "$HOSTAPD_CLI" 2>/dev/null || true)" ]]; then
+        assoc_list="$("$HOSTAPD_CLI" all_sta 2>/dev/null || true)"
+    fi
+
+    local clients=0 clients_list=""
+    local row expires mac ip hostname sep="" associated
+    while IFS= read -r row; do
+        IFS=$'\t' read -r expires mac ip hostname <<<"$row"
+        clients=$((clients + 1))
+        associated="false"
+        if [[ -n "$assoc_list" && -n "$mac" && "$assoc_list" == *"$mac"* ]]; then
+            associated="true"
+        fi
+        clients_list="${clients_list}${sep}{\"mac\":\"$(json_escape "$mac")\",\"ip\":\"$(json_escape "$ip")\",\"hostname\":\"$(json_escape "$hostname")\",\"lease_expires\":\"$(json_escape "$expires")\",\"associated\":${associated}}"
+        sep=","
+    done < <(lease_rows)
+
     if ! iface_ok "$if_name"; then
         log "WAN wifi device '${if_name:-<empty>}' not available on this model; degraded status only"
         if [[ $json_mode -eq 1 ]]; then
-            printf '{"mode":"%s","lan_ip":"%s","wan_if":"","wan_ssid":"","wan_ip":"","internet":"unknown","ap_state":"up","clients":0,"standalone":%s}\n' \
-                "$state_mode" "$lan_ip" "$standalone"
+            printf '{"mode":"%s","lan_ip":"%s","wan_if":"","wan_ssid":"","wan_ip":"","internet":"unknown","ap_state":"up","clients":%s,"clients_list":[%s],"standalone":%s}\n' \
+                "$state_mode" "$lan_ip" "$clients" "$clients_list" "$standalone"
         else
             log "wan_if='': no WAN wifi adapter present on this model (check the USB dongle)"
         fi
@@ -732,14 +800,6 @@ cmd_status() {
         ap_state="_sta_count:${n:-0}"
     fi
 
-    local clients=-1
-    if [[ -f /var/lib/misc/dnsmasq.leases ]]; then
-        # grep -c exits 1 on a zero count (empty leases file = normal on
-        # first boot); swallow that so pipefail+errexit cannot kill status.
-        clients="$( (grep -c '.' /var/lib/misc/dnsmasq.leases 2>/dev/null || true) | tr -d ' ')"
-        [[ -z "$clients" ]] && clients=0
-    fi
-
     local internet="unknown"
     if "$CURL" -4 -fsS -m 5 https://1.1.1.1 >/dev/null 2>&1; then
         internet="yes"
@@ -751,8 +811,8 @@ cmd_status() {
         # Strip quote/backslash so adversarial SSIDs cannot break the JSON.
         local wan_ssid="${connection//\"/}"
         wan_ssid="${wan_ssid//\\/}"
-        printf '{"mode":"%s","lan_ip":"%s","wan_if":"%s","wan_ssid":"%s","wan_ip":"%s","internet":"%s","ap_state":"%s","clients":%s,"standalone":%s}\n' \
-            "$state_mode" "$lan_ip" "$if_name" "$wan_ssid" "${wan_ip:-}" "$internet" "$ap_state" "$clients" "$standalone"
+        printf '{"mode":"%s","lan_ip":"%s","wan_if":"%s","wan_ssid":"%s","wan_ip":"%s","internet":"%s","ap_state":"%s","clients":%s,"clients_list":[%s],"standalone":%s}\n' \
+            "$state_mode" "$lan_ip" "$if_name" "$wan_ssid" "${wan_ip:-}" "$internet" "$ap_state" "$clients" "$clients_list" "$standalone"
     else
         log "WAN IF  : $if_name"
         log "SSID    : $connection"
@@ -761,6 +821,34 @@ cmd_status() {
         log "AP      : $ap_state"
         log "CLIENTS : $clients"
     fi
+}
+
+cmd_clients() {
+    # Connected-clients rows as a JSON array (or human TAB lines). Same live
+    # derivation as status's clients_list; no interface check, so it works
+    # regardless of the WAN adapter.
+    local json_mode=0
+    [[ "${1:-}" == "--json" ]] && json_mode=1
+    local assoc_list=""
+    if [[ -x "$(command -v "$HOSTAPD_CLI" 2>/dev/null || true)" ]]; then
+        assoc_list="$("$HOSTAPD_CLI" all_sta 2>/dev/null || true)"
+    fi
+    local row expires mac ip hostname sep="" buf="" associated
+    while IFS= read -r row; do
+        IFS=$'\t' read -r expires mac ip hostname <<<"$row"
+        associated="false"
+        if [[ -n "$assoc_list" && -n "$mac" && "$assoc_list" == *"$mac"* ]]; then
+            associated="true"
+        fi
+        if [[ $json_mode -eq 1 ]]; then
+            buf="${buf}${sep}{\"mac\":\"$(json_escape "$mac")\",\"ip\":\"$(json_escape "$ip")\",\"hostname\":\"$(json_escape "$hostname")\",\"lease_expires\":\"$(json_escape "$expires")\",\"associated\":${associated}}"
+            sep=","
+        else
+            printf '%s\t%s\t%s\t%s\n' "$mac" "$ip" "$hostname" "$expires"
+        fi
+    done < <(lease_rows)
+    if [[ $json_mode -eq 1 ]]; then printf '[%s]\n' "$(printf '%s' "$buf")"; fi
+    return 0
 }
 
 main() {
@@ -799,6 +887,9 @@ main() {
             ;;
         psks-list)
             cmd_psks_list
+            ;;
+        clients)
+            cmd_clients "${1:-}"
             ;;
         psks-del)
             cmd_psks_del "${1:-}"

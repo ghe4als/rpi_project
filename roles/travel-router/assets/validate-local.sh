@@ -1712,6 +1712,92 @@ m=$(stat -f%Lp "$envfile" 2>/dev/null || stat -c%a "$envfile" 2>/dev/null)
 [[ "$m" == "600" ]] && ok "5af env file (PIN+PSK) mode 0600" || bad "5af env file mode=$m"
 grep -qF 'AdminPass99' "$TMP/pskrun.log" && bad "5af ADMIN_PSK leaked to install log" || ok "5af ADMIN_PSK absent from install log"
 
+# --- (5ag) connected-clients list (Todo 4) ------------------------------------
+# Mirrors the §5c seam idiom: stub the tool reads (macOS has neither
+# /sys/class/net nor /var/lib/misc) and copy travel-wan.sh with a sed so the
+# leases path points at a fixture. Degraded status (no /sys/class/net) is what
+# a macOS runner exercises: the battery asserts the degraded-JSON clients_list
+# plus the `travel-wan clients` subcommand, which reads the leases file
+# directly (no interface check).
+sec "5ag connected-clients list"
+TW_COPY="$TMP/ag-copy.sh"
+sed "s|/var/lib/misc/dnsmasq.leases|$TMP/ag-leases|g" "$A/travel-wan.sh" > "$TW_COPY"
+tw_ag() { # [args...] -> run the sed-copied travel-wan with env stubs
+  TW_MACS="aa:bb:cc:dd:ee:03" NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" \
+    HOSTAPD_CLI="$B/ag-hostapd" TRAVELROUTER_STATE_FILE="$B/tw-state.json" \
+    bash "$TW_COPY" "$@" 2>/dev/null
+}
+# Fixture: 3 leases; row 2's hostname contains a space; row 3's MAC is
+# associated (the HOSTAPD_CLI stub prints one MAC).
+printf '%s\t%s\t%s\t%s\n' 1700000000 aa:bb:cc:dd:ee:01 192.168.50.101 'phone' \
+  > "$TMP/ag-leases"
+printf '%s\t%s\t%s\t%s\n' 1700000101 aa:bb:cc:dd:ee:02 192.168.50.102 'guest laptop' \
+  >> "$TMP/ag-leases"
+printf '%s\t%s\t%s\t%s\n' 1700000202 aa:bb:cc:dd:ee:03 192.168.50.103 'desk' \
+  >> "$TMP/ag-leases"
+printf '#!/bin/bash\nif [[ "$1" == "all_sta" ]]; then printf "%%s\\n" "aa:bb:cc:dd:ee:03"; exit 0; fi\nexit 0\n' > "$B/ag-hostapd"
+chmod +x "$B/ag-hostapd"
+# (a) status --json: clients_list rows + legacy count + association
+out=$(tw_ag status --json); rc=$?
+json_ok=$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); l=d.get("clients_list"); sys.exit(0 if isinstance(l,list) and len(l)==3 else 1)' <<<"$out" 2>/dev/null && echo yes)
+[[ "$json_ok" == "yes" ]] && ok "5ag status clients_list=3 rows" || bad "5ag clients_list wrong: $out"
+[[ "$out" == *'"clients":3'* ]] && ok "5ag legacy clients count key still present" || bad "5ag legacy clients missing: $out"
+python3 - "$out" <<'PY' 2>/dev/null && ok "5ag lease row fields (mac/ip/hostname, space-safe)" || bad "5ag lease row fields wrong"
+import json, sys
+d = json.loads(sys.argv[1])
+l = d["clients_list"]
+r0, r1, r2 = l[0], l[1], l[2]
+assert r0["mac"] == "aa:bb:cc:dd:ee:01" and r0["ip"] == "192.168.50.101"
+assert r0["hostname"] == "phone" and r0["lease_expires"] == "1700000000"
+assert r1["hostname"] == "guest laptop", r1
+assert r0["associated"] is False and r2["associated"] is True
+PY
+# (b) clients subcommand: same rows, every field JSON-escaped
+out=$(tw_ag clients --json); rc=$?
+[[ $rc -eq 0 ]] && echo "$out" | python3 -m json.tool >/dev/null 2>&1 \
+  && ok "5ag clients --json parses" || bad "5ag clients --json invalid: rc=$rc out=$out"
+python3 - "$out" <<'PY' 2>/dev/null && ok "5ag clients rows parity (3, space-safe, assoc)" || bad "5ag clients rows wrong"
+import json, sys
+l = json.loads(sys.argv[1])
+assert isinstance(l, list) and len(l) == 3
+assert l[1]["hostname"] == "guest laptop"
+assert l[0]["associated"] is False and l[2]["associated"] is True
+PY
+# hostile hostname: quotes/backslash/$/tab must survive JSON-escaped (a
+# control char like TAB is DROPPED by json_escape, mirroring wan-select.sh)
+printf '%s\t%s\t%s\t%s\n' 1700000000 de:ad:be:ef:00:01 192.168.50.99 'say "hi"\$x tab	sep' \
+  > "$TMP/ag-leases-h"
+sed "s|/var/lib/misc/dnsmasq.leases|$TMP/ag-leases-h|g" "$A/travel-wan.sh" > "$TW_COPY"
+out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent \
+      TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$TW_COPY" clients --json)
+python3 - "$out" <<'PY' 2>/dev/null && ok "5ag hostile hostname JSON-escaped intact" || bad "5ag hostile hostname mangled: $out"
+import json, sys
+l = json.loads(sys.argv[1])
+assert len(l) == 1
+assert l[0]["hostname"] == 'say "hi"\\$x tabsep', l[0]["hostname"]
+PY
+# malformed lease line (too few fields / no newline at EOF): degrade, no crash
+printf '%s\t%s\n' 1700000000 aa:bb:cc:dd:ee:aa > "$TMP/ag-leases-m"   # 2 fields
+printf '1700000000\tde:ad:be:ef:00:09\t192.168.50.90\tlast-no-newline' >> "$TMP/ag-leases-m"
+sed "s|$TMP/ag-leases}|$TMP/ag-leases-m}|g" "$A/travel-wan.sh" > "$TW_COPY"
+out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent \
+      TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$TW_COPY" clients --json); rc=$?
+[[ $rc -eq 0 ]] && echo "$out" | python3 -m json.tool >/dev/null 2>&1 \
+  && ok "5ag malformed lease lines degrade, no crash" || bad "5ag malformed leases crash: rc=$rc out=$out"
+# missing leases file: empty list on BOTH surfaces, never aborts
+sed "s|$TMP/ag-leases}|$TMP/ag-leases-absent}|g" "$A/travel-wan.sh" > "$TW_COPY"
+out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent \
+      TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$TW_COPY" status --json)
+python3 - "$out" <<'PY' 2>/dev/null && ok "5ag missing leases file -> status clients_list=[] (never aborts)" || bad "5ag missing leases status: $out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d.get("clients_list") == []
+PY
+out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexistent \
+      TRAVELROUTER_STATE_FILE="$B/tw-state.json" bash "$TW_COPY" clients --json); rc=$?
+[[ $rc -eq 0 && "$out" == "[]" ]] && ok "5ag missing leases file -> clients --json []" || bad "5ag missing leases clients: rc=$rc out=$out"
+rm -f "$TW_COPY"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
