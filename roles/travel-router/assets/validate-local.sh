@@ -58,6 +58,7 @@ TRAVELROUTER_DHCP_RANGE=192.168.50.100,192.168.50.200,12h
 TRAVELROUTER_WAN_PREFER=auto
 TRAVELROUTER_STATUS_PORT=80
 TRAVELROUTER_SETUP_PIN=9876
+TRAVELROUTER_ADMIN_PSK=AdminPass99
 EOF
 pfx="$TMP/run1"
 if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfx" TRAVELROUTER_ROLE_ENV="$TMP/role.env" \
@@ -443,7 +444,7 @@ for bad_pin in "" "123" "1234567890123" "12 4" "123-4"; do
 done
 # happy dry-run: env file staged 0600 with the PIN (fixture carries the PIN
 # because install.sh sources role.env; the other PIN breakers use pin.env)
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\n' > "$TMP/pinok.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$TMP/pinok.env"
 pfx2="$TMP/pinrun"
 if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfx2" TRAVELROUTER_ROLE_ENV="$TMP/pinok.env" \
    bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pinrun.log" 2>&1; then ok "PIN happy dry-run rc=0"; else bad "PIN happy dry-run exited $?"; fi
@@ -478,6 +479,7 @@ cat > "$TMP/seed.env" <<'EOF'
 TRAVELROUTER_AP_SSID=TestNet
 TRAVELROUTER_AP_PSK=TestPass123
 TRAVELROUTER_SETUP_PIN=9876
+TRAVELROUTER_ADMIN_PSK=AdminPass99
 WIFI_SSID=SeedWifi
 WIFI_PSK=SeedPass123
 WIFI_COUNTRY=US
@@ -496,13 +498,13 @@ grep -qF "WAN bootstrap: 'SeedWifi' profile seeded" "$TMP/seed.log" && ok "WAN b
 # --- (5i) AP_COUNTRY fallback (W03: TRAVELROUTER_AP_COUNTRY or WIFI_COUNTRY) ---
 sec "5i. AP_COUNTRY fallback chain"
 # unset TRAVELROUTER_AP_COUNTRY, WIFI_COUNTRY=DE -> rendered conf carries DE
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nWIFI_COUNTRY=DE\n' > "$TMP/country.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\nWIFI_COUNTRY=DE\n' > "$TMP/country.env"
 TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/cc1" TRAVELROUTER_ROLE_ENV="$TMP/country.env" \
   bash "$ROOT/roles/travel-router/install.sh" >/dev/null 2>&1
 c=$(grep -c '^country_code=DE$' "$TMP/cc1/etc/hostapd/hostapd-travel.conf")
 [[ "$c" == "1" ]] && ok "unset AP_COUNTRY + WIFI_COUNTRY=DE -> country_code=DE" || bad "country_code=DE count=$c"
 # explicit AP_COUNTRY wins over WIFI_COUNTRY
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_AP_COUNTRY=AU\nWIFI_COUNTRY=DE\n' > "$TMP/country2.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\nTRAVELROUTER_AP_COUNTRY=AU\nWIFI_COUNTRY=DE\n' > "$TMP/country2.env"
 TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/cc2" TRAVELROUTER_ROLE_ENV="$TMP/country2.env" \
   bash "$ROOT/roles/travel-router/install.sh" >/dev/null 2>&1
 c=$(grep -c '^country_code=AU$' "$TMP/cc2/etc/hostapd/hostapd-travel.conf")
@@ -585,7 +587,7 @@ sec "5n. install.sh known-psks store seeding (M8-a)"
 # macOS runner has no /sys/class/net, so travel-wan connect never passes the
 # iface gate. These batteries assert STORE FILE CONTENTS ONLY (never rc).
 # Seed 1: TRAVELROUTER_DEFAULT_PSKS="alpha,beta" -> fresh store with 2 d-rows.
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=alpha,beta\n' > "$TMP/pskseed.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\nTRAVELROUTER_DEFAULT_PSKS=alpha,beta\n' > "$TMP/pskseed.env"
 pfxn="$TMP/pskseed"
 if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxn" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
    bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskseed.log" 2>&1; then
@@ -832,7 +834,7 @@ c=$(grep -c $'^d\t' "$STORE5V" 2>/dev/null || true)
 [[ "$c" == "5" ]] && ok "5v merge: 5 d-rows (env alpha,beta + file 3, comment/blank skipped)" || bad "5v d-row count=$c (want 5)"
 # (b) no-dupe merge: env gamma + file gamma -> exactly one gamma d-row
 printf 'gamma\n' > "$TMP/psksecret-b"
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-b.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-b.env"
 pfxvb="$TMP/pskv-run-b"
 TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxvb" TRAVELROUTER_ROLE_ENV="$TMP/pskv-b.env" \
   TRAVELROUTER_DEFAULT_PSKS="gamma" TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-b" \
@@ -841,7 +843,7 @@ STORE5VB="$pfxvb/etc/rpi-project/travel-router/known-psks"
 c=$(grep -c $'^d\t\tgamma$' "$STORE5VB" 2>/dev/null || true)
 [[ "$c" == "1" ]] && ok "5v no-dupe merge: exactly one gamma d-row" || bad "5v gamma d-row count=$c (want 1)"
 # (c) second install preserves s-row, refreshes d-rows env-first + file-appended
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-c.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\nTRAVELROUTER_DEFAULT_PSKS=gamma\n' > "$TMP/pskv-c.env"
 pfxvc="$TMP/pskv-run-c"
 TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxvc" TRAVELROUTER_ROLE_ENV="$TMP/pskv-c.env" \
   TRAVELROUTER_DEFAULT_PSKS="gamma" TRAVELROUTER_PSKSECRET_FILE="$TMP/psksecret-c" \
@@ -1055,7 +1057,7 @@ mkdir -p "$c3/ap-etc"
 printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
 chmod 0644 "$c3/ap-etc/hostapd-travel.conf"
 printf 'OldNet\n' > "$c3/ap-ssid"
-printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\n' > "$c3/role.env"
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$c3/role.env"
 c3aprun() {  # $1 = MODELOG target, $2 = SYSTEMCTL stub
   ( umask 022
     export TRAVELROUTER_AP_CONF="$c3/ap-etc/hostapd-travel.conf"
@@ -1667,6 +1669,48 @@ h_err=$(grep -c -F 'PIN required — enter it below (ask the router owner if unk
 # Guarded-message invariant: 9 existing occurrences + 1 new apiWrite guard = 10.
 pin_msg_count=$(grep -c -F 'PIN required — enter it in the PIN section' "$A/setup.html")
 [[ "$pin_msg_count" == "10" ]] && ok "5ae pin-guard message count 10 (9 existing + apiWrite)" || bad "5ae pin-guard message count=$pin_msg_count (want 10)"
+
+# --- (5af) admin PSK staging battery (Todo 2, C3/C4 seam) ---------------------
+sec "5af. admin PSK staging (same tmpfs EnvironmentFile as the PIN)"
+# (a) .env.example documents the var
+grep -q '^TRAVELROUTER_ADMIN_PSK=' "$ROOT/.env.example" \
+  && ok "5af .env.example has TRAVELROUTER_ADMIN_PSK" || bad "5af .env.example missing TRAVELROUTER_ADMIN_PSK"
+# (c) malformed/missing admin PSK -> friendly fail rc=1 (fixture mirrors §5g:
+# PIN breakers carry no ADMIN_PSK either — unset must also fail). Breakers are
+# %q-quoted like the real role.env render (provision.sh printf '%s=%q'): bare
+# KEY=value would let bash strip the breaker chars before install.sh sees them.
+for bad_psk in "" "short1" 'with|bar' 'with\back' 'with$dollar' 'with\&amp'; do
+  printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\n' > "$TMP/pskbrk.env"
+  printf 'TRAVELROUTER_ADMIN_PSK=%q\n' "$bad_psk" >> "$TMP/pskbrk.env"
+  out=$(TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/pskbrk" TRAVELROUTER_ROLE_ENV="$TMP/pskbrk.env" \
+        bash "$ROOT/roles/travel-router/install.sh" 2>&1); rc=$?
+  [[ $rc -eq 1 && "$out" == *"ADMIN_PSK"* ]] && ok "5af malformed ADMIN_PSK '${bad_psk:-<empty>}' rejected (rc=1)" \
+    || bad "5af ADMIN_PSK '${bad_psk:-<empty>}' NOT rejected (rc=$rc out=$(echo "$out" | head -1))"
+done
+# unset ADMIN_PSK (no role.env line at all) must also fail
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\n' > "$TMP/pskunset.env"
+out=$(TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/pskunset" TRAVELROUTER_ROLE_ENV="$TMP/pskunset.env" \
+      bash "$ROOT/roles/travel-router/install.sh" 2>&1); rc=$?
+[[ $rc -eq 1 && "$out" == *"ADMIN_PSK"* ]] && ok "5af unset ADMIN_PSK rejected (rc=1)" \
+  || bad "5af unset ADMIN_PSK NOT rejected (rc=$rc out=$(echo "$out" | head -1))"
+# newline render-breaker via env seam (real newline inside the value)
+out=$(TRAVELROUTER_ADMIN_PSK="pass
+line" TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/pskbrknl" TRAVELROUTER_ROLE_ENV="$TMP/pskbrk.env" \
+        bash "$ROOT/roles/travel-router/install.sh" 2>&1); rc=$?
+  [[ $rc -eq 1 && "$out" == *"ADMIN_PSK"* ]] && ok "5af ADMIN_PSK with newline rejected (rc=1)" \
+    || bad "5af ADMIN_PSK with newline NOT rejected (rc=$rc out=$(echo "$out" | head -1))"
+# (b) happy dry-run: env file stages BOTH PIN and PSK at 0600 (fixture idiom of §5g)
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$TMP/pskok.env"
+pfxpsk="$TMP/pskrun"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxpsk" TRAVELROUTER_ROLE_ENV="$TMP/pskok.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/pskrun.log" 2>&1; then ok "5af ADMIN_PSK happy dry-run rc=0"; else bad "5af ADMIN_PSK happy dry-run exited $?"; fi
+envfile="$pfxpsk/run/travel-router/role-env/travel-router-setup.env"
+[[ -f "$envfile" ]] && ok "5af PSK env file staged" || bad "5af PSK env file MISSING: $(ls "$pfxpsk/run/travel-router/" 2>/dev/null)"
+grep -qF 'TRAVELROUTER_SETUP_PIN="9876"' "$envfile" && ok "5af PIN still rendered into env file" || bad "5af PIN line missing from env file"
+grep -qF 'TRAVELROUTER_ADMIN_PSK="AdminPass99"' "$envfile" && ok "5af ADMIN_PSK rendered into env file" || bad "5af ADMIN_PSK missing from env file"
+m=$(stat -f%Lp "$envfile" 2>/dev/null || stat -c%a "$envfile" 2>/dev/null)
+[[ "$m" == "600" ]] && ok "5af env file (PIN+PSK) mode 0600" || bad "5af env file mode=$m"
+grep -qF 'AdminPass99' "$TMP/pskrun.log" && bad "5af ADMIN_PSK leaked to install log" || ok "5af ADMIN_PSK absent from install log"
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"

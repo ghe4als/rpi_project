@@ -134,6 +134,24 @@ fi
 printf '%s' "$upin" | grep -qE '^[A-Za-z0-9]+$' || fail "SETUP_PIN has illegal characters" \
   "TRAVELROUTER_SETUP_PIN must be A-Za-z0-9 only (phone-keyboard-friendly)"
 
+# ADMIN_PSK is REQUIRED: it gates the setup page + every change alongside the
+# PIN. Same render-breaker battery as the SSID (it is sed-rendered nowhere, but
+# the same chars also break the systemd EnvironmentFile printf staging below).
+apsk="${TRAVELROUTER_ADMIN_PSK:-}"
+if [[ -z "$apsk" ]]; then
+  fail "ADMIN_PSK (TRAVELROUTER_ADMIN_PSK) is empty" \
+    "set TRAVELROUTER_ADMIN_PSK in role.env (>=8 printable-ASCII chars; it gates the setup page + all changes alongside the PIN)"
+fi
+if [[ "${#apsk}" -lt 8 ]]; then
+  fail "ADMIN_PSK too short (${#apsk} < 8)" "TRAVELROUTER_ADMIN_PSK must be at least 8 printable-ASCII characters"
+fi
+case "$apsk" in
+  *'|'*|*'\'*|*'$'*|*'&'*|*$'\n'*) fail "ADMIN_PSK contains a render-breaker char (|, \, $, &, or a newline)" \
+    "remove | / \ / $ / & from TRAVELROUTER_ADMIN_PSK; they break the env staging" ;;
+esac
+printf '%s' "$apsk" | grep -qE '^[ -~]+$' || fail "ADMIN_PSK has non-printable characters" \
+  "TRAVELROUTER_ADMIN_PSK must be printable ASCII only"
+
 # --- (3) Run the base role first (tailscale idiom) -------------------------
 # Idempotent: if a prior role already ran base, apt + common packages exist.
 # base is auto-staged by the provisioner; call it here so prerequisites exist
@@ -369,8 +387,9 @@ real_or_log sysctl --system
 pin_env_dir="${DRY_RUN_PREFIX}/run/travel-router/role-env"
 mkdir -p "$pin_env_dir"
 printf 'TRAVELROUTER_SETUP_PIN="%s"\n' "$upin" > "${pin_env_dir}/travel-router-setup.env"
+printf 'TRAVELROUTER_ADMIN_PSK="%s"\n' "$apsk" >> "${pin_env_dir}/travel-router-setup.env"
 chmod 0600 "${pin_env_dir}/travel-router-setup.env"
-log "staged PIN EnvironmentFile (0600, tmpfs) -> ${pin_env_dir}/travel-router-setup.env"
+log "staged PIN+PSK EnvironmentFile (0600, tmpfs) -> ${pin_env_dir}/travel-router-setup.env"
 log "rendered hostapd/dnsmasq/sysctl to ${DRY_RUN_PREFIX}"
 
 # --- (8) Sanity-assert stock dnsmasq is inert (BEFORE any enable/restart) ----
