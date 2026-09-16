@@ -298,12 +298,16 @@ SPID=$!
 sleep 1.5
 wait_healthy 18080 || true
 sc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health 2>/dev/null)
+sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/status 2>/dev/null)
 sj=$(curl -s http://127.0.0.1:18080/status 2>/dev/null)
 sp=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18080/status 2>/dev/null)
 su=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/setup 2>/dev/null)
 suc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/setup 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
 [[ "$sc" == "200" ]] && ok "status /health 200" || bad "/health=$sc (srv.log: $(tail -1 "$B/srv.log" 2>/dev/null))"
-echo "$sj" | grep -q '"mode"' && ok "/status contains mode" || bad "/status missing mode: $sj"
+# C2: /status is session-gated -> 401 with an auth-only body.
+[[ "$sjc" == "401" ]] && ok "/status gated: 401 without session" || bad "/status code=$sjc"
+echo "$sj" | grep -qF '"auth"' && ! echo "$sj" | grep -qF '"mode"' \
+  && ok "/status 401 body carries no device state" || bad "/status body: $sj"
 [[ "$sp" == "404" || "$sp" == "405" ]] && ok "POST -> 404/405" || bad "POST code=$sp"
 [[ "$su" == "200" ]] && ok "GET /setup -> 200 (H02)" || bad "/setup code=$su"
 [[ "$suc" == "no-store" ]] && ok "/setup served Cache-Control: no-store" || bad "/setup cache-control=$suc"
@@ -314,9 +318,10 @@ srv = open("roles/travel-router/assets/status-server.py").read()
 code = setup.split("<script>")[1].split("</script>")[0]
 for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
     assert forbidden not in code
-# status page JS block: no assignment to .innerHTML either
-page = srv.split('_STATUS_HTML = """')[1].split('"""')[0]
+# warning page HTML block: static only — no .innerHTML writes, no fetch polling
+page = srv.split('_WARNING_HTML = """')[1].split('"""')[0]
 assert ".innerHTML" not in page and "insertAdjacentHTML" not in page
+assert "fetch(" not in page
 PY
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 # fallback seeding: dead tool -> mode/lan_ip from state still present
@@ -325,8 +330,10 @@ TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.js
 SPID=$!
 sleep 1.5
 wait_healthy 18081 || true
-sj=$(curl -s http://127.0.0.1:18081/status 2>/dev/null)
-echo "$sj" | grep -q '"mode"' && echo "$sj" | grep -q '"lan_ip"' && ok "fallback payload carries mode/lan_ip" || bad "fallback: $sj"
+# C2 (Todo 5): the fallback path feeds /status, which is now session-gated —
+# a no-session GET still answers 401 (the fallback dict itself never ships).
+sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/status 2>/dev/null)
+[[ "$sjc" == "401" ]] && ok "fallback path still session-gated (401 no-session)" || bad "fallback /status code=$sjc"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 
 # --- (5d) POST API battery (H01: PIN gate + policy + argv contract) -----------
@@ -1829,6 +1836,56 @@ if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$ah/pfx" TRAVELROUTER_ROLE_ENV="$TMP/r
 else
   bad "5ah dry-run render run exited nonzero"
 fi
+
+# --- (5ai) generic warning page at / + /status session gate (Todo 5, C2) -------
+sec "5ai warning page + /status gate"
+# Fixture mirrors §5c/§5f: state with lan_ip=127.0.0.1 (the server BINDS that
+# IP; 192.168.50.1 is not an address on the runner). §5f reuses $STW for the
+# TRAVELWAN_BIN seam, but STW is a §5d-args stub; this battery writes its own
+# tool seam at $B (mirrors the §5c fixture idiom).
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"HotelNet","wan_ip":"10.9.8.7","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/warn-state.json"
+STW="$B/stub-travel-wan-warn"; printf '#!/bin/bash\nprintf %s "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"; chmod +x "$STW"
+TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/warn-state.json" TRAVELROUTER_STATUS_PORT=18101 TRAVELROUTER_BIND_HOST=127.0.0.1 \
+  python3 "$A/status-server.py" >"$B/srv-warn.log" 2>&1 &
+SPID1=$!
+sleep 1.5
+wait_healthy 18101 || true
+# (1) / serves a strict generic warning page: no device data, warning text present
+wh=$(curl -s http://127.0.0.1:18101/ 2>/dev/null)
+wcode=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/ 2>/dev/null)
+leak=""
+for w in wan_ssid wan_ip "Hotel SSID" internet Standalone clients ap_state; do
+  echo "$wh" | grep -qF "$w" && leak="$leak [$w]"
+done
+[[ "$wcode" == "200" ]] && ok "5ai(1) GET / -> 200" || bad "5ai(1) GET / code=$wcode (srv.log: $(tail -1 "$B/srv-warn.log" 2>/dev/null))"
+[[ -n "$wh" ]] && [[ -z "$leak" ]] && ok "5ai(1) warning page leaks no device fields" || bad "5ai(1) device data in / body: leak=$leak"
+echo "$wh" | grep -qF 'private travel network' && ok "5ai(1) warning phrase present" || bad "5ai(1) warning phrase MISSING: $wh"
+echo "$wh" | grep -qF '/setup' && ok "5ai(1) still links to /setup" || bad "5ai(1) /setup link MISSING"
+# (2) /health stays open
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/health 2>/dev/null)
+[[ "$r" == "200" ]] && ok "5ai(2) /health 200 (unauthenticated)" || bad "5ai(2) /health code=$r"
+# (3) /status is session-gated: no session -> 401, body must not leak state
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/status 2>/dev/null)
+sb=$(curl -s http://127.0.0.1:18101/status 2>/dev/null)
+[[ "$r" == "401" ]] && ok "5ai(3) GET /status no-session -> 401" || bad "5ai(3) GET /status code=$r (body: $sb)"
+echo "$sb" | grep -qF 'wan_ip' && bad "5ai(3) 401 body leaks state: $sb" || ok "5ai(3) 401 body carries no state"
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Session: garbage-token' http://127.0.0.1:18101/status 2>/dev/null)
+[[ "$r" == "401" ]] && ok "5ai(3) GET /status bogus X-Session -> 401" || bad "5ai(3) bogus X-Session code=$r"
+# (4) captive-portal redirect intact (reuse the §5f R-test fixture idiom)
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/warn-portal-state.json"
+touch "$B/warn-portal-active.conf"
+TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/warn-portal-state.json" TRAVELROUTER_BIND_HOST=127.0.0.1 \
+TRAVELROUTER_STATUS_PORT=18102 TRAVELROUTER_PORTAL_CONF="$B/warn-portal-active.conf" \
+  python3 "$A/status-server.py" >"$B/srv-warn-portal.log" 2>&1 &
+SPID2=$!
+sleep 1.5
+wait_healthy 18102 || true
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18102/generate_204 2>/dev/null)
+loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: captive.apple.com' http://127.0.0.1:18102/generate_204 2>/dev/null)
+[[ "$r" == "302" ]] && ok "5ai(4) probe-Host + active PORTAL_CONF -> 302" || bad "5ai(4) code=$r (srv.log: $(tail -1 "$B/srv-warn-portal.log" 2>/dev/null))"
+[[ "$loc" == "http://127.0.0.1:18102/setup" ]] && ok "5ai(4) Location -> /setup on bound host+port" || bad "5ai(4) location=$loc"
+kill $SPID1 2>/dev/null; wait $SPID1 2>/dev/null
+kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"

@@ -186,65 +186,44 @@ _cache_when = 0.0
 _cache_result = {}
 
 
-_STATUS_HTML = """<!DOCTYPE html>
+# --- C2 (auth plan Todo 5): /status session gate ----------------------------
+# INTERIM STUB — handoff marker for auth plan Todo 6. Todo 6 replaces this
+# whole block with a stateless HMAC-signed token verify (X-Session header,
+# POST /api/auth/login, constant-time compares). Until then _SESSION_OK is
+# hardwired to False so EVERY /status request is treated as unauthenticated
+# and 401s: nothing device-related leaks in the intermediate state. The stub
+# is deliberately not a secret comparison (no compare_digest of token data) —
+# it never inspects the token at all.
+def _session_ok(token):
+    # Todo 6 replaces this stub: verify the HMAC-signed X-Session token.
+    return False
+
+
+def _status_authorized():
+    token = None  # Todo 6 reads the X-Session header here.
+    return _session_ok(token)
+
+
+# C2 (auth plan Todo 5): the LAN-facing root page is a STRICT generic warning.
+# It must stay static and data-free: no device fields (wan_ssid/wan_ip/
+# clients/ap_state), no /status polling — anyone on the travel AP sees it.
+# The /setup link is the only way onward; the setup page itself carries the
+# management UI (gated client-side from auth Todo 7).
+_WARNING_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Travel Router Status</title>
+<title>Private Travel Network</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; }
-  table { border-collapse: collapse; }
-  td { padding: 2px 12px; }
-  .label { font-weight: 600; }
+  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
 </style>
 </head>
 <body>
-<h1>Travel Router Status</h1>
-<p>This is a private SSID. Configure it at
-<a href="/setup">/setup</a> (PIN required).</p>
-<table>
-  <tbody id="rows"></tbody>
-</table>
-<script>
-async function refresh() {
-  try {
-    const r = await fetch("/status", { cache: "no-store" });
-    const d = await r.json();
-    const rows = [
-      ["Standalone", d.standalone ? "Yes" : "No"],
-      ["WAN interface", d.wan_if || "—"],
-      ["Hotel SSID", d.wan_ssid || "—"],
-      ["WAN IP", d.wan_ip || "—"],
-      ["Internet", d.internet || "unknown"],
-    ];
-    // DOM built with textContent only: wan_ssid is hotel-controlled input.
-    const tbody = document.getElementById("rows");
-    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
-    for (const kv of rows) {
-      const tr = document.createElement("tr");
-      const label = document.createElement("td");
-      label.className = "label";
-      label.textContent = kv[0];
-      const value = document.createElement("td");
-      value.textContent = kv[1];
-      tr.appendChild(label);
-      tr.appendChild(value);
-      tbody.appendChild(tr);
-    }
-  } catch (e) {
-    const tbody = document.getElementById("rows");
-    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.textContent = "no /status endpoint";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  }
-}
-refresh();
-setInterval(refresh, 4000);
-</script>
+<h1>Private travel network</h1>
+<p>This is a private travel network. Authorized users only.
+Unauthorized access is prohibited.</p>
+<p>Configure the network at <a href="/setup">/setup</a>.</p>
 </body>
 </html>"""
 
@@ -310,6 +289,13 @@ class StatusHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/status":
+            # C2: /status is session-gated from auth plan Todo 5 on. The
+            # device JSON (mode/wan_ssid/wan_ip/clients_list) is LAN-visible
+            # data; without a session the answer is a bare 401 — same body
+            # for missing and invalid tokens (no oracle).
+            if not _status_authorized():
+                self._send(401, json.dumps({"error": "auth"}), "application/json")
+                return
             self._send(200, json.dumps(get_status()), "application/json")
         elif path == "/api/wan/known":
             # PIN-gated metadata read (C6): mirrors the /api/wan/psks-manage
@@ -412,7 +398,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         elif path == "/setup" or path == "/setup/":
             self._serve_setup()
         elif path == "/" or path == "/index.html":
-            self._send(200, _STATUS_HTML, "text/html")
+            self._send(200, _WARNING_HTML, "text/html")
         else:
             self._send(404, b"404 not found", "text/plain")
 
