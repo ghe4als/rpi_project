@@ -937,8 +937,9 @@ document.getElementById("pm-add").addEventListener("click", function () {
 });
 
 function apiWrite(path, extra) {
-  var body = extra || {};
   var pin = pinOrNull() || savedPin();
+  if (!pin) { setMsg("form-msg", "PIN required — enter it in the PIN section", "warn"); return Promise.resolve(null); }
+  var body = extra || {};
   if (pin) { body.pin = pin; }
   busy(true);
   setMsg("form-msg", "working…");

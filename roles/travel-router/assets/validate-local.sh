@@ -1642,6 +1642,32 @@ PYEOF
   || bad "5ad garbage seam -> $seam_garbage"
 echo "5ad hostile render: $(head -c 300 "$B5/c2-state.json")"
 
+# --- (5ae) C1 client pin guard (apiWrite empty-PIN early-return) ---------------
+sec "5ae. C1 client pin guard (apiWrite)"
+# apiWrite (manual Connect/Disconnect/Forget) must refuse to POST when BOTH the
+# PIN field and localStorage are empty — same guard as doConnect/d-connect/
+# psksManage/tryBtn/fBtn/ap-save. Extract the function body by anchor (stable
+# against line drift) and assert the guard idiom: setMsg + early return before
+# the POST.
+aw_start=$(grep -n -F 'function apiWrite(' "$A/setup.html" | head -1 | cut -d: -f1)
+aw_body=""
+if [[ -n "$aw_start" ]]; then
+  aw_body=$(sed -n "${aw_start},$((aw_start+24))p" "$A/setup.html")
+fi
+if echo "$aw_body" | grep -q 'if (!pin) {' \
+   && echo "$aw_body" | grep -q 'setMsg("form-msg", "PIN required — enter it in the PIN section", "warn")' \
+   && echo "$aw_body" | grep -q 'return Promise.resolve(null)'; then
+  ok "5ae apiWrite empty-PIN guard (setMsg + early return before POST)"
+else
+  bad "5ae apiWrite empty-PIN guard MISSING (POSTs without pin when field+storage empty)"
+fi
+# The confusing server-403 fallback string must stay (handleErr, unchanged).
+h_err=$(grep -c -F 'PIN required — enter it below (ask the router owner if unknown)' "$A/setup.html")
+[[ "$h_err" == "1" ]] && ok "5ae handleErr 'enter it below' string unchanged" || bad "5ae handleErr string count=$h_err (want 1)"
+# Guarded-message invariant: 9 existing occurrences + 1 new apiWrite guard = 10.
+pin_msg_count=$(grep -c -F 'PIN required — enter it in the PIN section' "$A/setup.html")
+[[ "$pin_msg_count" == "10" ]] && ok "5ae pin-guard message count 10 (9 existing + apiWrite)" || bad "5ae pin-guard message count=$pin_msg_count (want 10)"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
