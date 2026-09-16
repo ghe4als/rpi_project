@@ -13,5 +13,7 @@ dhcp-range=__DHCP_RANGE__
 
 # No-hosts is intentionally NOT set: keep /etc/hosts entries resolvable.
 
-# Debug only; uncomment to log DHCP requests.
-#log-dhcp
+# DHCP connection log: each join/renew (hostname, MAC, IP) goes to a
+# dedicated file, NOT journald. Bounded by /etc/logrotate.d/travel-router-dhcp.
+log-dhcp
+log-facility=/var/log/travel-router/dhcp.log

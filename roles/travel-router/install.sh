@@ -374,6 +374,28 @@ sed -e "s|__LAN_INTERFACE__|${ap}|g" \
     -e "s|__DHCP_RANGE__|${TRAVELROUTER_DHCP_RANGE:-192.168.50.100,192.168.50.200,12h}|g" \
     "$ASSETS/dnsmasq.conf.tmpl" > "$dnsmasq_conf"
 
+# DHCP connection log: log-dhcp events land in a dedicated bounded file (not
+# journald — a Zero W needs a small window). logrotate owns the bound:
+# size 1M + rotate 5 + copytruncate, so dnsmasq keeps writing without a
+# signal (it has no built-in rotation). Metadata only: hostname/MAC/IP.
+log_dir="${DRY_RUN_PREFIX}/var/log/travel-router"
+mkdir -p "$log_dir"
+touch "$log_dir/dhcp.log"
+chmod 0644 "$log_dir/dhcp.log"
+logrotate_conf="${DRY_RUN_PREFIX}/etc/logrotate.d/travel-router-dhcp"
+mkdir -p "${DRY_RUN_PREFIX}/etc/logrotate.d"
+cat > "$logrotate_conf" <<'EOF'
+/var/log/travel-router/*.log {
+    size 1M
+    rotate 5
+    copytruncate
+    missingok
+    notifempty
+    compress
+}
+EOF
+chmod 0644 "$logrotate_conf"
+
 sysctl_conf="${DRY_RUN_PREFIX}/etc/sysctl.d/90-travel-router.conf"
 # sysctl has no render substitutions; copy verbatim (sed needs an expression
 # and would error on a bare filename).

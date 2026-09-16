@@ -1798,6 +1798,38 @@ out=$(NMCLI="$STUB/nmcli" IP="$STUB/ip" CURL="$STUB/curl" HOSTAPD_CLI=/nonexiste
 [[ $rc -eq 0 && "$out" == "[]" ]] && ok "5ag missing leases file -> clients --json []" || bad "5ag missing leases clients: rc=$rc out=$out"
 rm -f "$TW_COPY"
 
+# --- (5ah) bounded DHCP connection log (Todo 3) --------------------------------
+sec "5ah bounded DHCP connection log"
+# install.sh must enable dnsmasq log-dhcp into a DEDICATED, bounded file:
+# /var/log/travel-router/dhcp.log rotated by a logrotate drop-in (size 1M,
+# rotate 5, copytruncate — dnsmasq has no built-in rotation and no signal
+# dance). Renders through install.sh (§2 idiom), not hand-rolled config.
+ah="$TMP/ah"; mkdir -p "$ah"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$ah/pfx" TRAVELROUTER_ROLE_ENV="$TMP/role.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$ah/install.log" 2>&1; then
+  grep -q '^log-dhcp$' "$ah/pfx/etc/dnsmasq.d/travel-router.conf" \
+    && ok "5ah(a) rendered conf has log-dhcp" || bad "5ah(a) log-dhcp MISSING from rendered dnsmasq conf"
+  grep -q '^log-facility=/var/log/travel-router/dhcp.log$' "$ah/pfx/etc/dnsmasq.d/travel-router.conf" \
+    && ok "5ah(a) rendered conf has log-facility=/var/log/travel-router/dhcp.log" \
+    || bad "5ah(a) log-facility=/var/log/travel-router/dhcp.log MISSING from rendered dnsmasq conf"
+  ah_rot="$ah/pfx/etc/logrotate.d/travel-router-dhcp"
+  if [[ -f "$ah_rot" ]]; then
+    ok "5ah(b) logrotate drop-in staged"
+    grep -q 'size 1M' "$ah_rot" && ok "5ah(b) drop-in rotates at size 1M" || bad "5ah(b) drop-in missing 'size 1M'"
+    grep -q 'rotate 5' "$ah_rot" && ok "5ah(b) drop-in keeps rotate 5" || bad "5ah(b) drop-in missing 'rotate 5'"
+    grep -q 'copytruncate' "$ah_rot" && ok "5ah(b) drop-in uses copytruncate (no signal needed)" || bad "5ah(b) drop-in missing 'copytruncate'"
+    grep -q '/var/log/travel-router/\*.log' "$ah_rot" && ok "5ah(b) drop-in covers /var/log/travel-router/*.log" || bad "5ah(b) drop-in does not glob /var/log/travel-router/*.log"
+  else
+    bad "5ah(b) logrotate drop-in MISSING: $ah_rot"
+  fi
+  [[ -d "$ah/pfx/var/log/travel-router" ]] && ok "5ah(c) /var/log/travel-router created" \
+    || bad "5ah(c) /var/log/travel-router NOT created under prefix"
+  m=$(stat -f%Lp "$ah/pfx/var/log/travel-router/dhcp.log" 2>/dev/null || stat -c%a "$ah/pfx/var/log/travel-router/dhcp.log" 2>/dev/null)
+  [[ "$m" == "644" ]] && ok "5ah(d) dhcp.log 0644 (MAC/IP metadata only, no PSKs)" || bad "5ah(d) dhcp.log mode=$m (want 644)"
+else
+  bad "5ah dry-run render run exited nonzero"
+fi
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
