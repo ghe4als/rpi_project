@@ -328,8 +328,18 @@ elif [[ -f "$PORTAL_CONF" ]]; then
 fi
 
 if [[ "$PREV_LAN" != "$LAN_IP" ]]; then
-  log "lan_ip changed ($PREV_LAN -> $LAN_IP): try-restart travel-router-status.service"
-  run_or_log systemctl try-restart travel-router-status.service
+  _lan_ip_ready=0
+  if [[ -n "$LAN_IF" ]]; then
+    if "$IP" -4 addr show dev "$LAN_IF" 2>/dev/null | grep -q "${LAN_IP}/"; then
+      _lan_ip_ready=1
+    fi
+  fi
+  if [[ "$_lan_ip_ready" -eq 1 ]]; then
+    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP present; try-restart travel-router-status.service"
+    run_or_log systemctl try-restart travel-router-status.service
+  else
+    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP NOT yet attached to $LAN_IF; status service starts next 30s tick (avoids Errno 99 bind race)"
+  fi
 fi
 
 log "wan_select_done mode=${STATE_MODE} wan_if='${WAN_IF}' lan_if='${LAN_IF}' lan_ip='${LAN_IP}'"
