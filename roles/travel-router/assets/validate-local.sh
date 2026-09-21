@@ -2074,6 +2074,99 @@ grep -qE 'AdminPass99|2468|badpin[0-9]' "$AKLOG" && bad "5ak secret material lea
   || ok "5ak transcript free of PSK/PIN/token"
 echo "5ak auth transcript: $AKLOG"
 
+# --- (5al) setup.html PSK-login gate + session header + clients/log UI --------
+# Auth plan Todo 7 (C3/C4 client): the setup page is a login shell until an
+# admin-PSK login mints an X-Session token (localStorage "setup-session"), the
+# token rides every /api + /status fetch, a shared handleAuth drops to login on
+# a 401, a logout control clears the session, and two new sections ("Connected
+# clients" from /status clients_list, "Recently connected" from the new authed
+# GET /api/wan/log) render with createElement/textContent only.
+sec "5al. setup.html login gate + X-Session + logout + clients/log sections"
+# (1) static contract asserts (grep-style, mirroring the §5x batteries)
+grep -qF '/api/auth/login' "$A/setup.html" \
+  && ok "5al(1) setup.html POSTs to /api/auth/login" || bad "5al(1) login endpoint fetch MISSING"
+sess_sites=$(grep -c -F 'X-Session' "$A/setup.html")
+[[ "$sess_sites" == "5" ]] && ok "5al(1) X-Session present at exactly $sess_sites sites (3 impl + 2 explicit headers)" \
+  || bad "5al(1) X-Session sites=$sess_sites (want 5)"
+sess_hdr_sites=$(grep -c -F '"X-Session": sessToken()' "$A/setup.html")
+[[ "$sess_hdr_sites" == "2" ]] && ok "5al(1) both /api/wan/known fetch sites attach X-Session explicitly" \
+  || bad "5al(1) explicit X-Session header sites=$sess_hdr_sites (want 2; a dropped attach site is invisible to sessionFetch)"
+grep -qF 'setup-session' "$A/setup.html" \
+  && ok "5al(1) localStorage key setup-session present" || bad "5al(1) setup-session key MISSING"
+grep -qE 'id="logout-btn"' "$A/setup.html" \
+  && ok "5al(1) logout control present" || bad "5al(1) logout control MISSING"
+grep -qF 'Connected clients' "$A/setup.html" && grep -qF 'clients_list' "$A/setup.html" \
+  && ok "5al(1) Connected clients section + /status clients_list fetch" \
+  || bad "5al(1) Connected clients section/clients_list MISSING"
+grep -qF 'Recently connected' "$A/setup.html" && grep -qF '/api/wan/log' "$A/setup.html" \
+  && ok "5al(1) Recently connected section + /api/wan/log fetch" \
+  || bad "5al(1) Recently connected section/log fetch MISSING"
+sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/setup.html")
+[[ "$sink_hits" == "0" ]] && ok "5al(1) no innerHTML/insertAdjacentHTML/document.write" \
+  || bad "5al(1) forbidden DOM sink count=$sink_hits"
+grep -qF 'PIN required — enter it in the PIN section' "$A/setup.html" \
+  && ok "5al(1) Todo 1 apiWrite PIN-guard string still present" || bad "5al(1) PIN-guard string GONE"
+# server must expose the session-gated log read this UI consumes
+if awk '/elif path == "\/api\/wan\/psks-manage"/{f=1} f && /elif path == "\/api\/wan\/log"/{g=1} f && /elif path == "\/setup"/{exit} END{exit !(f&&g)}' "$A/status-server.py"; then
+  ok "5al(1) status-server.py has session-gated GET /api/wan/log after psks-manage"
+else
+  bad "5al(1) GET /api/wan/log branch MISSING (or misplaced) in do_GET"
+fi
+# (3) simulated-401 client path: a shared handleAuth clears the session so the
+#     UI drops back to login (static evidence — browser E2E is user-gated)
+if grep -qF 'function handleAuth' "$A/setup.html" \
+   && grep -qF 'localStorage.removeItem("setup-session")' "$A/setup.html"; then
+  n401=$(grep -B3 -F 'function handleAuth' "$A/setup.html" | grep -c -F '401')
+  [[ "$n401" -ge 1 ]] && ok "5al(3) handleAuth clears setup-session on 401" \
+    || bad "5al(3) handleAuth has no 401 discrimination"
+else
+  bad "5al(3) handleAuth / localStorage.removeItem(\"setup-session\") MISSING"
+fi
+# (2) runtime session flow against the REAL server: login -> X-Session ->
+#     GET /api/wan/log returns the fixture rows; missing file -> {"log":[]};
+#     no session -> 401.
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state-al.json"
+printf 'Oct  1 12:00:00 dnsmasq-dhcp: DHCPACK(wlan0) 192.168.50.101 aa:bb:cc:dd:ee:01 phone\n' > "$B/al-dhcp.log"
+printf 'Oct  1 12:01:00 dnsmasq-dhcp: DHCPACK(wlan0) 192.168.50.102 aa:bb:cc:dd:ee:02 laptop\n' >> "$B/al-dhcp.log"
+printf '\n' >> "$B/al-dhcp.log"
+printf 'Oct  1 12:02:00 dnsmasq-dhcp: DHCPDISCOVER(wlan0) aa:bb:cc:dd:ee:03\n' >> "$B/al-dhcp.log"
+al_start() { # port logfile(pin+psk fixed below)
+  TRAVELROUTER_SETUP_PIN=2468 TRAVELROUTER_ADMIN_PSK=AdminPass99 TRAVELWAN_BIN="$STWAK" \
+  TRAVELROUTER_STATE_FILE="$B/srv-state-al.json" TRAVELROUTER_STATUS_PORT="$1" \
+  TRAVELROUTER_LOG_FILE="$2" \
+  TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >>"$B/srv-al.log" 2>&1 &
+  ALPID=$!
+  wait_healthy "$1" || true
+}
+al_stop() { kill "$ALPID" 2>/dev/null; wait "$ALPID" 2>/dev/null; }
+al_start 18410 "$B/al-dhcp.log"
+al_login=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"psk":"AdminPass99"}' \
+  http://127.0.0.1:18410/api/auth/login 2>/dev/null)
+[[ "$al_login" == *'"token"'* && "$al_login" == *$'\n'200 ]] \
+  && ok "5al(2) login correct PSK -> 200 token (log-server)" || bad "5al(2) login: [$al_login]"
+ALTOK=$(printf '%s' "$al_login" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' | head -1)
+al_log=$(curl -s -w '\n%{http_code}' -H "X-Session: $ALTOK" http://127.0.0.1:18410/api/wan/log 2>/dev/null)
+[[ "$al_log" == *'"log"'* && "$al_log" == *$'\n'200 ]] \
+  && ok "5al(2) GET /api/wan/log + session -> 200 {\"log\":[...]}" || bad "5al(2) log+session: [$al_log]"
+al_rows=$(printf '%s' "$al_log" | sed -n '1p' | grep -o 'DHCPACK\|DHCPDISCOVER' | wc -l | tr -d ' ')
+[[ "$al_rows" == "3" ]] && ok "5al(2) log returns the 3 non-empty fixture rows" \
+  || bad "5al(2) log row hits=$al_rows (want 3): [$(printf '%s' "$al_log" | head -1)]"
+al_ns=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18410/api/wan/log 2>/dev/null)
+[[ "$al_ns" == "401" ]] && ok "5al(2) GET /api/wan/log NO session -> 401" || bad "5al(2) log no-session code=$al_ns"
+al_stop
+# missing log file degrades to an empty array, never a 5xx
+al_start 18411 "$B/al-dhcp-absent.log"
+al_login2=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"psk":"AdminPass99"}' \
+  http://127.0.0.1:18411/api/auth/login 2>/dev/null)
+ALTOK2=$(printf '%s' "$al_login2" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' | head -1)
+al_miss=$(curl -s -w '\n%{http_code}' -H "X-Session: $ALTOK2" http://127.0.0.1:18411/api/wan/log 2>/dev/null)
+[[ "$al_miss" == *'"log": []'* && "$al_miss" == *$'\n'200 ]] \
+  && ok "5al(2) missing log file -> 200 {\"log\": []}" || bad "5al(2) missing-file: [$al_miss]"
+al_stop
+# (4) covered by the suite green gate at the end of this file.
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

@@ -392,6 +392,26 @@ class StatusHandler(BaseHTTPRequestHandler):
                 if len(parts) == 3:
                     rows.append({"type": parts[0], "index": i, "ssid": parts[1]})
             self._send(200, json.dumps({"rows": rows}), "application/json")
+        elif path == "/api/wan/log":
+            # Session-gated "recently connected" read (auth plan Todo 7): the
+            # last ~50 non-empty lines of the bounded DHCP log (Todo 3). The
+            # env seam lets the dev runner point at a fixture; absence of the
+            # file degrades to an empty array, never a 5xx. DHCP rows are
+            # MAC/IP/hostname metadata only (no PSKs) — the text is passed
+            # through uninterpreted and json.dumps escapes it, so a hostile
+            # lease hostname cannot break the response.
+            if not _require_session(self):
+                return
+            log_path = os.environ.get("TRAVELROUTER_LOG_FILE",
+                                      "/var/log/travel-router/dhcp.log")
+            lines = []
+            try:
+                with open(log_path, "r", encoding="utf-8",
+                          errors="replace") as fh:
+                    lines = [l for l in fh.read().splitlines() if l.strip()][-50:]
+            except OSError:
+                lines = []
+            self._send(200, json.dumps({"log": lines}), "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_setup()
         elif path == "/" or path == "/index.html":

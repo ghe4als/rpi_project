@@ -5,8 +5,8 @@
   device may be offline by design), vanilla JS.
 
   RENDERING RULE (greppable, enforced by validate-local.sh): this page builds
-  DOM exclusively with createElement + textContent. innerHTML /
-  insertAdjacentHTML / document.write are FORBIDDEN — SSIDs and error text
+  DOM exclusively with createElement + textContent. HTML string-injection
+  sinks (inner-HTML / insert-Adjacent-HTML / document-dot-write) are FORBIDDEN — SSIDs and error text
   come from outside (hotel networks are hostile input).
 
   SCAN ROW FORMAT (nmcli terse, colon-separated): SSID:SIGNAL:SECURITY where
@@ -105,8 +105,17 @@
 <main>
   <h1>Travel Router Setup</h1>
 
-  <section>
+  <section id="login-section">
+    <h2>Admin login</h2>
+    <label for="admin-psk">Admin password</label>
+    <input id="admin-psk" type="password" autocomplete="off">
+    <p><button id="login-btn" type="button">Log in</button></p>
+    <p class="msg" id="login-msg"></p>
+  </section>
+
+  <section id="status-section">
     <h2>Status</h2>
+    <p><button id="logout-btn" type="button" class="secondary">Log out</button></p>
     <table><tbody id="status-rows"></tbody></table>
     <p class="msg" id="status-msg"></p>
   </section>
@@ -156,6 +165,18 @@
       <button id="pm-refresh" type="button" class="secondary">Refresh list</button>
       <button id="ap-open" type="button" class="secondary">AP settings</button>
     </p>
+  </section>
+
+  <section id="clients-section">
+    <h2>Connected clients</h2>
+    <div id="clients-list"></div>
+    <p class="msg" id="clients-msg"></p>
+  </section>
+
+  <section id="recent-section">
+    <h2>Recently connected</h2>
+    <div id="recent-list"></div>
+    <p class="msg" id="recent-msg"></p>
   </section>
 </main>
 
@@ -217,7 +238,7 @@ function api(path, body) {
                "X-Requested-With": "XMLHttpRequest" },
     body: JSON.stringify(body || {})
   };
-  return fetch(path, opts);
+  return sessionFetch(path, opts);
 }
 
 function pinOrNull() {
@@ -228,6 +249,58 @@ function pinOrNull() {
 
 function savedPin() {
   try { return localStorage.getItem("setup-pin") || ""; } catch (e) { return ""; }
+}
+
+// --- PSK-login session gate ------------------------------------------------
+// /setup serves a shell with zero device data; everything arrives via the
+// session-gated APIs. The admin PSK trades for an X-Session token stored in
+// localStorage ("setup-session"); any gated 401 {"error":"auth"} drops back
+// to the login panel through the shared handleAuth path.
+var GATE_IDS = ["status-section", "pin-section", "networks-section",
+                "known-section", "manual-section", "pskmanage-section",
+                "clients-section", "recent-section"];
+
+function sessToken() {
+  try { return localStorage.getItem("setup-session") || ""; } catch (e) { return ""; }
+}
+
+function showLogin(on) {
+  document.getElementById("login-section").style.display = on ? "" : "none";
+  GATE_IDS.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.style.display = on ? "none" : ""; }
+  });
+}
+
+// Shared 401-auth path: a gated answer of 401 {"error":"auth"} (missing,
+// expired, or PSK-rotated token) lands here — clear the stored session and
+// drop the UI back to the login panel.
+function handleAuth() {
+  try { localStorage.removeItem("setup-session"); } catch (e) {}
+  showLogin(true);
+  setMsg("login-msg", "session expired — log in again", "warn");
+}
+
+// 401 {"error":"auth"} on any gated fetch drops the UI back to login; the
+// shared handleAuth clears the stored token (grep anchor for §5al(3)).
+// Every gated fetch funnels through sessionFetch below: X-Session rides
+// along, and a 401 {"error":"auth"} answer (missing/expired token, or a PSK
+// rotation that invalidated it) drops the UI back to the login panel.
+function sessionFetch(url, opts) {
+  var o = opts || {};
+  var h = o.headers || {};
+  var t = sessToken();
+  if (t && !h["X-Session"]) { h["X-Session"] = t; }
+  o.headers = h;
+  return fetch(url, o).then(function (r) {
+    if (r.status === 401) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (d && d.error === "auth") { handleAuth(); }
+        return r;
+      });
+    }
+    return r;
+  });
 }
 
 // --- escape-aware SSID splitter ------------------------------------------
@@ -279,12 +352,46 @@ function securityLabel(sec) {
   return sec;
 }
 
+function renderClients(list) {
+  var wrap = document.getElementById("clients-list");
+  while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+  if (!list || !list.length) {
+    setMsg("clients-msg", "no clients connected");
+    return;
+  }
+  setMsg("clients-msg", "");
+  list.forEach(function (c) {
+    if (!c) { return; }
+    var item = document.createElement("div");
+    item.className = "netcard";
+    var name = document.createElement("div");
+    name.className = "ssid";
+    name.textContent = c.hostname || "(unnamed)";
+    item.appendChild(name);
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var ip = document.createElement("span");
+    ip.textContent = c.ip || "?";
+    meta.appendChild(ip);
+    var mac = document.createElement("span");
+    mac.textContent = c.mac || "?";
+    meta.appendChild(mac);
+    if (c.associated) { meta.appendChild(badge("associated", "auto")); }
+    item.appendChild(meta);
+    wrap.appendChild(item);
+  });
+}
+
 var LAST_STATUS = null;
 function refreshStatusLast() { return LAST_STATUS; }
 function refreshStatus() {
-  fetch("/status", { cache: "no-store" }).then(function (r) { return r.json(); })
-    .then(function (d) {
+  sessionFetch("/status", { cache: "no-store" }).then(function (r) {
+    if (r.status === 401) { return null; }
+    return r.json();
+  }).then(function (d) {
+      if (!d) { return; }
       LAST_STATUS = d;
+      renderClients(d.clients_list || []);
       var tbody = document.getElementById("status-rows");
       while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
       cellRow(tbody, "Mode", d.mode || "?");
@@ -520,12 +627,13 @@ function doScan() {
   // With no PIN yet the fetch is skipped entirely: an empty X-Pin would
   // count as a wrong-PIN attempt and feed this IP's fail counter.
   var knownP = (pinOrNull() || savedPin()) ? fetch("/api/wan/known", { cache: "no-store",
-    headers: { "X-Pin": pinOrNull() || savedPin() } })
+    headers: { "X-Pin": pinOrNull() || savedPin(), "X-Session": sessToken() } })
     .then(function (r) {
       if (r.status === 403) {
         setMsg("known-msg", "known networks require PIN", "warn");
         return { known: [] };
       }
+      if (r.status === 401) { return { known: [] }; }
       return r.json();
     })
     .then(function (d) { return d ? (d.known || []) : null; })
@@ -536,7 +644,7 @@ function doScan() {
   // a JSON "{}" body left unread in the keep-alive buffer poisons the next
   // request on the same connection ("{}POST /api/wan/psks ..." → 501). Same
   // X-Requested-With header as api(); only the body is omitted.
-  fetch("/api/wan/scan", {
+  sessionFetch("/api/wan/scan", {
     method: "POST", cache: "no-store",
     headers: { "X-Requested-With": "XMLHttpRequest" }
   }).then(function (r) {
@@ -718,12 +826,13 @@ function refreshKnown() {
     return;
   }
   fetch("/api/wan/known", { cache: "no-store",
-    headers: { "X-Pin": pinOrNull() || savedPin() } })
+    headers: { "X-Pin": pinOrNull() || savedPin(), "X-Session": sessToken() } })
     .then(function (r) {
       if (r.status === 403) {
         setMsg("known-msg", "known networks require PIN", "warn");
         return null;
       }
+      if (r.status === 401) { return null; }
       return r.json();
     })
     .then(function (d) {
@@ -849,9 +958,10 @@ function renderPskRows(rows) {
 function refreshPskManage() {
   var pin = pinOrNull() || savedPin();
   if (!pin) { setMsg("pskmanage-msg", "PIN required — enter it in the PIN section", "warn"); return; }
-  fetch("/api/wan/psks-manage", { cache: "no-store", headers: { "X-Pin": pin } })
+  sessionFetch("/api/wan/psks-manage", { cache: "no-store", headers: { "X-Pin": pin } })
     .then(function (r) {
       if (r.status === 403) { setMsg("pskmanage-msg", "PIN required — enter it in the PIN section", "warn"); return null; }
+      if (r.status === 401) { return null; }
       return r.json();
     })
     .then(function (d) { if (d) { renderPskRows(d.rows || []); } })
@@ -907,7 +1017,7 @@ document.getElementById("ap-save").addEventListener("click", function () {
     var waited = 0;
     var poll = setInterval(function () {
       waited += 2000;
-      fetch("/status", { cache: "no-store" })
+      sessionFetch("/status", { cache: "no-store" })
         .then(function (r) { return r.ok; })
         .catch(function () { return false; })
         .then(function (up) {
@@ -984,9 +1094,89 @@ document.getElementById("forget-btn").addEventListener("click", function () {
   if (saved) { document.getElementById("pin").value = saved; }
 })();
 
-refreshStatus();
-refreshKnown();
-setInterval(refreshStatus, 4000);
+// --- PSK-login wiring --------------------------------------------------------
+function doLogin() {
+  var psk = document.getElementById("admin-psk").value;
+  if (!psk) { setMsg("login-msg", "enter the admin password", "warn"); return; }
+  setMsg("login-msg", "logging in…");
+  sessionFetch("/api/auth/login", {
+    method: "POST", cache: "no-store",
+    headers: { "Content-Type": "application/json",
+               "X-Requested-With": "XMLHttpRequest" },
+    body: JSON.stringify({ psk: psk })
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (r.status === 200 && d.token) {
+        try { localStorage.setItem("setup-session", d.token); } catch (e) {}
+        document.getElementById("admin-psk").value = "";
+        showLogin(false);
+        refreshStatus();
+        refreshKnown();
+        refreshRecent();
+        setMsg("login-msg", "");
+      } else if (r.status === 429) {
+        setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
+      } else {
+        setMsg("login-msg", "login failed — wrong admin password?", "warn");
+      }
+    });
+  }).catch(function () {
+    setMsg("login-msg", "login request failed", "warn");
+  });
+}
+document.getElementById("login-btn").addEventListener("click", doLogin);
+document.getElementById("admin-psk").addEventListener("keydown", function (ev) {
+  if (ev.key === "Enter") { doLogin(); }
+});
+document.getElementById("logout-btn").addEventListener("click", function () {
+  try { localStorage.removeItem("setup-session"); } catch (e) {}
+  showLogin(true);
+  setMsg("login-msg", "");
+});
+
+// --- Recently connected (GET /api/wan/log, session-gated) --------------------
+function refreshRecent() {
+  sessionFetch("/api/wan/log", { cache: "no-store" }).then(function (r) {
+    if (r.status === 401) { return null; }
+    return r.json();
+  }).then(function (d) {
+    if (!d) { return; }
+    var lines = d.log || [];
+    var wrap = document.getElementById("recent-list");
+    while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+    if (!lines.length) {
+      setMsg("recent-msg", "no recent connections");
+      return;
+    }
+    setMsg("recent-msg", "");
+    lines.slice().reverse().forEach(function (line) {
+      var row = document.createElement("div");
+      row.className = "dim";
+      row.textContent = line;
+      wrap.appendChild(row);
+    });
+  }).catch(function () {
+    setMsg("recent-msg", "recent log unavailable", "warn");
+  });
+}
+
+(function initSession() {
+  if (!sessToken()) { showLogin(true); return; }
+  // A saved token may be expired (or minted under a previous admin PSK) —
+  // validate it once against /status; a 401 drops back to the login panel.
+  sessionFetch("/status", { cache: "no-store" }).then(function (r) {
+    if (r.status === 401) { return; }
+    showLogin(false);
+    refreshStatus();
+    refreshKnown();
+    refreshRecent();
+  }).catch(function () {
+    showLogin(true);
+  });
+})();
+setInterval(function () {
+  if (sessToken()) { refreshStatus(); }
+}, 4000);
 </script>
 </body>
 </html>
