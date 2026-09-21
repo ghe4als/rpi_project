@@ -22,6 +22,15 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+# Pin the locale for the whole script: the validation regexes below use range
+# expressions ([ -~]), and glibc grep under a UTF-8 locale (the Pi default,
+# LANG=en_US.UTF-8) evaluates ranges by COLLATION order — ASCII letters sort
+# after '~', so every letter-bearing SSID/PSK failed the "printable ASCII"
+# check on real hardware (rpi-e076fe first boot, GNU grep 3.11). BSD grep on
+# the macOS runner is byte-true, so the suite never caught it. LC_ALL=C makes
+# the ranges mean raw code points everywhere.
+export LC_ALL=C
+
 ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS="$ROLE_DIR/assets"
 LOG_TAG="[travel-router]"

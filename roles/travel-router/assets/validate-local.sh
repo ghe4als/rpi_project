@@ -1887,6 +1887,44 @@ loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: captive.apple.com' htt
 kill $SPID1 2>/dev/null; wait $SPID1 2>/dev/null
 kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null
 
+# --- (5aj) locale pin: [ -~] ranges are collation-safe (glibc grep) -----------
+# Pi evidence (rpi-e076fe, Debian trixie, GNU grep 3.11, LANG=en_US.UTF-8):
+# printf 'travel-router' | grep -qE '^[ -~]{1,32}$'  -> NO MATCH (exit 1).
+# glibc evaluates range expressions by COLLATION order, where ASCII letters
+# sort AFTER '~', so every letter-bearing SSID/PSK failed the printable-ASCII
+# validation on first boot. BSD grep (macOS runner) is byte-true, which is why
+# this only surfaced on real hardware. install.sh must pin LC_ALL=C before any
+# validation grep runs.
+sec "5aj. locale pin (glibc collation breaks [ -~] ranges)"
+INS="$ROOT/roles/travel-router/install.sh"
+if grep -q 'export LC_ALL=C' "$INS"; then
+  ok "5aj(1) install.sh pins LC_ALL=C"
+else
+  bad "5aj(1) LC_ALL=C pin MISSING (glibc collation rejects letter SSIDs on Pi)"
+fi
+pin_ln=$(grep -n 'export LC_ALL=C' "$INS" | head -1 | cut -d: -f1)
+val_ln=$(grep -n 'grep -qE "$PRINTABLE_RE"' "$INS" | head -1 | cut -d: -f1)
+[[ -n "${pin_ln:-}" && -n "${val_ln:-}" && "$pin_ln" -lt "$val_ln" ]] \
+  && ok "5aj(2) pin exported BEFORE the SSID validation grep" \
+  || bad "5aj(2) LC_ALL=C must be exported before the PRINTABLE_RE check"
+# behavioral: a dashy ASCII SSID must validate with a hostile inherited locale
+printf 'TRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$TMP/aj.env"
+out=$(LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 TRAVELROUTER_AP_SSID=travel-router \
+      TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/aj" TRAVELROUTER_ROLE_ENV="$TMP/aj.env" \
+      bash "$INS" 2>&1)
+rc=$?
+[[ $rc -eq 0 && "$out" == *"travel-router installed"* ]] \
+  && ok "5aj(3) letter+dash SSID passes under hostile locale" \
+  || bad "5aj(3) hostile-locale run rc=$rc: $(echo "$out" | head -2 | tr '\n' ' ')"
+# the pin must not lobotomize rejection: a UTF-8 multibyte SSID is still illegal
+out=$(LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 TRAVELROUTER_AP_SSID='Travel-Neté' \
+      TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$TMP/aj2" TRAVELROUTER_ROLE_ENV="$TMP/aj.env" \
+      bash "$INS" 2>&1)
+rc=$?
+[[ $rc -eq 1 && "$out" == *"remediation:"* ]] \
+  && ok "5aj(4) multibyte SSID still rejected under the pin" \
+  || bad "5aj(4) multibyte SSID rejection: rc=$rc (out: $(echo "$out" | head -2 | tr '\n' ' '))"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
