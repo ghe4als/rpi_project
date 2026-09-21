@@ -376,10 +376,32 @@ cmd_connect() {
         # Exposure is local-only: only the `pi` and root accounts exist on the unit,
         # both already privileged, so no privilege boundary is crossed. Accepted
         # risk; the proper fix (stdin or NM D-Bus password delivery) is deferred.
-        "$SUDO" "$NMCLI" dev wifi connect "$ssid" ifname "$if_name" password "$psk"
+        # NM >=1.52 (Trixie) rejects `dev wifi connect ... password` when a profile
+        # for the SSID exists — its update path sets wifi-sec.psk without
+        # wifi-sec.key-mgmt and the validator answers "property is missing". Use
+        # the explicit ensure-profile + connection-up idiom instead (same shape as
+        # the install.sh seed and the try-psks probe), which stays correct on
+        # every NM version.
+        if "$SUDO" "$NMCLI" -t -f NAME connection show 2>/dev/null | grep -Fxq "$ssid"; then
+            "$SUDO" "$NMCLI" connection modify "$ssid" \
+                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$psk" connection.autoconnect yes
+        else
+            "$SUDO" "$NMCLI" connection add type wifi ifname "$if_name" \
+                con-name "$ssid" ssid "$ssid" \
+                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$psk" connection.autoconnect yes
+        fi
+        "$SUDO" "$NMCLI" --wait 30 connection up "$ssid"
     else
         log "connecting to '${ssid}' (open network, no PSK)"
-        "$SUDO" "$NMCLI" dev wifi connect "$ssid" ifname "$if_name"
+        if "$SUDO" "$NMCLI" -t -f NAME connection show 2>/dev/null | grep -Fxq "$ssid"; then
+            # A stale WPA profile for a now-open network must be downgraded.
+            "$SUDO" "$NMCLI" connection modify "$ssid" -wifi-sec 2>/dev/null || true
+            "$SUDO" "$NMCLI" connection modify "$ssid" connection.autoconnect yes
+        else
+            "$SUDO" "$NMCLI" connection add type wifi ifname "$if_name" \
+                con-name "$ssid" ssid "$ssid" connection.autoconnect yes
+        fi
+        "$SUDO" "$NMCLI" --wait 30 connection up "$ssid"
     fi
     log "connected to '${ssid}' (profile now persisted under /etc/NetworkManager/system-connections)"
 }

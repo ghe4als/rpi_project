@@ -2167,6 +2167,71 @@ al_miss=$(curl -s -w '\n%{http_code}' -H "X-Session: $ALTOK2" http://127.0.0.1:1
 al_stop
 # (4) covered by the suite green gate at the end of this file.
 
+# --- (5am) cmd_connect explicit-profile upsert (NM 1.52 key-mgmt fix) ---------
+# Pi evidence (rpi-e076fe, NetworkManager 1.52.1, Trixie): `nmcli dev wifi
+# connect <SSID> ... password <psk>` fails when a profile for that SSID
+# already exists — NM's update path writes wifi-sec.psk WITHOUT key-mgmt and
+# the profile validator rejects it: "802-11-wireless-security.key-mgmt:
+# property is missing" (reproduced live; AP lookup itself is fine). The fix
+# keeps cmd_connect on the explicit ensure-profile + connection-up idiom the
+# seed (install.sh 4b) and try-psks probe already use. The battery stubs
+# NMCLI and asserts the exact argv classes cmd_connect must emit.
+sec "5am. connect uses explicit profile upsert (no dev wifi connect)"
+AMB="$B/5am"; mkdir -p "$AMB/sys/class/net/wlan1"
+AMSH="$AMB/tw-am.sh"
+sed "s|/sys/class/net|$AMB/sys/class/net|g" "$A/travel-wan.sh" > "$AMSH"
+cat > "$AMB/nmcli" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$(dirname "$0")/nmcli.log"
+case " $* " in
+  *" connection show "*|*"-f NAME connection show"*)
+    [[ -f "$(dirname "$0")/names" ]] && cat "$(dirname "$0")/names"
+    ;;
+esac
+exit 0
+EOF
+printf '#!/bin/bash\nexec "$@"\n' > "$AMB/sudo"; chmod +x "$AMB/nmcli" "$AMB/sudo"
+amenv=(NMCLI="$AMB/nmcli" SUDO="$AMB/sudo" IP=/nonexistent CURL=/nonexistent HOSTAPD_CLI=/nonexistent
+       TRAVELROUTER_PSK_FILE="$B/5am-psks" TRAVELROUTER_STATE_FILE="$B/am-state.json")
+printf '{"mode":"standalone","wan_if":"wlan1","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/am-state.json"
+# (1) PSK connect, NO existing profile -> connection add WITH key-mgmt + up
+: > "$AMB/names"; rm -f "$AMB/nmcli.log"
+env "${amenv[@]}" bash "$AMSH" connect FixNet fixpsk1 >/dev/null 2>&1
+am_add=$(grep 'connection add' "$AMB/nmcli.log" | head -1)
+am_up=$(grep -F 'connection up FixNet' "$AMB/nmcli.log" | head -1)
+if [[ -n "$am_add" ]] && printf '%s' "$am_add" | grep -qF 'wifi-sec.key-mgmt wpa-psk' \
+   && printf '%s' "$am_add" | grep -qF 'wifi-sec.psk fixpsk1' \
+   && grep -qF 'connection up FixNet' "$AMB/nmcli.log" \
+   && ! grep -qF 'dev wifi connect' "$AMB/nmcli.log"; then
+  ok "5am(1) psk connect: explicit profile add with key-mgmt+psk, then up (no dev wifi connect)"
+else
+  bad "5am(1) create-path argv wrong: add=[$am_add] up=[$am_up] (dev-wifi-connect present: $(grep -cF 'dev wifi connect' "$AMB/nmcli.log" 2>/dev/null))"
+fi
+# (2) PSK connect when the profile EXISTS -> modify with key-mgmt, then up
+: > "$AMB/nmcli.log"; printf 'FixNet\n' > "$AMB/names"
+env "${amenv[@]}" bash "$AMSH" connect FixNet fixpsk1 >/dev/null 2>&1
+if grep -qF 'connection modify FixNet' "$AMB/nmcli.log" \
+   && grep -F 'connection modify' "$AMB/nmcli.log" | grep -qF 'wifi-sec.key-mgmt wpa-psk' \
+   && grep -F 'connection modify' "$AMB/nmcli.log" | grep -qF 'wifi-sec.psk fixpsk1' \
+   && grep -qF 'connection up FixNet' "$AMB/nmcli.log" \
+   && ! grep -qF 'connection add' "$AMB/nmcli.log" \
+   && ! grep -qF 'dev wifi connect' "$AMB/nmcli.log"; then
+  ok "5am(2) existing profile: modify (key-mgmt preserved) + up, no duplicate add"
+else
+  bad "5am(2) modify-path argv wrong: $(tail -2 "$AMB/nmcli.log" | tr '\n' '|')"
+fi
+# (3) open-network connect -> profile WITHOUT any wifi-sec, still no one-shot
+: > "$AMB/nmcli.log"; : > "$AMB/names"
+env "${amenv[@]}" bash "$AMSH" connect OpenNet >/dev/null 2>&1
+am_open=$(grep 'connection add' "$AMB/nmcli.log" | head -1)
+if [[ -n "$am_open" ]] && ! printf '%s' "$am_open" | grep -qF 'wifi-sec' \
+   && grep -qF 'connection up OpenNet' "$AMB/nmcli.log" \
+   && ! grep -qF 'dev wifi connect' "$AMB/nmcli.log"; then
+  ok "5am(3) open network: add without wifi-sec, then up (no dev wifi connect)"
+else
+  bad "5am(3) open-path argv wrong: add=[$am_open]"
+fi
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
