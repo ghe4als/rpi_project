@@ -27,6 +27,8 @@ The server binds the IP in the wan-select state file so the bind never goes
 stale; port comes from TRAVELROUTER_STATUS_PORT (default 80).
 """
 
+import base64
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -44,6 +46,12 @@ DEFAULT_HOST = "192.168.50.1"
 TTL_SECONDS = 30.0
 WAN_TOOL = os.environ.get("TRAVELWAN_BIN", "/usr/local/bin/travel-wan")
 SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
+# Admin PSK gates /status + every /api surface (auth plan Todo 6). Empty ->
+# deny-by-default, same posture as SETUP_PIN: /api/auth/login never issues a
+# token, so no session can exist. Supplied at runtime via the tmpfs
+# EnvironmentFile install.sh stages (same seam as the PIN).
+ADMIN_PSK = os.environ.get("TRAVELROUTER_ADMIN_PSK", "")
+SESSION_TTL_SECONDS = 43200  # 12h: one hotel-setup window, then re-login
 SETUP_PAGE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "setup.html")
 # Captive-portal hijack drop-in (wan-select owns + toggles it; H03). When it
@@ -186,22 +194,79 @@ _cache_when = 0.0
 _cache_result = {}
 
 
-# --- C2 (auth plan Todo 5): /status session gate ----------------------------
-# INTERIM STUB — handoff marker for auth plan Todo 6. Todo 6 replaces this
-# whole block with a stateless HMAC-signed token verify (X-Session header,
-# POST /api/auth/login, constant-time compares). Until then _SESSION_OK is
-# hardwired to False so EVERY /status request is treated as unauthenticated
-# and 401s: nothing device-related leaks in the intermediate state. The stub
-# is deliberately not a secret comparison (no compare_digest of token data) —
-# it never inspects the token at all.
+# --- C3/C4 (auth plan Todo 6): stateless HMAC session -------------------------
+# Token = base64url(payload_json).base64url(HMAC-SHA256). The payload carries
+# {exp, psk_fingerprint}; the signing key is derived from ADMIN_PSK. No
+# server-side store: the systemd unit restarts on Restart=always and on
+# wan-select try-restart (lan_ip attach), and an in-memory map would drop every
+# live session mid-hotel-setup. A signed token survives process restarts and
+# rotates implicitly whenever the admin PSK changes. Logout = the client drops
+# the token; expiry is enforced at verify time.
+def _session_key():
+    return hmac.new(b"tr-session-v1", ADMIN_PSK.encode("utf-8"),
+                    hashlib.sha256).digest()
+
+
+def _psk_fingerprint():
+    return hashlib.sha256(ADMIN_PSK.encode("utf-8")).hexdigest()[:16]
+
+
+def _b64e(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64d(text):
+    pad = "=" * ((4 - len(text) % 4) % 4)
+    return base64.urlsafe_b64decode(text + pad)
+
+
+def _make_session_token():
+    payload = json.dumps(
+        {"exp": int(time.time()) + SESSION_TTL_SECONDS,
+         "psk_fingerprint": _psk_fingerprint()},
+        separators=(",", ":")).encode("utf-8")
+    pb = _b64e(payload)
+    return "%s.%s" % (pb, _b64e(hmac.new(_session_key(), pb.encode("ascii"),
+                                         hashlib.sha256).digest()))
+
+
 def _session_ok(token):
-    # Todo 6 replaces this stub: verify the HMAC-signed X-Session token.
+    if not ADMIN_PSK or not isinstance(token, str) or token.count(".") != 1:
+        return False
+    pb, sb = token.split(".", 1)
+    try:
+        sig = _b64d(sb)
+        payload = json.loads(_b64d(pb).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    want = hmac.new(_session_key(), pb.encode("ascii"), hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, want):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, int) or exp < time.time():
+        return False
+    fp = payload.get("psk_fingerprint")
+    if not isinstance(fp, str):
+        return False
+    # Constant-time compare: a token minted under a previous admin PSK fails
+    # here even though its outer HMAC is already invalid; the digest match
+    # keeps the response independent of which check rejected it.
+    return hmac.compare_digest(fp, _psk_fingerprint())
+
+
+def _require_session(handler):
+    """True when the request carries a valid X-Session token; otherwise the
+    401 has already been sent. Same body for missing/invalid/expired (no
+    oracle). Connection: close so an unread body under keep-alive cannot be
+    parsed as a smuggled follow-up request (mirrors the scan/status idiom)."""
+    if _session_ok(handler.headers.get("X-Session")):
+        return True
+    handler._send(401, json.dumps({"error": "auth"}), "application/json",
+                  extra_headers=[("Connection", "close")])
+    handler.close_connection = True
     return False
-
-
-def _status_authorized():
-    token = None  # Todo 6 reads the X-Session header here.
-    return _session_ok(token)
 
 
 # C2 (auth plan Todo 5): the LAN-facing root page is a STRICT generic warning.
@@ -289,52 +354,17 @@ class StatusHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/status":
-            # C2: /status is session-gated from auth plan Todo 5 on. The
-            # device JSON (mode/wan_ssid/wan_ip/clients_list) is LAN-visible
-            # data; without a session the answer is a bare 401 — same body
-            # for missing and invalid tokens (no oracle).
-            if not _status_authorized():
-                self._send(401, json.dumps({"error": "auth"}), "application/json")
+            # C2/C4: /status is session-gated (Todo 5 stub, Todo 6 real
+            # verify). The device JSON (mode/wan_ssid/wan_ip/clients_list) is
+            # LAN-visible data; without a session the answer is a bare 401 —
+            # same body for missing and invalid tokens (no oracle).
+            if not _require_session(self):
                 return
             self._send(200, json.dumps(get_status()), "application/json")
         elif path == "/api/wan/known":
-            # PIN-gated metadata read (C6): mirrors the /api/wan/psks-manage
-            # GET branch — same X-Pin check, same per-source-IP counter
-            # (_PIN_FAILS shared with POST + the psks-manage GET): an
-            # unlimited 200 here would be a known-SSID oracle for a guest.
-            ip_key = self.client_address[0]
-            now = time.time()
-            with _PIN_THROTTLE_LOCK:
-                entry = _PIN_FAILS.get(ip_key)
-                blocked_until = entry[1] if entry else 0.0
-                if now < blocked_until:
-                    entry[0] += 1
-                    pin_fails = entry[0]
-                else:
-                    pin_fails = None
-            if pin_fails is not None:
-                # Same 403 {"error":"pin"} as a wrong PIN (must not reveal
-                # throttled vs wrong); keep-alive would misparse the next
-                # pipelined request, so close the connection.
-                self._send(403, json.dumps({"error": "pin"}), "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
+            # Session-gated metadata read: the session is the read credential.
+            if not _require_session(self):
                 return
-            supplied = self.headers.get("X-Pin")
-            if not SETUP_PIN or not isinstance(supplied, str) \
-                    or not hmac.compare_digest(supplied, SETUP_PIN):
-                with _PIN_THROTTLE_LOCK:
-                    entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
-                    entry[0] += 1
-                    tier = _pin_backoff_tier(entry[0])
-                    if tier:
-                        entry[1] = time.time() + tier
-                self._send(403, json.dumps({"error": "pin"}), "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
-                return
-            with _PIN_THROTTLE_LOCK:
-                _PIN_FAILS.pop(ip_key, None)
             rc, out, err = self._run_tool(["known"], API_QUICK_TIMEOUT)
             if rc is None:
                 self._send(504, json.dumps({"error": "timeout"}), "application/json")
@@ -347,44 +377,11 @@ class StatusHandler(BaseHTTPRequestHandler):
                                   "autoconnect": parts[2]})
             self._send(200, json.dumps({"known": known}), "application/json")
         elif path == "/api/wan/psks-manage":
-            # PIN-gated metadata read (X-Pin doubles as the CSRF gate: custom
-            # headers need a preflight, and this server never answers one).
-            # C1b: the same per-source-IP counter as the POST path guards the
-            # X-Pin check too — an unlimited 403/200 oracle here would let a
-            # guest brute-force the setup PIN around the POST throttle.
-            ip_key = self.client_address[0]
-            now = time.time()
-            with _PIN_THROTTLE_LOCK:
-                entry = _PIN_FAILS.get(ip_key)
-                blocked_until = entry[1] if entry else 0.0
-                if now < blocked_until:
-                    entry[0] += 1
-                    pin_fails = entry[0]
-                else:
-                    pin_fails = None
-            if pin_fails is not None:
-                # Same 403 {"error":"pin"} as a wrong PIN (must not reveal
-                # throttled vs wrong); GET has no body, but keep-alive would
-                # still misparse the next pipelined request, so close it.
-                self._send(403, json.dumps({"error": "pin"}), "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
+            # Session-gated metadata read: the X-Session token is also the
+            # CSRF gate (a cross-site form/fetch cannot set a custom header
+            # without a preflight this server never answers).
+            if not _require_session(self):
                 return
-            supplied = self.headers.get("X-Pin")
-            if not SETUP_PIN or not isinstance(supplied, str) \
-                    or not hmac.compare_digest(supplied, SETUP_PIN):
-                with _PIN_THROTTLE_LOCK:
-                    entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
-                    entry[0] += 1
-                    tier = _pin_backoff_tier(entry[0])
-                    if tier:
-                        entry[1] = time.time() + tier
-                self._send(403, json.dumps({"error": "pin"}), "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
-                return
-            with _PIN_THROTTLE_LOCK:
-                _PIN_FAILS.pop(ip_key, None)
             rc, out, err = self._run_tool(["psks-list"], API_QUICK_TIMEOUT)
             if rc is None:
                 self._send(504, json.dumps({"error": "timeout"}), "application/json")
@@ -474,13 +471,68 @@ class StatusHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            # Trades the admin PSK for a stateless session token. A PSK guess
+            # is exactly as valuable as a PIN guess, so attempts feed the SAME
+            # per-IP _PIN_FAILS counter/backoff instead of becoming a second,
+            # unlimited oracle. A blocked attempt still advances the count and
+            # answers 429 before the body is parsed (mirrors the write throttle).
+            ip_key = self.client_address[0]
+            now = time.time()
+            with _PIN_THROTTLE_LOCK:
+                entry = _PIN_FAILS.get(ip_key)
+                blocked_until = entry[1] if entry else 0.0
+                if now < blocked_until:
+                    entry[0] += 1
+                    pin_fails = entry[0]
+                else:
+                    pin_fails = None
+            if pin_fails is not None:
+                self._send(429, json.dumps({"error": "rate_limited"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            body, err_code = self._read_json_body()
+            if err_code is not None:
+                # Malformed/absent body degrades to 401, not a parser-error
+                # oracle: a login attempt without a parseable psk is simply a
+                # failed login. Not counted as a guess (no PSK was compared).
+                self._send(401, json.dumps({"error": "auth"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            supplied = body.get("psk")
+            if not ADMIN_PSK or not isinstance(supplied, str) \
+                    or not hmac.compare_digest(supplied, ADMIN_PSK):
+                with _PIN_THROTTLE_LOCK:
+                    entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
+                    entry[0] += 1
+                    tier = _pin_backoff_tier(entry[0])
+                    if tier:
+                        entry[1] = time.time() + tier
+                self._send(401, json.dumps({"error": "auth"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            with _PIN_THROTTLE_LOCK:
+                _PIN_FAILS.pop(ip_key, None)
+            self._send(200, json.dumps({"token": _make_session_token()}),
+                       "application/json")
+            return
         if path == "/api/wan/scan" or path == "/api/wan/status":
-            # These branches never read their request body, so with
-            # HTTP/1.1 keep-alive an unsent body would be parsed as the
-            # next (smuggled) request on the same socket. Close the
+            # Session-gated reads (Todo 6): the check fires before any work,
+            # and _require_session closes the connection on 401 so an unread
+            # body cannot smuggle. These branches never read their request
+            # body, so with HTTP/1.1 keep-alive an unsent body would be parsed
+            # as the next (smuggled) request on the same socket. Close the
             # connection instead: header must be emitted between
             # send_response and end_headers (send_header buffers in call
             # order), and close_connection=True is defense-in-depth.
+            if not _require_session(self):
+                return
             if path == "/api/wan/status":
                 self._send(200, json.dumps(get_status()), "application/json",
                            extra_headers=[("Connection", "close")])
@@ -523,6 +575,22 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send(err_code, json.dumps({"error": _code_msg(err_code)}),
                        "application/json")
             return
+        # Two-factor writes (Todo 6): a valid session AND a correct body.pin.
+        # The session check comes first and is pin_unset-aware so a session
+        # holder sees 403 {"error":"pin_unset"} on an unprovisioned router,
+        # while the same request without a session stays a bare 401 — a guest
+        # cannot probe the PIN's existence (the pin_unset distinction never
+        # leaks pre-session). SETUP_PIN-empty is pinned False for the whole
+        # process, so caching the auth state does not change behavior.
+        session_authed = getattr(self, "_session_authed", None)
+        if session_authed is None:
+            session_authed = _session_ok(self.headers.get("X-Session"))
+            self._session_authed = session_authed
+        if not session_authed:
+            self._send(401, json.dumps({"error": "auth"}), "application/json",
+                       extra_headers=[("Connection", "close")])
+            self.close_connection = True
+            return
         if not self._pin_ok(body):
             with _PIN_THROTTLE_LOCK:
                 entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
@@ -530,7 +598,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 tier = _pin_backoff_tier(entry[0])
                 if tier:
                     entry[1] = time.time() + tier
-            self._send(403, json.dumps({"error": "pin"}), "application/json")
+            err_key = "pin" if SETUP_PIN else "pin_unset"
+            self._send(403, json.dumps({"error": err_key}), "application/json")
             return
         with _PIN_THROTTLE_LOCK:
             _PIN_FAILS.pop(ip_key, None)
