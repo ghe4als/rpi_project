@@ -304,7 +304,7 @@ Usage:
   travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
   travel-wan clients [--json]            list connected clients (leases + AP assoc)
   travel-wan psks-del <index>            delete the Nth psks-list row
-  travel-wan ap-apply <SSID> [PSK]       re-render + restart the AP (setup API)
+  travel-wan ap-apply <SSID> [PSK] [HIDDEN]  re-render + restart the AP (setup API; HIDDEN: 2=hide, 0=visible, empty=keep)
   travel-wan ap-ssid                     print the live AP SSID
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
@@ -565,8 +565,9 @@ HOSTAPD_BIN="${TRAVELROUTER_HOSTAPD_BIN:-hostapd}"
 cmd_ap_apply() {
     local new_ssid="${1:-}"
     local new_psk="${2:-}"
-    if [[ -z "$new_ssid" && -z "$new_psk" ]]; then
-        log "ap-apply: a new SSID and/or PSK is required"
+    local new_hidden="${3:-}"
+    if [[ -z "$new_ssid" && -z "$new_psk" && -z "$new_hidden" ]]; then
+        log "ap-apply: a new SSID, PSK, and/or hidden flag is required"
         usage
         return 2
     fi
@@ -619,11 +620,34 @@ cmd_ap_apply() {
     local m_country="__AP_""COUNTRY__"
     local m_channel="__AP_""CHANNEL__"
     local m_psk="__AP_""PSK__"
+    local m_hidden="__AP_""HIDDEN__"
+    # Hidden flag: "" = keep the CURRENT conf's value (preserve an existing
+    # ignore_broadcast_ssid line on a psk-/ssid-only change; absent = stay
+    # visible). "2" = hidden (hostapd stops the SSID beacon; clients must add
+    # the network manually). "0" = visible (directive omitted). The
+    # placeholder is a full-line marker in the template: when hidden, replace
+    # the marker line with the directive; when visible, delete the marker
+    # line entirely so the conf carries no ignore_broadcast_ssid.
+    local hidden_sed_expr
+    if [[ "$new_hidden" == "2" ]]; then
+        hidden_sed_expr="s|${m_hidden}|ignore_broadcast_ssid=2|"
+    elif [[ -z "$new_hidden" ]]; then
+        local cur_hidden
+        cur_hidden="$(sed -n 's/^\(ignore_broadcast_ssid=.*\)$/\1/p' "$AP_CONF" 2>/dev/null | head -1)"
+        if [[ -n "$cur_hidden" ]]; then
+            hidden_sed_expr="s|${m_hidden}|${cur_hidden}|"
+        else
+            hidden_sed_expr="/${m_hidden}/d"
+        fi
+    else
+        hidden_sed_expr="/${m_hidden}/d"
+    fi
     sed -e "s|${m_iface}|${ap_iface}|g" \
         -e "s|${m_ssid}|${new_ssid}|g" \
         -e "s|${m_country}|${r_country}|g" \
         -e "s|${m_channel}|${r_channel}|g" \
         -e "s|${m_psk}|${new_psk}|g" \
+        -e "$hidden_sed_expr" \
         "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "ap-apply: cannot render new conf"; return 2; }
     chmod 0600 "$tmp"
     if ! "$HOSTAPD_BIN" -t "$tmp" >/dev/null 2>&1; then
@@ -917,7 +941,7 @@ main() {
             cmd_psks_del "${1:-}"
             ;;
         ap-apply)
-            cmd_ap_apply "${1:-}" "${2:-}"
+            cmd_ap_apply "${1:-}" "${2:-}" "${3:-}"
             ;;
         ap-ssid)
             if [[ -s "$AP_SSID_FILE" ]]; then

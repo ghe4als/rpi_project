@@ -33,6 +33,7 @@ import hmac
 import ipaddress
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -458,6 +459,13 @@ class StatusHandler(BaseHTTPRequestHandler):
         return len(ssid.encode("utf-8")) <= SSID_MAX_BYTES
 
     @staticmethod
+    def _random_ap_ssid():
+        # 8 chars over the no-lookalike alphabet (no I/L/O/0/1), secrets.choice
+        # so the name is unpredictable; no separators so it sorts as noise.
+        return "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
+                       for _ in range(8))
+
+    @staticmethod
     def _pin_ok(body):
         if not SETUP_PIN:
             return False
@@ -665,9 +673,21 @@ class StatusHandler(BaseHTTPRequestHandler):
             elif path == "/api/wan/apconfig":
                 ssid = body.get("ssid")
                 psk = body.get("psk")
-                if ssid is None and psk is None:
+                hidden = body.get("hidden")
+                if ssid is None and psk is None and hidden is None:
                     self._send(400, json.dumps({"error": "apconfig"}), "application/json")
                     return
+                if hidden is not None and not isinstance(hidden, bool):
+                    self._send(400, json.dumps({"error": "apconfig"}), "application/json")
+                    return
+                # Reserved word "random": the server generates the name so the
+                # client never invents one. Anything else (including a literal
+                # trailing space, e.g. "random ") falls through to the normal
+                # SSID validation below untouched.
+                generated_ssid = None
+                if ssid == "random":
+                    generated_ssid = self._random_ap_ssid()
+                    ssid = generated_ssid
                 if ssid is not None:
                     if not self._ssid_valid(ssid) or len(ssid) > 32 \
                             or not all(c.isprintable() and c not in '|\\$&' for c in ssid):
@@ -679,11 +699,27 @@ class StatusHandler(BaseHTTPRequestHandler):
                         self._send(400, json.dumps({"error": "apconfig"}), "application/json")
                         return
                 args = ["ap-apply"]
-                # Always 2 args in fixed slots: empty string = "keep current"
-                # (a psk-only change must not land in the SSID slot).
+                # Always 3 args in fixed slots: empty string = "keep current"
+                # (a psk-only change must not land in the SSID slot; a hidden-
+                # absent change must not land in the PSK slot).
                 args.append(ssid if ssid is not None else "")
                 args.append(psk if psk is not None else "")
+                if hidden is None:
+                    args.append("")
+                elif hidden:
+                    args.append("2")
+                else:
+                    args.append("0")
                 rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
+                # Random-rename responses carry the generated name so the
+                # client can show + store it BEFORE the restart drops the
+                # radio. Other branches keep the bare _api_response shape.
+                if generated_ssid is not None and rc == 0:
+                    self._send(200, json.dumps({"ok": True, "rc": rc,
+                                                "lines": out, "log": err,
+                                                "ssid": generated_ssid}),
+                               "application/json")
+                    return
             elif path == "/api/wan/disconnect":
                 rc, out, err = self._run_tool(["disconnect"], API_QUICK_TIMEOUT)
             elif path == "/api/wan/forget":

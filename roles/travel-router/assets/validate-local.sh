@@ -2232,6 +2232,289 @@ else
   bad "5am(3) open-path argv wrong: add=[$am_open]"
 fi
 
+# --- (5an) travel-router ap-stealth: random SSID + hide-AP through apconfig ---
+# Plan .omo/plans/travel-router-ap-stealth.md, Todos 1+2:
+#   (i)   travel-wan ap-apply renders ignore_broadcast_ssid=2 when the 3rd slot
+#         is "2", omits the line when "0"/"", and PRESERVES an existing flag
+#         when the slot is "".
+#   (ii)  the rollback contract still holds with the new render (hostapd -t
+#         reject -> nothing installed; restart fail -> .bak restored).
+#   (iii) /api/wan/apconfig accepts ssid:"random" -> the SERVER generates the
+#         name (secrets.choice over A-HJ-NP-Z2-9, 8 chars) and returns it in
+#         the response envelope; hidden:true/false/absent post to the tool's
+#         3rd slot as "2"/"0"/"".
+#   (iv)  setup.html static contract: Random button, hidden checkbox ->
+#         hidden:true post, rejoin warning, localStorage "ap-last-ssid", no
+#         innerHTML sinks, X-Session census unchanged.
+sec "5an. random SSID + hide-AP in the apconfig flow"
+
+# --------- (i) RENDER: ap-apply [SSID] [PSK] [HIDDEN] against fixtures -------
+ANB="$B/5an"; mkdir -p "$ANB/ap-etc" "$ANB/sys/class/net"
+ANSH="$ANB/tw-an.sh"
+ANRENV="$ANB/role.env"
+printf 'TRAVELROUTER_AP_SSID=BaseNet\nTRAVELROUTER_AP_PSK=BasePass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$ANRENV"
+# sed-copy the script: rewire the role.env two-path discovery (hardcoded
+# /run/travel-router/role.env candidates) + the state file to our fixtures.
+sed -e "s|/run/travel-router/role.env|$ANRENV|g" \
+    -e "s|/boot/firmware/role/role.env|/nonexistent-role.env|g" \
+    -e "s|/boot/role/role.env|/nonexistent-role.env|g" \
+    -e "s|/sys/class/net|$ANB/sys/class/net|g" \
+    -e "s|/run/travel-router/state.json|$ANB/state.json|g" \
+    "$A/travel-wan.sh" > "$ANSH"
+ap_iface_fixture() { : > "$1"; } # no-op doc anchor; interface comes from role.env fixture above
+# HOSTAPD stub that accepts (-t exit 0) and RECORDS argv
+ANHAP_OK="$ANB/hostapd-ok"
+cat > "$ANHAP_OK" <<'EOF'
+#!/bin/bash
+printf 'hostapd %s\n' "$*" >> "$(dirname "$0")/hostapd.log"
+exit 0
+EOF
+# HOSTAPD stub that rejects (-t exit 1)
+ANHAP_BAD="$ANB/hostapd-bad"
+printf '#!/bin/bash\nprintf "hostapd %%s\\n" "$*" >> "$(dirname "$0")/hostapd.log"\nexit 1\n' > "$ANHAP_BAD"
+chmod +x "$ANHAP_OK" "$ANHAP_BAD"
+# SUDO passthrough (same idiom as §5am/§5z) and SYSTEMCTL stubs
+ANSUDO="$ANB/sudo"; printf '#!/bin/bash\nexec "$@"\n' > "$ANSUDO"; chmod +x "$ANSUDO"
+ANCTL_OK="$ANB/systemctl-ok"
+printf '#!/bin/bash\nprintf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\nexit 0\n' > "$ANCTL_OK"
+chmod +x "$ANCTL_OK"
+ANCTL_BAD="$ANB/systemctl-bad"
+printf '#!/bin/bash\nprintf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\nexit 1\n' > "$ANCTL_BAD"
+chmod +x "$ANCTL_BAD"
+anenv=(SUDO="$ANSUDO" HOSTAPD_CLI=/nonexistent NMCLI=/nonexistent IP=/nonexistent CURL=/nonexistent
+       TRAVELROUTER_AP_CONF="$ANB/ap-etc/hostapd-travel.conf"
+       TRAVELROUTER_AP_TEMPLATE="$A/hostapd.conf.tmpl"
+       TRAVELROUTER_AP_SSID_FILE="$ANB/ap-ssid"
+       TRAVELROUTER_STATE_FILE="$ANB/state.json")
+# baseline conf BEFORE ap-apply: a "currently visible" render (no ignore_broadcast_ssid line).
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"uap0"}' > "$ANB/state.json"
+
+# (i-a) hidden slot "2" -> rendered conf contains ignore_broadcast_ssid=2
+: > "$ANB/hostapd.log"; : > "$ANB/systemctl.log"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply Net1234 Net1234psk "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -qF 'ignore_broadcast_ssid=2' "$ANB/ap-etc/hostapd-travel.conf"; then
+  ok "5an(i-a) ap-apply hidden slot '2' renders ignore_broadcast_ssid=2"
+else
+  bad "5an(i-a) hidden slot '2' rc=$rc conf=[$(cat "$ANB/ap-etc/hostapd-travel.conf" | grep -E 'ignore_broadcast_ssid' || echo none)]"
+fi
+
+# (i-b) hidden slot "" with NO existing ignore_broadcast_ssid -> line stays absent
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply NextNet NextPass1 "" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && ! grep -qF 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf"; then
+  ok "5an(i-b) empty hidden slot + no prior flag -> directive absent (visible)"
+else
+  bad "5an(i-b) empty slot rc=$rc conf=[$(grep -E 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf" || echo none)]"
+fi
+
+# (i-c) hidden slot "0" -> directive absent even if fixture currently has one
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply NextNet NextPass1 "0" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && ! grep -qF 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf"; then
+  ok "5an(i-c) hidden slot '0' -> directive absent (explicit visible)"
+else
+  bad "5an(i-c) slot '0' rc=$rc conf=[$(grep -E 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf" || echo none)]"
+fi
+
+# (i-d) empty hidden slot MUST PRESERVE an existing ignore_broadcast_ssid=2
+# (psk-only change must not silently un-hide). STALE_STATE probe case.
+printf 'interface=uap0\nssid=BaseNet\nignore_broadcast_ssid=2\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply "" NewPskOnly9 "" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -qF 'ignore_broadcast_ssid=2' "$ANB/ap-etc/hostapd-travel.conf"; then
+  ok "5an(i-d) empty hidden slot preserves existing ignore_broadcast_ssid=2"
+else
+  bad "5an(i-d) preserve rc=$rc conf=[$(grep -E 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf" || echo none)]"
+fi
+
+# (i-e) ap-apply forwards 3 args correctly: '2'/'0'/'' land in slot 3, not 2
+# A psk-ONLY change with hidden:"" must keep the SSID from the ap-ssid file,
+# and the hidden slot must reach the tool's $3 (never $2 which is psk).
+printf 'hidden3=%s\n' "${3:-MISSING}" > "$ANB/argv-capture" 2>/dev/null || true
+
+# --------- (ii) ROLLBACK: hostapd -t reject and restart-fail ----------------
+# (ii-a) hostapd -t rejects -> rc nonzero, AP_CONF unchanged, no .bak swap
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+cp "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-reject.conf"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_BAD" SYSTEMCTL="$ANCTL_OK" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply ChangedNet ChangedPass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -ne 0 ]] && cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-reject.conf" \
+   && [[ ! -e "$ANB/ap-etc/hostapd-travel.conf.bak" ]]; then
+  ok "5an(ii-a) hostapd -t reject -> rc!=0, conf unchanged, no .bak"
+else
+  bad "5an(ii-a) reject rc=$rc conf-diff=$(cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-reject.conf"; echo $?) bak=$( [[ -e "$ANB/ap-etc/hostapd-travel.conf.bak" ]] && echo present || echo absent)"
+fi
+
+# (ii-b) restart failure -> .bak restored and restart retried (rollback contract)
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+cp "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-fail.conf"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_BAD" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply ChangedNet ChangedPass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -ne 0 ]] && cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-fail.conf"; then
+  ok "5an(ii-b) restart-fail -> .bak restored over the new conf (rollback)"
+else
+  bad "5an(ii-b) restart-fail rc=$rc conf-diff=$(cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-fail.conf"; echo $?)"
+fi
+
+# --------- (iii) SERVER: apconfig accepts random + hidden --------------------
+# TRAVELWAN_BIN stub records argv so the 3rd slot (hidden) is observable.
+ANTW="$ANB/stub-travel-wan-an"
+cat > "$ANTW" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$(dirname "$0")/an-tool.log"
+case "$1" in
+  known)   printf 'HotelNet\t1690000000\tyes\n'; exit 0 ;;
+  status)  printf '{"mode":"routed","wan_if":"wlan1","internet":"yes","standalone":false}'; exit 0 ;;
+  ap-apply) printf 'AP applied\n'; exit 0 ;;  # must exit 0 so envelope is ok:true
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$ANTW"
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$ANB/srv-state.json"
+an_srvlog="$ANB/an-server.log"
+TRAVELROUTER_SETUP_PIN=2468 TRAVELROUTER_ADMIN_PSK=AdminPass99 TRAVELWAN_BIN="$ANTW" \
+TRAVELROUTER_STATE_FILE="$ANB/srv-state.json" TRAVELROUTER_STATUS_PORT=18510 \
+TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >>"$an_srvlog" 2>&1 &
+ANPID=$!
+wait_healthy 18510 || true
+an_login=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"psk":"AdminPass99"}' \
+  http://127.0.0.1:18510/api/auth/login 2>/dev/null)
+ANTOK=$(printf '%s' "$an_login" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' | head -1)
+[[ -n "$ANTOK" ]] || bad "5an(iii) login failed (no token)"
+
+# (iii-1) ssid:"random" -> 200 envelope, response body carries a generated ssid
+# in [A-HJ-NP-Z2-9]{8}, and the tool was invoked with an 8-char no-lookalike ssid.
+: > "$ANB/an-tool.log"
+an_rand=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"random"}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_code="${an_rand##*$'\n'}"
+an_body="${an_rand%$'\n'*}"
+an_ssid=$(printf '%s' "$an_body" | sed -n 's/.*"ssid": *"\([^"]*\)".*/\1/p' | head -1)
+if [[ "$an_code" == "200" ]] && printf '%s' "$an_ssid" | grep -qE '^[A-HJ-NP-Z2-9]{8}$'; then
+  ok "5an(iii-1) apconfig ssid:random -> 200 + envelope ssid matches ^[A-HJ-NP-Z2-9]{8}$"
+else
+  bad "5an(iii-1) random code=$an_code ssid=[$an_ssid] body=[$(printf '%s' "$an_body" | head -1 | cut -c1-120)]"
+fi
+an_tool_ssid=$(sed -n 's/^ap-apply \([^ ]*\) .*/\1/p' "$ANB/an-tool.log" | head -1)
+printf '%s' "$an_tool_ssid" | grep -qE '^[A-HJ-NP-Z2-9]{8}$' \
+  && ok "5an(iii-1) tool argv[1] (ssid slot) carries the generated value" \
+  || bad "5an(iii-1) tool argv ssid slot=[$an_tool_ssid] (want 8-char no-lookalike)"
+
+# (iii-2) hidden:true -> tool invoked with 3rd slot "2"
+: > "$ANB/an-tool.log"
+an_hid_true=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"RandomNameTest","hidden":true}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_slot=$(awk '$1=="ap-apply"{print $NF}' "$ANB/an-tool.log" | head -1)
+if [[ "${an_hid_true##*$'\n'}" == "200" && "$an_slot" == "2" ]]; then
+  ok "5an(iii-2) hidden:true -> tool argv[3]='2'"
+else
+  bad "5an(iii-2) hidden:true code=${an_hid_true##*$'\n'} slot=[$an_slot] (want '2'; argv=[$(cat "$ANB/an-tool.log" | head -1)])"
+fi
+
+# (iii-3) hidden:false -> tool invoked with 3rd slot "0"
+: > "$ANB/an-tool.log"
+an_hid_false=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"SomeNet","hidden":false}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_slot=$(awk '$1=="ap-apply"{print $NF}' "$ANB/an-tool.log" | head -1)
+if [[ "${an_hid_false##*$'\n'}" == "200" && "$an_slot" == "0" ]]; then
+  ok "5an(iii-3) hidden:false -> tool argv[3]='0'"
+else
+  bad "5an(iii-3) hidden:false code=${an_hid_false##*$'\n'} slot=[$an_slot] (want '0')"
+fi
+
+# (iii-4) hidden ABSENT -> tool argv[3]='' (trailing argv-empty). The stub
+# logs args space-joined, so a psk-and-hidden-absent call becomes
+# `ap-apply <ssid>  ` (two trailing spaces). awk's NF would drop them; grep
+# for the literal trailing whitespace instead.
+: > "$ANB/an-tool.log"
+an_hid_absent=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"AnotherNet"}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_argv_line=$(awk '$1=="ap-apply"' "$ANB/an-tool.log" | head -1)
+if [[ "${an_hid_absent##*$'\n'}" == "200" ]] \
+   && printf '%s' "$an_argv_line" | grep -qE '^ap-apply AnotherNet  $'; then
+  ok "5an(iii-4) hidden ABSENT -> tool argv[3]='' (keep-current)"
+else
+  bad "5an(iii-4) hidden absent code=${an_hid_absent##*$'\n'} line=[$(printf '%q' "$an_argv_line")] (want 'ap-apply AnotherNet  ' with two trailing spaces)"
+fi
+
+# (iii-5) MALFORMED_INPUT: hidden:"yes" (string, not bool) -> 400 apconfig
+an_hid_str=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"SomeNet","hidden":"yes"}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+[[ "${an_hid_str##*$'\n'}" == "400" && "${an_hid_str%$'\n'*}" == *'"apconfig"'* ]] \
+  && ok "5an(iii-5) hidden:'yes' (non-bool) -> 400 apconfig" \
+  || bad "5an(iii-5) hidden:'yes' code=${an_hid_str##*$'\n'} body=[${an_hid_str%$'\n'*}]"
+
+# (iii-6) ssid:"random " (trailing space) is NOT the reserved word: it falls
+# through to the existing 7-char SSID validation (printable, <=32, no |\\$&).
+# Extract the tool argv with sed (preserves whitespace between fields; awk's
+# $2 drops the trailing-space token), and assert the literal value.
+: > "$ANB/an-tool.log"
+an_rs=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","ssid":"random "}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_rs_argv=$(awk '$1=="ap-apply"' "$ANB/an-tool.log" | head -1)
+if [[ "${an_rs##*$'\n'}" == "200" ]] \
+   && printf '%s' "$an_rs_argv" | grep -qE '^ap-apply random   $'; then
+  ok "5an(iii-6) ssid:'random ' (trailing space) treated as a normal 7-char SSID (exact-string reserved word)"
+else
+  bad "5an(iii-6) trailing-space ssid code=${an_rs##*$'\n'} argv=[$(printf '%q' "$an_rs_argv")] (want 'ap-apply random   ' — random + literal sp + 2 empty slots)"
+fi
+
+kill "$ANPID" 2>/dev/null; wait "$ANPID" 2>/dev/null
+
+# --------- (iv) STATIC: setup.html AP dialog additions -----------------------
+grep -qF 'id="ap-random"' "$A/setup.html" \
+  && ok "5an(iv) setup.html has the Random name button (id=ap-random)" \
+  || bad "5an(iv) Random name button MISSING (id=ap-random)"
+grep -qF 'ap-last-ssid' "$A/setup.html" \
+  && ok "5an(iv) setup.html stores the generated SSID in localStorage ap-last-ssid" \
+  || bad "5an(iv) localStorage key ap-last-ssid MISSING"
+grep -qF 'id="ap-hidden"' "$A/setup.html" \
+  && ok "5an(iv) setup.html has the Hide network checkbox (id=ap-hidden)" \
+  || bad "5an(iv) Hide network checkbox MISSING (id=ap-hidden)"
+grep -qF 'body.hidden = hiddenChecked' "$A/setup.html" \
+  && ok "5an(iv) AP dialog posts hidden:false|true from the checkbox" \
+  || bad "5an(iv) hidden checkbox wiring MISSING (body.hidden = hiddenChecked)"
+grep -qF 're-add the network manually' "$A/setup.html" \
+  && ok "5an(iv) rejoin warning textContent present" \
+  || bad "5an(iv) rejoin warning text MISSING"
+# Sink grep + session census pins held by §5al — re-assert here so §5an alone
+# catches a regression in this feature's footprint (cheap, in-place).
+sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/setup.html")
+[[ "$sink_hits" == "0" ]] && ok "5an(iv) no innerHTML/insertAdjacentHTML/document.write" \
+  || bad "5an(iv) forbidden DOM sink count=$sink_hits"
+sess_sites=$(grep -c -F 'X-Session' "$A/setup.html")
+[[ "$sess_sites" == "5" ]] && ok "5an(iv) X-Session census unchanged (5 sites)" \
+  || bad "5an(iv) X-Session sites=$sess_sites (want 5 — §5al census broken)"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

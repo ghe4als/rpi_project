@@ -375,6 +375,7 @@ sed -e "s|__AP_INTERFACE__|${ap}|g" \
     -e "s|__AP_COUNTRY__|${TRAVELROUTER_AP_COUNTRY}|g" \
     -e "s|__AP_CHANNEL__|${TRAVELROUTER_AP_CHANNEL:-6}|g" \
     -e "s|__AP_PSK__|${pkey}|g" \
+    -e '/__AP_HIDDEN__/d' \
     "$ASSETS/hostapd.conf.tmpl" > "$hostapd_conf"
 chmod 0600 "$hostapd_conf"
 

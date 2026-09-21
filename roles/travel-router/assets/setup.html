@@ -198,8 +198,20 @@
   <div class="drow"><span class="label">Current:</span> <span id="ap-current"></span></div>
   <label for="ap-ssid">New network name (SSID, optional)</label>
   <input id="ap-ssid" autocomplete="off" maxlength="32">
+  <p style="margin-top:4px">
+    <button id="ap-random" type="button" class="secondary">Random name</button>
+  </p>
   <label for="ap-psk">New password (8-63 chars, optional)</label>
   <input id="ap-psk" type="password" autocomplete="off">
+  <p>
+    <label for="ap-hidden">
+      <input id="ap-hidden" type="checkbox">
+      Hide network (stop broadcasting). Uncheck to broadcast again.
+    </label>
+  </p>
+  <p class="dmsg" id="ap-hidden-warn" style="display:none">
+    Hiding stops the beacon — after the AP restarts, re-add the network manually; hidden networks never appear in scans.
+  </p>
   <p>
     <button id="ap-save" type="button">Save &amp; restart AP</button>
     <button id="ap-cancel" type="button" class="secondary">Cancel</button>
@@ -980,23 +992,45 @@ function apMsg(text, cls) { setMsg("ap-msg", text, cls); }
 document.getElementById("ap-open").addEventListener("click", function () {
   document.getElementById("ap-current").textContent =
     (refreshStatusLast() || {}).ap_ssid || "(unknown)";
-  document.getElementById("ap-ssid").value = "";
+  var ssidEl = document.getElementById("ap-ssid");
+  ssidEl.value = "";
+  delete ssidEl.dataset.random;
   document.getElementById("ap-psk").value = "";
+  document.getElementById("ap-hidden").checked = false;
+  document.getElementById("ap-hidden-warn").style.display = "none";
   apMsg("");
   document.getElementById("ap-dialog").showModal();
 });
 document.getElementById("ap-cancel").addEventListener("click", function () {
   document.getElementById("ap-dialog").close();
 });
+document.getElementById("ap-random").addEventListener("click", function () {
+  document.getElementById("ap-ssid").value = "";
+  document.getElementById("ap-ssid").dataset.random = "1";
+  apMsg("a random name will be generated on save", "");
+});
+document.getElementById("ap-ssid").addEventListener("input", function () {
+  // Typing over the "random on save" intent cancels it.
+  if (this.value !== "") { delete this.dataset.random; }
+});
+document.getElementById("ap-hidden").addEventListener("change", function () {
+  document.getElementById("ap-hidden-warn").style.display =
+    this.checked ? "" : "none";
+});
 document.getElementById("ap-save").addEventListener("click", function () {
   var pin = pinOrNull() || savedPin();
   if (!pin) { apMsg("PIN required — enter it in the PIN section", "warn"); return; }
-  var ssidVal = document.getElementById("ap-ssid").value.trim();
+  var ssidField = document.getElementById("ap-ssid");
+  var ssidVal = ssidField.value.trim();
+  var useRandom = (ssidVal === "" && ssidField.dataset.random === "1");
   var pskVal = document.getElementById("ap-psk").value;
+  var hiddenChecked = document.getElementById("ap-hidden").checked;
   var body = { pin: pin };
-  if (ssidVal) { body.ssid = ssidVal; }
+  if (useRandom) { body.ssid = "random"; }
+  else if (ssidVal) { body.ssid = ssidVal; }
   if (pskVal) { body.psk = pskVal; }
-  if (!body.ssid && !body.psk) {
+  body.hidden = hiddenChecked;
+  if (!body.ssid && !body.psk && !hiddenChecked) {
     apMsg("enter a new SSID and/or password", "warn");
     return;
   }
@@ -1013,6 +1047,16 @@ document.getElementById("ap-save").addEventListener("click", function () {
       apMsg((d.log && d.log.join(" ")) || "failed", "warn");
       return;
     }
+    // Capture the (possibly generated) SSID BEFORE the restart drops the
+    // radio: the response carries it on a random rename; a literal rename
+    // reuses the typed value. Stored in localStorage so the rejoin message
+    // can reference it after the page reloads on the new network.
+    var finalSsid = "";
+    if (d && d.ssid) { finalSsid = d.ssid; }
+    else if (ssidVal) { finalSsid = ssidVal; }
+    if (finalSsid) {
+      try { localStorage.setItem("ap-last-ssid", finalSsid); } catch (e) {}
+    }
     // The response (and this page) die with the AP restart — poll instead.
     var waited = 0;
     var poll = setInterval(function () {
@@ -1025,8 +1069,8 @@ document.getElementById("ap-save").addEventListener("click", function () {
             clearInterval(poll);
             apMsg("AP reconfigured", "ok");
             refreshStatus();
-            if (ssidVal) {
-              apMsg("AP reconfigured as '" + ssidVal + "' — join the new network, then reopen this page", "ok");
+            if (finalSsid) {
+              apMsg("AP reconfigured as '" + finalSsid + "' — join the new network, then reopen this page", "ok");
             }
             setTimeout(function () { document.getElementById("ap-dialog").close(); }, 2500);
           } else if (waited >= 30000) {
