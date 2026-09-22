@@ -330,13 +330,15 @@ Afterwards the store itself is managed at runtime:
 ### Changing the router's own network (AP rename)
 
 The setup page's "AP settings" flow (and `POST /api/wan/apconfig`) changes
-the travel SSID and/or AP password at runtime: the new config is validated
-(`hostapd -t`) and rendered from the template, the AP service restarts
-(connected devices drop and must rejoin), and on a failed restart the
-previous config is restored automatically. If you changed the SSID, join
-the new SSID manually — the phone re-checks the router over the new
-connection. **Re-provisioning resets the AP name/password to your `.env`
-values by design.**
+the travel SSID and/or AP password at runtime. The new config is validated
+by a parse-probe on a throwaway copy (the live radio is never touched), then
+rendered from the template, and the AP service restarts (connected devices
+drop and must rejoin). After the restart the AP's control socket is polled
+for a few seconds; if it never appears, the previous config is restored and
+the AP is restarted automatically. If you changed the SSID, join the new
+SSID manually — the phone re-checks the router over the new connection.
+**Re-provisioning resets the AP name/password to your `.env` values by
+design.**
 
 ### First-boot notifications (NATS)
 
@@ -420,6 +422,12 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
   expired; the role exits 0 (doesn't fail the unit) so the Pi is still on
   LAN. Set a fresh key in `.env` and re-provision, or SSH in and run
   `tailscale up --ssh --advertise-routes=$TAILSCALE_SUBNET` by hand.
+- **travel-router API calls via curl return 403/401 with correct credentials**
+  — every JSON POST requires the header `X-Requested-With: XMLHttpRequest`
+  (CSRF defense; browsers set it on the setup page automatically, curl does
+  not). Login is `POST /api/auth/login` with `{"psk": "..."}` against
+  `TRAVELROUTER_ADMIN_PSK`; writes additionally need the session token
+  (`X-Session`) and the setup PIN in the body.
 - **Forgot which Pi is which** — `./pi list` shows all tracked Pis;
   `./pi name rpi-XXXXXX "kitchen"` labels one for easy reference.
 
