@@ -28,7 +28,9 @@ the user wants the standard name back.
 
 None — provision.sh CR-strip committed (c14e320); tasks/5-session-auth.md
 scratch removed (2026-09-22, content superseded by landed Todo 6 commit
-8846d5a + evidence file).
+8846d5a + evidence file). WPA3 capability-check recipe documented in
+README (d2fa0f4): Zero W = WPA2 ceiling (BCM43430A1 has no SAE); new
+hardware -> run the `iw phy0 info` recipe before buying/editing.
 
 ## Next session steps
 
