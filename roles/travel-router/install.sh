@@ -313,6 +313,11 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
   install -m 0644 "$ASSETS/portal-dnsmasq.conf.tmpl" /usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl
+  # ap-apply searches AP_TEMPLATE (/etc/rpi-project/travel-router/) then the
+  # script's own dir (/usr/local/bin) — stage the template where it looks,
+  # or every runtime apconfig apply fails with "hostapd template not found".
+  mkdir -p /etc/rpi-project/travel-router
+  install -m 0644 "$ASSETS/hostapd.conf.tmpl" /etc/rpi-project/travel-router/hostapd.conf.tmpl
   mkdir -p /etc/systemd/system
   for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
     install -m 0644 "$ASSETS/$unit" "/etc/systemd/system/$unit"
@@ -326,6 +331,8 @@ else
   cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
   cp "$ASSETS/portal-dnsmasq.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl"
+  mkdir -p "${DRY_RUN_PREFIX}/etc/rpi-project/travel-router"
+  cp "$ASSETS/hostapd.conf.tmpl" "${DRY_RUN_PREFIX}/etc/rpi-project/travel-router/hostapd.conf.tmpl"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"

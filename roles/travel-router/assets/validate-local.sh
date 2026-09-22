@@ -75,10 +75,19 @@ done
   && ok "nftables.conf.tmpl deployed" || bad "nftables.conf.tmpl NOT deployed"
 [[ -f "$pfx/usr/local/lib/travel-router/setup.html" ]] \
   && ok "setup.html deployed (H02)" || bad "setup.html NOT deployed"
+# ap-apply locates its render template at /etc/rpi-project/travel-router/
+# (its self_dir fallback is /usr/local/bin, where the template never lives).
+# Not staged -> every apconfig apply dies with "hostapd template not found".
+[[ -f "$pfx/etc/rpi-project/travel-router/hostapd.conf.tmpl" ]] \
+  && ok "hostapd.conf.tmpl staged for ap-apply" || bad "hostapd.conf.tmpl NOT staged (ap-apply: template not found)"
+grep -qF 'install -m 0644 "$ASSETS/hostapd.conf.tmpl"' "$ROOT/roles/travel-router/install.sh" \
+  && ok "install.sh real-mode installs hostapd.conf.tmpl" || bad "install.sh missing real-mode hostapd.conf.tmpl install"
 grep -q 'ssid=TestNet' "$pfx/etc/hostapd/hostapd-travel.conf" && ok "hostapd ssid rendered" || bad "hostapd ssid missing"
 grep -q 'wpa_passphrase=TestPass123' "$pfx/etc/hostapd/hostapd-travel.conf" && ok "PSK rendered" || bad "PSK missing"
-if grep -rn '__[A-Z][A-Z_]*__' "$pfx/etc" "$pfx/usr/local/lib/travel-router/status-server.py" "$pfx/usr/local/bin" >/dev/null 2>&1; then
-  bad "unsubstituted placeholders remain: $(grep -rl '__[A-Z][A-Z_]*__' "$pfx/etc" "$pfx/usr/local" | tr '\n' ' ')"
+# The staged hostapd.conf.tmpl keeps its placeholders BY DESIGN (ap-apply
+# renders it at runtime); only rendered configs must be placeholder-free.
+if grep -rn '__[A-Z][A-Z_]*__' "$pfx/etc" "$pfx/usr/local/lib/travel-router/status-server.py" "$pfx/usr/local/bin" 2>/dev/null | grep -vF '/etc/rpi-project/travel-router/' | grep -q .; then
+  bad "unsubstituted placeholders remain: $(grep -rl '__[A-Z][A-Z_]*__' "$pfx/etc" "$pfx/usr/local" 2>/dev/null | grep -vF '/etc/rpi-project/travel-router/' | tr '\n' ' ')"
 else ok "0 unsubstituted placeholders in rendered configs"; fi
 # render-breaker SSID battery
 for v in 'a|b' 'a&b' 'a\b' 'a$b'; do
