@@ -26,8 +26,9 @@ the user wants the standard name back.
 
 ## Owner-call items (carried over, unchanged)
 
-- provision.sh CR-strip hunk uncommitted (working tree)
-- untracked scratch file tasks/5-session-auth.md
+- ~~provision.sh CR-strip hunk uncommitted (working tree)~~ — COMMITTED
+  as c14e320 (2026-09-22)
+- untracked scratch file tasks/5-session-auth.md (still open)
 
 ## Next session steps
 
@@ -52,6 +53,6 @@ vectors must be structurally invalid).
 - NEVER run hostapd against the live conf or a conf with `interface=wlan0`
   while hostapd-travel runs — use a dead-iface probe copy only.
 - Login API needs `X-Requested-With: XMLHttpRequest` from curl.
-- Pre-existing owner-call items (unchanged): provision.sh CR-strip hunk
-  uncommitted; untracked scratch file tasks/5-session-auth.md.
-- Suite gate: monotonic; now 433/0.
+- Owner-call: provision.sh CR-strip committed (c14e320); tasks/
+  5-session-auth.md still untracked.
+- Suite gate: monotonic; now 436/0.
