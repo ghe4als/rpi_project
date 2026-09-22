@@ -308,6 +308,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   mkdir -p /usr/local/lib/travel-router
   install -m 0755 "$ASSETS/wan-select.sh"      /usr/local/lib/travel-router/wan-select.sh
   install -m 0755 "$ASSETS/status-server.py"   /usr/local/lib/travel-router/status-server.py
+  install -m 0755 "$ASSETS/staged-env-refresh.sh" /usr/local/lib/travel-router/staged-env-refresh.sh
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
   install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
@@ -320,6 +321,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
 else
   cp "$ASSETS/wan-select.sh"     "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   cp "$ASSETS/status-server.py"  "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
+  cp "$ASSETS/staged-env-refresh.sh" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/staged-env-refresh.sh"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
   cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"

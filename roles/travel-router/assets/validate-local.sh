@@ -2561,6 +2561,84 @@ sess_sites=$(grep -c -F 'X-Session' "$A/setup.html")
 [[ "$sess_sites" == "5" ]] && ok "5an(iv) X-Session census unchanged (5 sites)" \
   || bad "5an(iv) X-Session sites=$sess_sites (want 5 — §5al census broken)"
 
+# --- (5ao) staged-env refresh: PIN/PSK EnvironmentFile re-derived every boot --
+# The unit's EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env
+# is tmpfs: wiped on reboot, and role-setup disables itself after success, so
+# nothing re-stages it. On the Pi's first powercycle (2026-09-21) the staged
+# copy vanished and every admin login 401'd (fail-closed, but the management
+# plane is dead until re-provision). Fix: an ExecStartPre script re-derives
+# the env file from bootfs role.env on EVERY start — which also makes the
+# README's hand-edit recovery path work (edit role.env + restart).
+sec "5ao. staged-env refresh (ExecStartPre re-stages PIN+PSK env file)"
+grep -qF 'ExecStartPre=/usr/local/lib/travel-router/staged-env-refresh.sh' "$A/travel-router-status.service" \
+  && ok "5ao(i) unit declares ExecStartPre staged-env-refresh" \
+  || bad "5ao(i) unit missing ExecStartPre (env file would vanish on reboot)"
+if [[ -f "$A/staged-env-refresh.sh" ]] && bash -n "$A/staged-env-refresh.sh" 2>/dev/null; then
+  ok "5ao(i) staged-env-refresh.sh present + syntax OK"
+else
+  bad "5ao(i) staged-env-refresh.sh missing or syntax error"
+fi
+if grep -qF 'TRAVELROUTER_ADMIN_PSK' "$A/staged-env-refresh.sh" 2>/dev/null \
+   && grep -qF 'TRAVELROUTER_SETUP_PIN' "$A/staged-env-refresh.sh" 2>/dev/null; then
+  ok "5ao(i) script handles both PIN and PSK"
+else
+  bad "5ao(i) script missing a secret handler"
+fi
+
+# (ii) functional: role.env fixture -> env file staged 0600 with both lines.
+AOD="$B/5ao"; mkdir -p "$AOD/role-env" "$AOD/boot"
+printf 'TRAVELROUTER_SETUP_PIN=5555\nTRAVELROUTER_ADMIN_PSK=WitnessPass1\nTRAVELROUTER_AP_SSID=BaseNet\n' > "$AOD/role.env"
+env TRAVELROUTER_ROLE_ENV="$AOD/role.env" TRAVELROUTER_ENV_DIR="$AOD/role-env" \
+  bash "$A/staged-env-refresh.sh" >"$AOD/run1.log" 2>&1
+rc=$?
+m=$(stat -f%Lp "$AOD/role-env/travel-router-setup.env" 2>/dev/null || stat -c%a "$AOD/role-env/travel-router-setup.env" 2>/dev/null)
+if [[ $rc -eq 0 && "$m" == "600" ]] \
+   && grep -qF 'TRAVELROUTER_SETUP_PIN="5555"' "$AOD/role-env/travel-router-setup.env" \
+   && grep -qF 'TRAVELROUTER_ADMIN_PSK="WitnessPass1"' "$AOD/role-env/travel-router-setup.env"; then
+  ok "5ao(ii) refresh stages both values (0600) from role.env"
+else
+  bad "5ao(ii) refresh rc=$rc mode=$m content=[$(tr '\n' ';' <"$AOD/role-env/travel-router-setup.env" 2>/dev/null)]"
+fi
+if ! grep -qF 'WitnessPass1' "$AOD/run1.log"; then
+  ok "5ao(ii) secret value never logged"
+else
+  bad "5ao(ii) secret leaked to log: $(cat "$AOD/run1.log")"
+fi
+
+# (iii) render-breaker PSK -> nothing staged in a FRESH dir, script exits 0
+# (fail-closed; the service must still start without a staged file).
+printf 'TRAVELROUTER_SETUP_PIN=5555\nTRAVELROUTER_ADMIN_PSK=Bad|Pipe99\n' > "$AOD/role-bad.env"
+mkdir -p "$AOD/role-env-bad"
+env TRAVELROUTER_ROLE_ENV="$AOD/role-bad.env" TRAVELROUTER_ENV_DIR="$AOD/role-env-bad" \
+  bash "$A/staged-env-refresh.sh" >"$AOD/run2.log" 2>&1
+rc=$?
+if [[ $rc -eq 0 && ! -e "$AOD/role-env-bad/travel-router-setup.env" ]]; then
+  ok "5ao(iii) render-breaker PSK refused (rc 0, nothing staged)"
+else
+  bad "5ao(iii) breaker rc=$rc staged=$( [[ -e "$AOD/role-env-bad/travel-router-setup.env" ]] && echo yes || echo no )"
+fi
+
+# (iv) no role.env anywhere -> exit 0, nothing staged (deny-by-default kept).
+mkdir -p "$AOD/empty-dir"
+env TRAVELROUTER_ROLE_ENV="$AOD/absent.env" TRAVELROUTER_ENV_DIR="$AOD/empty-dir" \
+  bash "$A/staged-env-refresh.sh" >"$AOD/run3.log" 2>&1
+rc=$?
+if [[ $rc -eq 0 && ! -e "$AOD/empty-dir/travel-router-setup.env" ]]; then
+  ok "5ao(iv) missing role.env -> exit 0, nothing staged"
+else
+  bad "5ao(iv) missing rc=$rc staged=$( [[ -e "$AOD/empty-dir/travel-router-setup.env" ]] && echo yes || echo no )"
+fi
+
+# (v) install.sh stages the refresh script (real + dry-run prefix).
+printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_SETUP_PIN=5555\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$AOD/role-install.env"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$AOD/pfx" TRAVELROUTER_ROLE_ENV="$AOD/role-install.env" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$AOD/install.log" 2>&1
+if [[ -f "$AOD/pfx/usr/local/lib/travel-router/staged-env-refresh.sh" ]]; then
+  ok "5ao(v) install.sh stages staged-env-refresh.sh"
+else
+  bad "5ao(v) install.sh missing refresh-script staging (log: $(tail -2 "$AOD/install.log" 2>/dev/null | tr '\n' ';'))"
+fi
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

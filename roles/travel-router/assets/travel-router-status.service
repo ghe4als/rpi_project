@@ -5,10 +5,13 @@ After=network.target wan-select.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/local/lib/travel-router/status-server.py
-# Setup PIN (H05): staged by install.sh to this tmpfs path, 0600. The leading
-# dash tolerates a missing file (un-provisioned/pre-H05 Pi) — status-server
-# then denies all setup writes (deny-by-default).
+# Setup PIN (H05): staged to this tmpfs path, 0600. The leading dash
+# tolerates a missing file (un-provisioned/pre-H05 Pi) — status-server then
+# denies all setup writes (deny-by-default). tmpfs is wiped by reboot and
+# role-setup never re-runs, so ExecStartPre re-derives the file from bootfs
+# role.env on every start (also makes hand-edit role.env + restart work).
 EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env
+ExecStartPre=/usr/local/lib/travel-router/staged-env-refresh.sh
 Restart=always
 RestartSec=3
 
