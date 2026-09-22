@@ -1097,6 +1097,10 @@ printf '#!/bin/bash\nexec "$@"\n' > "$c3/sudo.sh"; chmod +x "$c3/sudo.sh"
 # logged `bak 600` proves the unconditional .bak chmod (stale-state guard).
 mk_restart_stub() {  # $1 = stub path, $2 = exit code
   { printf '#!/bin/bash\n'
+    printf 'case "$1" in\n'
+    printf '  is-active) echo active; exit 0 ;;\n'
+    printf '  show) echo running; exit 0 ;;\n'
+    printf 'esac\n'
     printf 'ap="${TRAVELROUTER_AP_CONF:?}"\n'
     printf '[[ -f "$ap.bak" ]] && printf '"'"'bak %%s\\n'"'"' "$(stat -f%%Lp "$ap.bak" 2>/dev/null || stat -c%%a "$ap.bak" 2>/dev/null)" >>"$MODELOG"\n'
     printf 'exit %s\n' "$2"
@@ -2268,7 +2272,10 @@ sec "5an. random SSID + hide-AP in the apconfig flow"
 ANB="$B/5an"; mkdir -p "$ANB/ap-etc" "$ANB/sys/class/net"
 ANSH="$ANB/tw-an.sh"
 ANRENV="$ANB/role.env"
-printf 'TRAVELROUTER_AP_SSID=BaseNet\nTRAVELROUTER_AP_PSK=BasePass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$ANRENV"
+# Fixture role.env deliberately omits TRAVELROUTER_AP_COUNTRY: that mirrors
+# the card's role.env (read off disk 2026-09-22) — the render must fall back
+# (WIFI_COUNTRY, then US), never emit an empty country_code= line.
+printf 'TRAVELROUTER_AP_SSID=BaseNet\nTRAVELROUTER_AP_PSK=BasePass123\nWIFI_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$ANRENV"
 # sed-copy the script: rewire the role.env two-path discovery (hardcoded
 # /run/travel-router/role.env candidates) + the state file to our fixtures.
 # ctrl_interface= is neutered: the fixture confs declare none, so the
@@ -2293,7 +2300,7 @@ chmod +x "$ANHAP_OK" "$ANHAP_BAD"
 # SUDO passthrough (same idiom as §5am/§5z) and SYSTEMCTL stubs
 ANSUDO="$ANB/sudo"; printf '#!/bin/bash\nexec "$@"\n' > "$ANSUDO"; chmod +x "$ANSUDO"
 ANCTL_OK="$ANB/systemctl-ok"
-printf '#!/bin/bash\nprintf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\nexit 0\n' > "$ANCTL_OK"
+printf '#!/bin/bash\nprintf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\ncase "$1" in is-active) echo active; exit 0;; show) echo running; exit 0;; esac\nexit 0\n' > "$ANCTL_OK"
 chmod +x "$ANCTL_OK"
 ANCTL_BAD="$ANB/systemctl-bad"
 printf '#!/bin/bash\nprintf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\nexit 1\n' > "$ANCTL_BAD"
@@ -2310,7 +2317,7 @@ printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127
 
 # (i-a) hidden slot "2" -> rendered conf contains ignore_broadcast_ssid=2
 : > "$ANB/hostapd.log"; : > "$ANB/systemctl.log"
-TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_SKIP_CTRL_POLL=1 \
   env "${anenv[@]}" bash "$ANSH" ap-apply Net1234 Net1234psk "2" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]] && grep -qF 'ignore_broadcast_ssid=2' "$ANB/ap-etc/hostapd-travel.conf"; then
@@ -2322,7 +2329,7 @@ fi
 # (i-b) hidden slot "" with NO existing ignore_broadcast_ssid -> line stays absent
 printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
 printf 'BaseNet\n' > "$ANB/ap-ssid"
-TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_SKIP_CTRL_POLL=1 \
   env "${anenv[@]}" bash "$ANSH" ap-apply NextNet NextPass1 "" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]] && ! grep -qF 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf"; then
@@ -2334,7 +2341,7 @@ fi
 # (i-c) hidden slot "0" -> directive absent even if fixture currently has one
 printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
 printf 'BaseNet\n' > "$ANB/ap-ssid"
-TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_SKIP_CTRL_POLL=1 \
   env "${anenv[@]}" bash "$ANSH" ap-apply NextNet NextPass1 "0" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]] && ! grep -qF 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf"; then
@@ -2347,13 +2354,27 @@ fi
 # (psk-only change must not silently un-hide). STALE_STATE probe case.
 printf 'interface=uap0\nssid=BaseNet\nignore_broadcast_ssid=2\n' > "$ANB/ap-etc/hostapd-travel.conf"
 printf 'BaseNet\n' > "$ANB/ap-ssid"
-TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" \
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_SKIP_CTRL_POLL=1 \
   env "${anenv[@]}" bash "$ANSH" ap-apply "" NewPskOnly9 "" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]] && grep -qF 'ignore_broadcast_ssid=2' "$ANB/ap-etc/hostapd-travel.conf"; then
   ok "5an(i-d) empty hidden slot preserves existing ignore_broadcast_ssid=2"
 else
   bad "5an(i-d) preserve rc=$rc conf=[$(grep -E 'ignore_broadcast_ssid' "$ANB/ap-etc/hostapd-travel.conf" || echo none)]"
+fi
+
+# (i-f) country fallback: role.env carries NO TRAVELROUTER_AP_COUNTRY (card
+# reality 2026-09-22) -> the render must fall back to WIFI_COUNTRY (US) and
+# NEVER emit an empty country_code= line (the outage-#2 render suspect).
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_SKIP_CTRL_POLL=1 \
+  env "${anenv[@]}" bash "$ANSH" ap-apply CtryNet CtryPass1 "" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -qF 'country_code=US' "$ANB/ap-etc/hostapd-travel.conf"; then
+  ok "5an(i-f) country falls back to WIFI_COUNTRY when AP_COUNTRY unset"
+else
+  bad "5an(i-f) country rc=$rc line=[$(grep -E '^country_code=' "$ANB/ap-etc/hostapd-travel.conf" 2>/dev/null || echo none)]"
 fi
 
 # (i-e) ap-apply forwards 3 args correctly: '2'/'0'/'' land in slot 3, not 2
@@ -2413,6 +2434,7 @@ mkdir -p "$ANB/ctrl-alive" && : > "$ANB/ctrl-alive/uap0"
 ANCTL_LATE="$ANB/systemctl-late"
 { printf '#!/bin/bash\n'
   printf '( sleep 2; : > "%s/ctrl-alive/uap0" ) &\n' "$ANB"
+  printf 'case "$1" in is-active) echo active; exit 0;; show) echo running; exit 0;; esac\n'
   printf 'printf "systemctl %%s\\n" "$*" >> "%s/systemctl.log"\n' "$ANB"
   printf 'exit 0\n'
 } > "$ANCTL_LATE"; chmod +x "$ANCTL_LATE"
@@ -2425,6 +2447,57 @@ if [[ $rc -eq 0 ]] && grep -qF 'ssid=AliveNet' "$ANB/ap-etc/hostapd-travel.conf"
   ok "5an(ii-d) socket appears during poll -> success path completes"
 else
   bad "5an(ii-d) socket-poll rc=$rc ssid=[$(grep '^ssid=' "$ANB/ap-etc/hostapd-travel.conf" 2>/dev/null)] ap-ssid=[$(cat "$ANB/ap-ssid" 2>/dev/null)] bak=$( [[ -e "$ANB/ap-etc/hostapd-travel.conf.bak" ]] && echo present || echo absent)"
+fi
+
+# (ii-e) crash-loop false-pass guard: the ctrl socket EXISTS (a Restart=on-failure
+# loop recreates it every attempt) but the unit is mid-restart (is-active
+# "activating", SubState "auto-restart") -> liveness must FAIL -> rollback.
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+cp "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-loop.conf"
+mkdir -p "$ANB/ctrl-stale" && : > "$ANB/ctrl-stale/uap0"
+ANCTL_LOOP="$ANB/systemctl-loop"
+{ printf '#!/bin/bash\n'
+  printf 'case "$1" in is-active) echo activating; exit 0;; show) echo auto-restart; exit 0;; esac\n'
+  printf 'printf "systemctl %%s\\n" "$*" >> "%s/systemctl.log"\n' "$ANB"
+  printf 'exit 0\n'
+} > "$ANCTL_LOOP"; chmod +x "$ANCTL_LOOP"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_LOOP" TRAVELROUTER_CTRL_DIR="$ANB/ctrl-stale" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply LoopNet LoopPass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -ne 0 ]] && cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-loop.conf"; then
+  ok "5an(ii-e) crash-loop unit (socket present, activating) -> rollback, rc!=0"
+else
+  bad "5an(ii-e) crash-loop rc=$rc conf-diff=$(cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-loop.conf"; echo $?)"
+fi
+
+# (ii-g) NO CTRL_DIR seam: the poll must auto-derive the ctrl dir from the
+# INSTALLED conf (b3f51ea read it from $tmp, which the mv had already removed
+# -> poll silently skipped in production). The fixture template carries a
+# fixture ctrl path; the systemctl stub creates the socket +2s (late, like a
+# real daemon), and answers is-active/show so the health gate passes.
+sed "s|^ctrl_interface=.*|ctrl_interface=$ANB/ctrl-auto|" "$A/hostapd.conf.tmpl" > "$ANB/tmpl-auto.conf"
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+ANCTL_LATE2="$ANB/late2/systemctl-late2"
+mkdir -p "$ANB/late2"
+{ printf '#!/bin/bash\n'
+  printf '( sleep 2; : > "%s/ctrl-auto/uap0" ) &\n' "$ANB"
+  printf 'printf "systemctl %%s\\n" "$*" >> "$(dirname "$0")/systemctl.log"\n'
+  printf 'case "$1" in is-active) echo active; exit 0;; show) echo running; exit 0;; esac\n'
+  printf 'exit 0\n'
+} > "$ANCTL_LATE2"; chmod +x "$ANCTL_LATE2"
+mkdir -p "$ANB/ctrl-auto"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_LATE2" \
+  env "${anenv[@]}" TRAVELROUTER_AP_TEMPLATE="$ANB/tmpl-auto.conf" \
+  bash "$ANSH" ap-apply AutoDeriveNet AutoPass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && [[ -e "$ANB/ctrl-auto/uap0" ]] \
+   && grep -qF 'ssid=AutoDeriveNet' "$ANB/ap-etc/hostapd-travel.conf" \
+   && grep -qF 'is-active' "$ANB/late2/systemctl.log"; then
+  ok "5an(ii-g) ctrl dir auto-derived from installed conf -> poll actually ran"
+else
+  bad "5an(ii-g) auto-poll rc=$rc socket=$( [[ -e "$ANB/ctrl-auto/uap0" ]] && echo present || echo absent) ssid=[$(grep '^ssid=' "$ANB/ap-etc/hostapd-travel.conf" 2>/dev/null)] poll-ran=$(grep -cF 'is-active' "$ANB/late2/systemctl.log" 2>/dev/null)"
 fi
 
 # --------- (iii) SERVER: apconfig accepts random + hidden --------------------

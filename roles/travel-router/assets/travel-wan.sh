@@ -595,7 +595,10 @@ cmd_ap_apply() {
     fi
     local r_ssid="${TRAVELROUTER_AP_SSID:-}"
     local r_psk="${TRAVELROUTER_AP_PSK:-}"
-    local r_country="${TRAVELROUTER_AP_COUNTRY:-}"
+    # Mirror install.sh's default chain: role.env may omit AP_COUNTRY (card
+    # reality 2026-09-22) — an EMPTY country_code= line is a render defect,
+    # not a choice (hostapd 2.10 parse-errors on it; reg domain undefined).
+    local r_country="${TRAVELROUTER_AP_COUNTRY:-${WIFI_COUNTRY:-US}}"
     local r_channel="${TRAVELROUTER_AP_CHANNEL:-6}"
     local r_iface="${TRAVELROUTER_AP_INTERFACE:-}"
     [[ -n "$r_ssid" && -n "$r_psk" ]] || { log "ap-apply: current AP SSID/PSK unknown (role.env missing or incomplete)"; return 1; }
@@ -711,9 +714,10 @@ cmd_ap_apply() {
     # conf validity; SIGKILL-stale sockets are the rare residue). The poll is
     # skipped when the conf declares no ctrl_interface (socket is the only
     # cheap liveness proof we have) and in batteries (CTRL_DIR seam).
-    # Read the ctrl dir from the NEW conf (the just-installed $tmp), not the
-    # old one: the render may add or drop the ctrl_interface directive.
-    local ctrl_dir="${TRAVELROUTER_CTRL_DIR:-$(sed -n 's/^ctrl_interface=//p' "$tmp" 2>/dev/null | head -1)}"
+    # Read the ctrl dir from the INSTALLED conf ($AP_CONF): b3f51ea read it
+    # from $tmp, which the mv above had already removed — the poll ALWAYS
+    # self-skipped in production and a dead daemon was never detected.
+    local ctrl_dir="${TRAVELROUTER_CTRL_DIR:-$(sed -n 's/^ctrl_interface=//p' "$AP_CONF" 2>/dev/null | head -1)}"
     if [[ -n "$ctrl_dir" && -z "${TRAVELROUTER_SKIP_CTRL_POLL:-}" ]]; then
         local wait_i alive=0
         for wait_i in 1 2 3 4 5 6; do
@@ -723,6 +727,15 @@ cmd_ap_apply() {
                 break
             fi
         done
+        # A Restart=on-failure crash loop recreates the socket on every
+        # attempt, so a socket hit alone is NOT liveness: require the unit to
+        # be active and not mid-restart while the socket exists.
+        if [[ $alive -eq 1 ]]; then
+            local ustate usub
+            ustate="$("$SUDO" "$SYSTEMCTL" is-active hostapd-travel.service 2>/dev/null || true)"
+            usub="$("$SUDO" "$SYSTEMCTL" show hostapd-travel.service -p SubState --value 2>/dev/null || true)"
+            [[ "$ustate" == "active" && "$usub" != "auto-restart" ]] || alive=0
+        fi
         if [[ $alive -ne 1 ]]; then
             log "ap-apply: hostapd did not come up after restart — restoring previous config"
             if [[ -f "$AP_CONF.bak" ]]; then
