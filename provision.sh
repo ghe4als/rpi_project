@@ -189,6 +189,9 @@ ROLE_ENV_FILE="$BOOT/role/role.env"
   echo "ROLE=$ROLE"
   for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER)_/ {print $1}'); do
     val="${!var}"
+    # \r from CRLF sources would be baked into role.env by %q and trip the
+    # printable-ASCII validation in the role installers (e.g. AP_SSID).
+    val="${val//$'\r'/}"
     printf '%s=%q\n' "$var" "$val"
   done
   # travel-router bootstraps its WAN from the provisioning WiFi: install.sh
@@ -197,6 +200,7 @@ ROLE_ENV_FILE="$BOOT/role/role.env"
   if [[ "$ROLE" == "travel-router" ]]; then
     for var in WIFI_SSID WIFI_PSK WIFI_COUNTRY; do
       val="${!var}"
+      val="${val//$'\r'/}"
       printf '%s=%q\n' "$var" "$val"
     done
   fi
