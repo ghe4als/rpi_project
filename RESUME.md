@@ -1,66 +1,63 @@
-# RESUME — travel-router-role
+# RESUME — travel-router-ap-stealth (witness run PAUSED — card in Mac, ext4 evidence needed pre-reflash)
 
-Where am I right now. Source of truth for a fresh session. Checkpoint: **`6458093`**
-(HEAD, clean tree). Last updated: 2026-09-14.
+<!--
+SESSION 2026-09-22. Pi re-flashed and was online; T1 login PASSED. T2
+(random rename) exposed a real deploy bug — install.sh never staged
+hostapd.conf.tmpl where ap-apply looks for it — repo-fixed in faaff26
+(suite 433/0). The retry apply restarted the radio and the AP did NOT
+come back (outage #2, same signature as yesterday). POWERCYCLE DID NOT
+RECOVER: after a full reboot neither travel-router nor a random SSID
+broadcasts; hypothesis (c) wlan0-wedge is dead, rootfs state reproduces.
+User pulled the card into the Mac (disk4: FAT bootfs mounted, ext4 rootfs
+readable only via sudo debugfs — user chose paste-back over agent sudo).
+Template was live-patched on the Pi by hand before the retry apply.
+-->
 
 ## Current state
 
-**W-wave (first-boot WAN bootstrap + setup-complete announce) IMPLEMENTATION
-COMPLETE — W01–W05 done, Final Wave F1/F2/F4 all APPROVE. Only WQ (user-gated
-hardware QA) remains.** Plan: `tasks/PLAN-firstboot-wan.md`.
-Commits: W01 `387f519` (provisioners emit WIFI_* into role.env, travel-router-
-gated), W02 `3c52296` (nats-announce event arg + role-setup ExecStartPost
-`setup-complete`), W03 `e6d8860` (install.sh seeds WIFI_SSID as first WAN NM
-profile, unbound `ifname '*'`), W04 `abd411b` (suite batteries, **153/0
-green**), W05 `ecf2892` (README first-boot simulation + NATS notifications),
-spec amendment `6458093` (W03: dropped redundant `nmcli connection reload`,
-documented).
+Plan `.omo/plans/travel-router-ap-stealth.md`: Todos 1+2 done (`a85bb1b`,
+`b3f51ea`, `d71ff81`). Suite monotonic: **436 passed, 0 failed** (431 + 2
+template-staging asserts + 3 root-cause asserts). Session commits:
+`01984f5` (docs), `faaff26` (stage hostapd.conf.tmpl where ap-apply looks),
+`a17bad5` (liveness poll reads the installed conf + is-active gate +
+country fallback chain). ROOT CAUSE of outage #2 established by code audit
+(see evidence file bottom section): broken liveness poll (dead since
+b3f51ea — read $tmp after the mv renamed it away) + empty country_code
+render from role.env lacking AP_COUNTRY -> daemon crash-loop, uncaught,
+persists across reboots. All three defects fixed with failing-first tests.
 
-What it does: first boot of a travel-router Pi now simulates the full hotel
-setup — the provisioning WiFi bootstraps apt AND is seeded as the first WAN
-profile; with a USB adapter the Pi comes up routed to `WIFI_SSID` with no
-manual steps. NATS: `rpi.nodes.<host>.online` (existing) +
-`rpi.nodes.<host>.setup-complete` (new, best-effort, on successful
-role-setup). No USB adapter -> standalone, no NATS events (no broker route).
+Witness-run evidence: `.omo/evidence/travel-router-ap-stealth/
+hostapd-probe-fix.txt` ("Witness run 2026-09-22" + "ROOT-CAUSE AUDIT"
+sections).
 
-## Remaining
+T1 ✅ login 200 + 118-char token; /api/wan/status 200 (routed, WAN=Brook
+wlan1, AP up, 2 clients).
 
-- **WQ (USER-GATED) — hardware QA** (tasks/WQ-hardware-qa.md): flash with
-  dongle, watch BOTH NATS events on the monitor Pi (`nats sub 'rpi.nodes.>'`),
-  verify routed-to-WIFI_SSID first boot + status page, forget/re-provision
-  round-trip, dongle-less standalone run, Bookworm-vs-Trixie idempotency.
-- Older user-gated QA HQ (hotel-setup hardware run) also still open.
-- Documented residuals (pre-W): B12 STATUS_PORT unvalidated; B13
-  connection-name colon truncation; B7-core malformed-role.env; RENDER_TMP
-  strays.
+T2 ⏸ repo work COMPLETE (both defects fixed + battery). Live half waits on
+re-flash (below) then the rejoin.
 
-## Gotchas carried forward
+## Next session steps (card in Mac — disk4, bootfs mounted)
 
-- W03 spec originally included `nmcli connection reload` after each
-  `connection add` — deliberately dropped (D-Bus add already persists;
-  `set -euo pipefail` would abort role-setup on spurious reload failure).
-  Don't "restore" it.
-- Arg-mode nats-announce must NEVER touch /run/rpi-nats-announce.sent
-  (ConditionPathExists=! gating of the periodic online announce).
-- Dry-run QA masks real-execution defects — keep the real-execution battery
-  discipline; the suite (153/0) is the green gate.
-- install.sh dry-run battery: fixture role.env WITHOUT WIFI_* exercises the
-  skip path (§2); the WITH-WIFI_* seed run is §5h.
-- status-server binds state.json lan_ip at startup; QA fixtures use
-  127.0.0.1 on the runner (errno 49 otherwise).
-- dnsmasq does NOT re-read dnsmasq.d drop-ins on SIGHUP — restart-on-toggle
-  only (H03). wan-select solely owns travel-router-portal.conf.
-- validate-local.sh §5e T1 depends on R9 (R9 pre-writes the drop-in; T1
-  clears it first).
-- Pi Zero W v1.1: 32-bit armhf Lite only (Bookworm recommended); after
-  role-setup the Pi is reachable ONLY via the travel SSID or USB Ethernet.
-- role.env emission must stay gated to ROLE=travel-router (suite §3 asserts
-  the awk group regex byte-identical; suite §5l asserts the gate + loop).
+1. OPTIONAL archaeology before re-flash (user paste-back, sudo debugfs —
+   confirms which defect fired on-device; predictions in the evidence file):
+   sudo /opt/homebrew/opt/e2fsprogs/sbin/debugfs -R "cat /etc/hostapd/hostapd-travel.conf" /dev/disk4s2
+   sudo /opt/homebrew/opt/e2fsprogs/sbin/debugfs -R "ls -l /etc/hostapd" /dev/disk4s2
+   (expect: ssid=<random 8-char>, country_code= EMPTY, no .bak)
+2. Re-flash + provision as usual (HEAD now carries faaff26 + a17bad5).
+   Wait ~2-5 min for role-setup; travel SSID `travel-router` should appear.
+3. Mac joins travel-router (PSK Password123) → witness run from T2:
+   T2 rename (ssid:"random", rejoin generated SSID) → T3 hidden:true +
+   scan negative → T4 hidden:false + scan positive → T5 invalid-PSK apply
+   → conf restored, radio not dropped → T6 finish evidence + tick plan
+   checkbox 3 + final RESUME note.
 
-## Older checkpoints (still true)
+## Standing rules (do not relearn)
 
-Hotel-setup wave H01–H06 complete (phone setup page, PIN gate, portal
-hijack), checkpoint `1b69b68`. Earlier: 6-lane audit → repair wave → F-wave
-F1/F2/F4 APPROVE, F3 checklist-confirmed (user hardware run = HQ).
-`.omo/` gitignored — never staged. `.env`/`inventory.yaml` gitignored —
-never staged.
+- Mac on `192.168.0.x` = home LAN (Brook) → Pi unreachable; STOP and ask the
+  user to switch to the travel SSID (192.168.50.x). Never poll.
+- NEVER run hostapd against the live conf or a conf with `interface=wlan0`
+  while hostapd-travel runs — use a dead-iface probe copy only.
+- Login API needs `X-Requested-With: XMLHttpRequest` from curl.
+- Pre-existing owner-call items (unchanged): provision.sh CR-strip hunk
+  uncommitted; untracked scratch file tasks/5-session-auth.md.
+- Suite gate: monotonic; now 433/0.
