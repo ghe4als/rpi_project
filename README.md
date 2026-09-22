@@ -340,6 +340,43 @@ SSID manually — the phone re-checks the router over the new connection.
 **Re-provisioning resets the AP name/password to your `.env` values by
 design.**
 
+#### WiFi security mode: WPA2 vs WPA3 (per-hardware capability check)
+
+The travel AP runs **WPA2-PSK (RSN/CCMP-128)** — the strongest mode the
+Zero W's radio supports. Upgrading to WPA3 is a hardware question, not a
+config preference: SAE (WPA3's handshake) needs support in BOTH the radio
+firmware and hostapd. Before buying hardware or editing the template, run
+this capability check on the Pi (SSH over the travel LAN):
+
+```bash
+hostapd -v                        # need hostapd >= 2.9; 2.10 is fine (2.11 too)
+iw phy0 info > /tmp/phy0.txt      # phy0 = onboard radio (AP side); phy1 = USB WAN
+
+# THE test: any SAE support at all?
+grep -c SAE /tmp/phy0.txt
+#   0  -> no WPA3 (this radio's ceiling is WPA2-CCMP)
+#  >0  -> SAE possible; also confirm under "Supported extended features":
+grep -A12 "Supported extended features" /tmp/phy0.txt | grep -E "EXT_KEY_ID|FILS|SAE"
+```
+
+Interpreting the dump:
+- **Supported Ciphers**: WEP40/WEP104/TKIP are legacy — you want CCMP-128
+  (or CCMP-256/GCMP on better radios). CCMP-128 = WPA2's AES; GCMP-256
+  appearing here hints at WPA3-class hardware.
+- **Supported extended features**: SAE/FILS/EXT_KEY_ID entries = WPA3-capable
+  driver+firmware. (The Zero W's BCM43430A1 lists only `CQM_RSSI_LIST` —
+  verified 2026-09-22, hence WPA2-only.)
+- **AKM suites** (shown on newer iw versions): look for
+  `00-0f-ac:8` (SAE) alongside `00-0f-ac:2` (PSK). SAE + PSK = transition
+  mode possible; SAE only = WPA3-only mode.
+
+If the radio supports SAE, the config change in `hostapd.conf.tmpl` is:
+`wpa_key_mgmt=WPA-PSK SAE` + `ieee80211w=1` (transition; WPA3-only =
+`SAE` + `ieee80211w=2`, which locks out WPA2-only devices). Re-provision
+after editing, and add a battery case RED-first per repo convention.
+Note: transition mode is still downgrade-attackable by design — pure SAE
+is where the real gain is.
+
 ### First-boot notifications (NATS)
 
 Both events need a route to `NATS_URL`; with no USB adapter plugged in
