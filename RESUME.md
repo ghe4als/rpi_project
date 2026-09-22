@@ -24,11 +24,11 @@ PIN 5555. Note: this SSID is a witness-run artifact — re-provisioning
 resets AP name/PSK to `.env` values (travel-router) by design whenever
 the user wants the standard name back.
 
-## Owner-call items (carried over, unchanged)
+## Owner-call items
 
-- ~~provision.sh CR-strip hunk uncommitted (working tree)~~ — COMMITTED
-  as c14e320 (2026-09-22)
-- untracked scratch file tasks/5-session-auth.md (still open)
+None — provision.sh CR-strip committed (c14e320); tasks/5-session-auth.md
+scratch removed (2026-09-22, content superseded by landed Todo 6 commit
+8846d5a + evidence file).
 
 ## Next session steps
 
@@ -53,6 +53,5 @@ vectors must be structurally invalid).
 - NEVER run hostapd against the live conf or a conf with `interface=wlan0`
   while hostapd-travel runs — use a dead-iface probe copy only.
 - Login API needs `X-Requested-With: XMLHttpRequest` from curl.
-- Owner-call: provision.sh CR-strip committed (c14e320); tasks/
-  5-session-auth.md still untracked.
+- Owner-call items: NONE (all cleared 2026-09-22).
 - Suite gate: monotonic; now 436/0.
