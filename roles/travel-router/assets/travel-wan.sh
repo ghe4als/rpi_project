@@ -553,11 +553,24 @@ cmd_psks_del() {
 # ap-apply [NEW_SSID] [NEW_PSK]: re-renders hostapd-travel.conf from the
 # TEMPLATE (never by parsing the rendered file), with country/channel/iface
 # sourced from role.env (same two-path idiom as install.sh:64-67; root
-# readable). Rollback contract: (1) render new conf to tmp, (2) hostapd -t
-# validate — invalid -> rc 1, NOTHING changed, (3) keep the old conf as
-# conf.bak, (4) atomically install the new conf + ap-ssid, (5) restart
-# hostapd-travel.service; on restart failure restore the .bak and restart
-# again. The caller sends its HTTP response BEFORE the restart (the radio
+# readable). Rollback contract: (1) render new conf to tmp, (2) PARSE-probe it
+# with a hostapd -t run against a COPY whose interface= is rewritten to a
+# nonexistent device: hostapd (2.10, Trixie) has NO parse-only mode — plain
+# `hostapd -t <conf>` runs the full daemon and would collide with the live AP
+# (rc 1 on ANY run while hostapd-travel holds wlan0) and, worse, a second
+# daemon can knock the running radio down. On the probe copy, parse errors
+# are reported BEFORE driver init (marker: "errors found in configuration
+# file") so a bad conf exits nonzero quickly on the dead iface, while a
+# parse-valid conf fails harmlessly at nl80211 init on that dead iface
+# (wlan0 is never touched). The daemon rc is NOT trusted: it cannot
+# distinguish parse-validity from hardware failure, so the gate is the
+# stderr marker (hostapd prints "N errors found in configuration file" and
+# exits) — absent marker + nonzero rc = parse-valid (driver-init failure).
+# (3) keep the old conf as conf.bak, (4) atomically install the new conf +
+# ap-ssid, (5) restart hostapd-travel.service and confirm liveness: the unit
+# is Type=simple, so restart rc 0 does NOT prove the daemon parsed the new
+# conf — is-active is re-checked after a grace pause, and a dead daemon
+# restores the .bak (and restarts it) like any other failure. The caller sends its HTTP response BEFORE the restart (the radio
 # drop kills the client's TCP connection mid-restart).
 AP_CONF="${TRAVELROUTER_AP_CONF:-/etc/hostapd/hostapd-travel.conf}"
 AP_TEMPLATE="${TRAVELROUTER_AP_TEMPLATE:-/etc/rpi-project/travel-router/hostapd.conf.tmpl}"
@@ -650,9 +663,19 @@ cmd_ap_apply() {
         -e "$hidden_sed_expr" \
         "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "ap-apply: cannot render new conf"; return 2; }
     chmod 0600 "$tmp"
-    if ! "$HOSTAPD_BIN" -t "$tmp" >/dev/null 2>&1; then
+    # Parse-probe on a COPY (dead iface) — see the ap-apply block comment:
+    # the gate is the stderr marker hostapd prints for parse errors, NOT the
+    # daemon rc (rc 1 for BOTH parse errors and nl80211 init failure).
+    local probe="$AP_CONF.probe.$$"
+    sed -e "s|^interface=.*|interface=ap0probe|" "$tmp" > "$probe" 2>/dev/null \
+        || { rm -f "$tmp" "$probe" 2>/dev/null || true; log "ap-apply: cannot build parse-probe conf"; return 2; }
+    chmod 0600 "$probe" 2>/dev/null || true
+    local probe_out
+    probe_out="$("$HOSTAPD_BIN" "$probe" </dev/null 2>&1 >/dev/null || true)"
+    rm -f "$probe" 2>/dev/null || true
+    if [[ "$probe_out" == *"errors found in configuration file"* ]]; then
         rm -f "$tmp"
-        log "ap-apply: new hostapd config is invalid (hostapd -t rejected it); nothing changed"
+        log "ap-apply: new hostapd config is invalid (hostapd parse errors); nothing changed"
         return 1
     fi
     cp "$AP_CONF" "$AP_CONF.bak" 2>/dev/null || true
@@ -680,6 +703,34 @@ cmd_ap_apply() {
             "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || true
         fi
         return 1
+    fi
+    # Type=simple: restart rc 0 only proves the exec, not that the daemon
+    # parsed the new conf and bound the iface. Poll the ctrl_interface socket
+    # (created iff the daemon came up); dead daemon -> same .bak rollback.
+    # -e not -S: a stale socket file is accepted (parse-probe already gated
+    # conf validity; SIGKILL-stale sockets are the rare residue). The poll is
+    # skipped when the conf declares no ctrl_interface (socket is the only
+    # cheap liveness proof we have) and in batteries (CTRL_DIR seam).
+    # Read the ctrl dir from the NEW conf (the just-installed $tmp), not the
+    # old one: the render may add or drop the ctrl_interface directive.
+    local ctrl_dir="${TRAVELROUTER_CTRL_DIR:-$(sed -n 's/^ctrl_interface=//p' "$tmp" 2>/dev/null | head -1)}"
+    if [[ -n "$ctrl_dir" && -z "${TRAVELROUTER_SKIP_CTRL_POLL:-}" ]]; then
+        local wait_i alive=0
+        for wait_i in 1 2 3 4 5 6; do
+            sleep 1
+            if [[ -e "$ctrl_dir/$ap_iface" || -e "$ctrl_dir/${ap_iface}.1" ]]; then
+                alive=1
+                break
+            fi
+        done
+        if [[ $alive -ne 1 ]]; then
+            log "ap-apply: hostapd did not come up after restart — restoring previous config"
+            if [[ -f "$AP_CONF.bak" ]]; then
+                mv -f "$AP_CONF.bak" "$AP_CONF" 2>/dev/null || true
+                "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || true
+            fi
+            return 1
+        fi
     fi
     rm -f "$AP_CONF.bak" 2>/dev/null || true
     log "ap-apply: AP reconfigured (clients are rejoining)"

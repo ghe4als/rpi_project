@@ -1062,16 +1062,18 @@ else bad "5z install render run exited nonzero"; fi
 m=$(stat -f%Lp "$c3/bare.conf" 2>/dev/null || stat -c%a "$c3/bare.conf" 2>/dev/null)
 [[ "$m" == "644" ]] && ok "5z control: bare render is 644 (assertion not vacuous)" || bad "5z control bare mode=$m (want 644)"
 
-# (2) cmd_ap_apply success path. HOSTAPD_BIN is a stub that stats the candidate
-# conf (and its sibling .bak) DURING hostapd -t — capturing their modes while
-# they exist, before the mv/rm removes them (stale-state guard).
+# (2) cmd_ap_apply success path. HOSTAPD_BIN is a stub that stats the probe
+# copy (and the sibling .bak) DURING the parse-probe call — capturing their
+# modes while they exist, before the mv/rm removes them (stale-state guard).
+# The probe passes the probe-copy path as $1; derive the candidate tmp conf
+# path from it (strip ".probe.<pid>") to observe the candidate's mode too.
 c3stat="$c3/stat-stub.sh"
 cat > "$c3stat" <<'EOF'
 #!/bin/bash
-# hostapd -t stub: record candidate (and sibling .bak) modes while they exist.
-f="${2:-}"
+# parse-probe stub: record probe (and sibling .bak) modes while they exist.
+f="${1:-}"
 [[ -f "$f" ]] && printf 'tmp %s\n' "$(stat -f%Lp "$f" 2>/dev/null || stat -c%a "$f" 2>/dev/null)" >>"$MODELOG"
-ap="${f%.new.*}"
+ap="${f%.probe.*}"
 [[ -f "$ap.bak" ]] && printf 'bak %s\n' "$(stat -f%Lp "$ap.bak" 2>/dev/null || stat -c%a "$ap.bak" 2>/dev/null)" >>"$MODELOG"
 exit 0
 EOF
@@ -1093,7 +1095,11 @@ mk_restart_stub() {  # $1 = stub path, $2 = exit code
 }
 mk_restart_stub "$c3/restart-ok.sh" 0
 mk_restart_stub "$c3/restart-fail.sh" 1
-mkdir -p "$c3/ap-etc"
+mkdir -p "$c3/ap-etc" "$c3/ctrl"
+# Fixture conf declares ctrl_interface (rendered template carries the line);
+# the liveness poll needs the socket present, so pre-create it in a fixture
+# ctrl dir (this battery asserts file MODES, not daemon liveness).
+: > "$c3/ctrl/uap0"
 # Fixture live conf is deliberately 0644 so the 600 asserts below prove the
 # chmods ran (a 0644->0644 no-op would pass vacuously).
 printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
@@ -1106,6 +1112,7 @@ c3aprun() {  # $1 = MODELOG target, $2 = SYSTEMCTL stub
     export TRAVELROUTER_AP_TEMPLATE="$A/hostapd.conf.tmpl"
     export TRAVELROUTER_HOSTAPD_BIN="$c3stat"
     export TRAVELROUTER_AP_SSID_FILE="$c3/ap-ssid"
+    export TRAVELROUTER_CTRL_DIR="$c3/ctrl"
     export SUDO="$c3/sudo.sh" SYSTEMCTL="$2" MODELOG="$1"
     export TRAVELROUTER_AP_SSID=TestNet TRAVELROUTER_AP_PSK=TestPass123 TRAVELROUTER_AP_INTERFACE=uap0
     set -- ap-apply NewNet NewPass456
@@ -1117,7 +1124,7 @@ c3aprun "$c3/modes1.log" "$c3/restart-ok.sh" >"$c3/ap1.out" 2>"$c3/ap1.err"
 rc=$?
 [[ $rc -eq 0 ]] && ok "5z ap-apply success rc=0" || bad "5z ap-apply rc=$rc (want 0)"
 grep -q '^tmp 600$' "$c3/modes1.log" \
-  && ok "5z rendered tmp conf was 0600 while alive (hostapd -t stat)" \
+  && ok "5z rendered tmp conf was 0600 while alive (parse-probe stat)" \
   || bad "5z tmp conf mode during life not 600: $(tr '\n' ' ' <"$c3/modes1.log" 2>/dev/null)"
 grep -q '^bak 600$' "$c3/modes1.log" \
   && ok "5z .bak was 0600 while it existed (stub stat during lifetime)" \
@@ -2255,23 +2262,24 @@ ANRENV="$ANB/role.env"
 printf 'TRAVELROUTER_AP_SSID=BaseNet\nTRAVELROUTER_AP_PSK=BasePass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$ANRENV"
 # sed-copy the script: rewire the role.env two-path discovery (hardcoded
 # /run/travel-router/role.env candidates) + the state file to our fixtures.
+# ctrl_interface= is neutered: the fixture confs declare none, so the
+# liveness poll self-skips instead of polling /var/run/hostapd on this Mac.
 sed -e "s|/run/travel-router/role.env|$ANRENV|g" \
     -e "s|/boot/firmware/role/role.env|/nonexistent-role.env|g" \
     -e "s|/boot/role/role.env|/nonexistent-role.env|g" \
     -e "s|/sys/class/net|$ANB/sys/class/net|g" \
     -e "s|/run/travel-router/state.json|$ANB/state.json|g" \
+    -e "s|ctrl_interface=/var/run/hostapd|ctrl_interface=|g" \
     "$A/travel-wan.sh" > "$ANSH"
 ap_iface_fixture() { : > "$1"; } # no-op doc anchor; interface comes from role.env fixture above
-# HOSTAPD stub that accepts (-t exit 0) and RECORDS argv
-ANHAP_OK="$ANB/hostapd-ok"
-cat > "$ANHAP_OK" <<'EOF'
-#!/bin/bash
-printf 'hostapd %s\n' "$*" >> "$(dirname "$0")/hostapd.log"
-exit 0
-EOF
-# HOSTAPD stub that rejects (-t exit 1)
+# HOSTAPD stub that emulates a parse error: prints the marker hostapd prints
+# BEFORE driver init and exits 1 (parse gate trips -> ap-apply aborts).
 ANHAP_BAD="$ANB/hostapd-bad"
-printf '#!/bin/bash\nprintf "hostapd %%s\\n" "$*" >> "$(dirname "$0")/hostapd.log"\nexit 1\n' > "$ANHAP_BAD"
+printf '#!/bin/bash\ncat <<MSG >&2\nConfiguration file: %s\nLine 12: unknown configuration item bogus_xyz\n1 errors found in configuration file\nMSG\nexit 1\n' '$1' > "$ANHAP_BAD"
+# HOSTAPD stub that emulates a parse-VALID conf dying at driver init on the
+# dead probe iface: rc 1, NO parse-error marker (ap-apply must proceed).
+ANHAP_OK="$ANB/hostapd-ok"
+printf '#!/bin/bash\ncat <<MSG\nnl80211: Could not configure driver mode\nnl80211 driver initialization failed.\nMSG\nexit 1\n' > "$ANHAP_OK"
 chmod +x "$ANHAP_OK" "$ANHAP_BAD"
 # SUDO passthrough (same idiom as §5am/§5z) and SYSTEMCTL stubs
 ANSUDO="$ANB/sudo"; printf '#!/bin/bash\nexec "$@"\n' > "$ANSUDO"; chmod +x "$ANSUDO"
@@ -2370,6 +2378,44 @@ if [[ $rc -ne 0 ]] && cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-
   ok "5an(ii-b) restart-fail -> .bak restored over the new conf (rollback)"
 else
   bad "5an(ii-b) restart-fail rc=$rc conf-diff=$(cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-fail.conf"; echo $?)"
+fi
+
+# (ii-c) Type=simple liveness: ctrl socket NEVER appears (daemon died after a
+# rc-0 restart) -> liveness gate trips, .bak restored, rc nonzero.
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+cp "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-dead.conf"
+mkdir -p "$ANB/ctrl-empty"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_OK" TRAVELROUTER_CTRL_DIR="$ANB/ctrl-empty" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply ChangedNet ChangedPass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -ne 0 ]] && cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-dead.conf"; then
+  ok "5an(ii-c) dead daemon (no ctrl socket) -> .bak restored, rc!=0"
+else
+  bad "5an(ii-c) dead daemon rc=$rc conf-diff=$(cmp -s "$ANB/ap-etc/hostapd-travel.conf" "$ANB/ap-etc/pre-dead.conf"; echo $?)"
+fi
+
+# (ii-d) liveness success: ctrl socket appears during the poll -> rc 0, new
+# conf installed, ap-ssid updated, .bak removed.
+printf 'interface=uap0\nssid=BaseNet\n' > "$ANB/ap-etc/hostapd-travel.conf"
+printf 'BaseNet\n' > "$ANB/ap-ssid"
+mkdir -p "$ANB/ctrl-alive" && : > "$ANB/ctrl-alive/uap0"
+# late-socket systemctl stub: creates the ctrl socket AFTER 2 poll sleeps
+ANCTL_LATE="$ANB/systemctl-late"
+{ printf '#!/bin/bash\n'
+  printf '( sleep 2; : > "%s/ctrl-alive/uap0" ) &\n' "$ANB"
+  printf 'printf "systemctl %%s\\n" "$*" >> "%s/systemctl.log"\n' "$ANB"
+  printf 'exit 0\n'
+} > "$ANCTL_LATE"; chmod +x "$ANCTL_LATE"
+TRAVELROUTER_HOSTAPD_BIN="$ANHAP_OK" SYSTEMCTL="$ANCTL_LATE" TRAVELROUTER_CTRL_DIR="$ANB/ctrl-alive" \
+  env "${anenv[@]}" bash "$ANSH" ap-apply AliveNet AlivePass1 "2" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -qF 'ssid=AliveNet' "$ANB/ap-etc/hostapd-travel.conf" \
+   && [[ "$(cat "$ANB/ap-ssid" 2>/dev/null)" == "AliveNet" ]] \
+   && [[ ! -e "$ANB/ap-etc/hostapd-travel.conf.bak" ]]; then
+  ok "5an(ii-d) socket appears during poll -> success path completes"
+else
+  bad "5an(ii-d) socket-poll rc=$rc ssid=[$(grep '^ssid=' "$ANB/ap-etc/hostapd-travel.conf" 2>/dev/null)] ap-ssid=[$(cat "$ANB/ap-ssid" 2>/dev/null)] bak=$( [[ -e "$ANB/ap-etc/hostapd-travel.conf.bak" ]] && echo present || echo absent)"
 fi
 
 # --------- (iii) SERVER: apconfig accepts random + hidden --------------------

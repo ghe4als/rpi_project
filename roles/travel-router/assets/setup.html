@@ -983,7 +983,7 @@ document.getElementById("pm-refresh").addEventListener("click", refreshPskManage
 
 // --- setup-v2 M8: AP settings dialog -----------------------------------------
 // POST /api/wan/apconfig {pin, ssid?, psk?} — travel-wan ap-apply validates
-// (hostapd -t), re-renders, restarts the AP, and restores the previous
+// (parse probe), re-renders, restarts the AP, and restores the previous
 // config if the restart fails. The radio drop kills this page's TCP
 // connection mid-restart, so the dialog does NOT treat the HTTP response
 // as proof: it shows "reconfiguring — reconnecting…" and polls /status
