@@ -16,6 +16,8 @@
 # SECURITY: the connection profile lives under /etc/NetworkManager/system-
 # connections on the Pi's rootfs (NM persists it there) — so the hotel PSK is
 # stored on the Pi, not just in transit. We NEVER echo a PSK back in `status`.
+# allow: SIZE_OK — one CLI owns every travel-router SSH verb (WAN, psk store,
+# AP reconfig, block list); splitting it would split the shared state file.
 #
 # This CLI WRITES NOTHING under /boot. It has no interactive prompts, so it is
 # scriptable over SSH only (matches the brief's Q1: portal auth happens on a
@@ -34,6 +36,7 @@ SUDO="${SUDO:-sudo}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PSK_FILE="${TRAVELROUTER_PSK_FILE:-/etc/rpi-project/travel-router/known-psks}"
 AP_SSID_FILE="${TRAVELROUTER_AP_SSID_FILE:-/etc/rpi-project/travel-router/ap-ssid}"
+BLOCK_FILE="${TRAVELROUTER_BLOCK_FILE:-/etc/rpi-project/travel-router/blocked-macs}"
 
 # --- PSK candidate store (wifi-ui-known-psk wave) -----------------------------
 # Schema: one row per line, 3 TAB-separated fields:
@@ -303,6 +306,9 @@ Usage:
   travel-wan psks-add-default <PSK>      record a default PSK candidate
   travel-wan psks-list                   list store rows TYPE<TAB>SSID<TAB>PSK
   travel-wan clients [--json]            list connected clients (leases + AP assoc)
+  travel-wan block <MAC>                 block a device by MAC (firewall drop + kick now)
+  travel-wan unblock <MAC>               remove a MAC from the block list
+  travel-wan blocked                     list blocked MACs (one per line)
   travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan ap-apply <SSID> [PSK] [HIDDEN]  re-render + restart the AP (setup API; HIDDEN: 2=hide, 0=visible, empty=keep)
   travel-wan ap-ssid                     print the live AP SSID
@@ -961,6 +967,175 @@ cmd_clients() {
     return 0
 }
 
+# --- block list (MAC block wave) ---------------------------------------------
+# The block store is the SAME file wan-select renders into the nftables
+# blocked_macs set every 30s tick (TRAVELROUTER_BLOCK_FILE, one MAC per
+# line, 0600 root). One row per MAC, stored lowercase (the render
+# normalizes case, but a canonical file keeps dedupe trivial).
+
+# mac_ok MAC : full 6-group colon MAC (case-insensitive). The single gate
+# for every verb argument; a malformed MAC must never reach the store.
+mac_ok() {
+    [[ "$1" =~ ^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$ ]]
+}
+
+# block_file_rows : echo each valid MAC row of the block file (lowercased,
+# blanks/comments/junk dropped). Missing file -> empty. Never aborts.
+block_file_rows() {
+    [[ -r "$BLOCK_FILE" ]] || return 0
+    local row m
+    while IFS= read -r row || [[ -n "$row" ]]; do
+        m="$(printf '%s' "$row" | tr -d '[:space:]')"
+        [[ -n "$m" ]] || continue
+        case "$m" in "#"*) continue ;; esac
+        m="$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')"
+        [[ "$m" =~ ^[0-9a-f]{2}(:[0-9a-f]{2}){5}$ ]] || continue
+        printf '%s\n' "$m"
+    done < "$BLOCK_FILE"
+    return 0
+}
+
+# block_file_write ROWS... : atomically replace the store with the given
+# rows (0600, same-dir tmp + mv — the psk-store idiom). rc 2 on write
+# failure so the caller can fail WITHOUT mutating the store.
+block_file_write() {
+    local dir="." tmp r
+    case "$BLOCK_FILE" in */*) dir="${BLOCK_FILE%/*}" ;; esac
+    tmp="$dir/.blocked-macs.$$"
+    { for r in "$@"; do printf '%s\n' "$r"; done; } > "$tmp" 2>/dev/null \
+        || { rm -f "$tmp" 2>/dev/null || true; log "block: cannot write '$dir' (store unchanged)"; return 2; }
+    chmod 0600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$BLOCK_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log "block: cannot replace '$BLOCK_FILE' (store unchanged)"
+        return 2
+    fi
+    return 0
+}
+
+# block_reload : make the new block set live NOW (no 30s-tick wait). The
+# render is owned by wan-select, so this only (re)starts wan-select.service
+# (its 30s work is idempotent and it renders + `nft -f` every run). Needs
+# root on the Pi: routed through the SUDO seam like every other privileged
+# call in this script.
+block_reload() {
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "block: dry-run: would restart wan-select.service (re-render + nft -f)"
+        return 0
+    fi
+    if ! "$SUDO" "$SYSTEMCTL" start wan-select.service >/dev/null 2>&1; then
+        log "block: wan-select restart FAILED (set applies on the next 30s tick)"
+        return 1
+    fi
+    return 0
+}
+
+# block_kick MAC AP_IFACE : deauthenticate a connected station NOW via
+# hostapd_cli on the AP (LAN) interface. Best-effort: rc is deliberately
+# ignored (radio down / station already gone / hostapd busy must never flip
+# the block verb's rc — the firewall drop is the enforcement, the kick is a
+# courtesy). Needs root: SUDO seam, same as systemctl above.
+block_kick() {
+    local mac="$1" ap="$2"
+    [[ -n "$ap" ]] || return 0
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "block: dry-run: hostapd_cli -i $ap deauthenticate $mac"
+        return 0
+    fi
+    "$SUDO" "$HOSTAPD_CLI" -i "$ap" deauthenticate "$mac" >/dev/null 2>&1 || true
+}
+
+# ap_iface_for_kick : the AP interface to kick on. Same derivation as
+# ap-apply/state (hostapd conf's interface= line, else the state file's
+# ap_interface), no hardcoding.
+ap_iface_for_kick() {
+    local ap=""
+    ap="$(sed -n 's/^interface=//p' "$AP_CONF" 2>/dev/null | head -1)"
+    if [[ -z "$ap" ]]; then
+        ap="$(json_field ap_interface 2>/dev/null || true)"
+    fi
+    printf '%s' "$ap"
+}
+
+cmd_block() {
+    local mac="${1:-}"
+    if [[ -z "$mac" ]]; then
+        log "block: MAC is required"
+        usage
+        return 2
+    fi
+    if ! mac_ok "$mac"; then
+        log "block: malformed MAC '${mac}' (want aa:bb:cc:dd:ee:ff)"
+        return 2
+    fi
+    mac="$(printf '%s' "$mac" | tr '[:upper:]' '[:lower:]')"
+    local rows=() r found=0
+    while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        [[ "$r" == "$mac" ]] && found=1
+        rows[${#rows[@]}]="$r"
+    done < <(block_file_rows)
+    if [[ $found -eq 1 ]]; then
+        log "block: '${mac}' already blocked"
+        block_reload || true
+        return 0
+    fi
+    rows[${#rows[@]}]="$mac"
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "block: dry-run: would record '${mac}' in '$BLOCK_FILE'"
+        return 0
+    fi
+    block_file_write ${rows[@]+"${rows[@]}"} || return 1
+    log "block: '${mac}' added (firewall drop applies on reload)"
+    block_reload || true
+    # Kick now (best-effort) so a live station drops immediately.
+    block_kick "$mac" "$(ap_iface_for_kick)"
+    return 0
+}
+
+cmd_unblock() {
+    local mac="${1:-}"
+    if [[ -z "$mac" ]]; then
+        log "unblock: MAC is required"
+        usage
+        return 2
+    fi
+    if ! mac_ok "$mac"; then
+        log "unblock: malformed MAC '${mac}' (want aa:bb:cc:dd:ee:ff)"
+        return 2
+    fi
+    mac="$(printf '%s' "$mac" | tr '[:upper:]' '[:lower:]')"
+    local rows=() r found=0
+    while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        if [[ "$r" == "$mac" ]]; then found=1; continue; fi
+        rows[${#rows[@]}]="$r"
+    done < <(block_file_rows)
+    if [[ $found -eq 0 ]]; then
+        log "unblock: '${mac}' is not blocked"
+        return 1
+    fi
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" == "1" ]]; then
+        log "unblock: dry-run: would remove '${mac}' from '$BLOCK_FILE'"
+        return 0
+    fi
+    if [[ ${#rows[@]} -eq 0 ]]; then
+        rm -f "$BLOCK_FILE" 2>/dev/null || true
+    else
+        block_file_write ${rows[@]+"${rows[@]}"} || return 1
+    fi
+    log "unblock: '${mac}' removed (allow applies on reload)"
+    block_reload || true
+    return 0
+}
+
+cmd_blocked() {
+    # Prints one blocked MAC per line (normalized). Empty store -> rc 0, no
+    # output (the admin UI renders an empty list, not an error).
+    block_file_rows
+    return 0
+}
+
 main() {
     local sub="${1:-}"
     if [[ -z "$sub" ]]; then
@@ -1000,6 +1175,15 @@ main() {
             ;;
         clients)
             cmd_clients "${1:-}"
+            ;;
+        block)
+            cmd_block "${1:-}"
+            ;;
+        unblock)
+            cmd_unblock "${1:-}"
+            ;;
+        blocked)
+            cmd_blocked
             ;;
         psks-del)
             cmd_psks_del "${1:-}"
