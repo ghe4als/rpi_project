@@ -401,8 +401,48 @@ def _psk_fingerprint():
                           ).hexdigest()[:16]
 
 
+def _rotate_session_salt():
+    """Regenerate the salt file (security plan todo 7). Every outstanding
+    token fails _session_ok's payload fingerprint compare at the NEXT verify —
+    the outer HMAC key derives from ADMIN_PSK only, which this never touches.
+    Atomic write (tmp + os.replace) so a verifier that reads mid-rotation
+    never sees a torn salt. Returns False only when the persist step itself
+    failed. Shared by the rotate-sessions endpoint (todo 7) and the apconfig
+    self-destruct path (todo 10)."""
+    fresh = secrets.token_hex(32).encode("ascii")
+    try:
+        fd = os.open(SALT_FILE + ".tmp", os.O_WRONLY | os.O_CREAT
+                     | os.O_TRUNC, 0o600)
+        os.write(fd, fresh)
+        os.close(fd)
+        os.replace(SALT_FILE + ".tmp", SALT_FILE)
+    except OSError:
+        return False
+    return True
+
+
 def _b64e(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _ap_info_now(handler):
+    """LIVE AP identity probe via `travel-wan ap-info --json` (admin plan
+    todo 4). Returns {"ap_ssid", "hidden"}; any failed/degraded tool run
+    degrades to the empty state (""/False) — same semantics the GET route
+    served inline before factoring (todo 10 needs the same pre-apply read)."""
+    rc, out, err = handler._run_tool(["ap-info", "--json"], API_QUICK_TIMEOUT)
+    info = {"ap_ssid": "", "hidden": False}
+    if rc == 0 and out:
+        try:
+            parsed = json.loads(out[0])
+            if (isinstance(parsed, dict)
+                    and isinstance(parsed.get("ssid"), str)
+                    and isinstance(parsed.get("hidden"), bool)):
+                info = {"ap_ssid": parsed["ssid"],
+                        "hidden": parsed["hidden"]}
+        except ValueError:
+            pass
+    return info
 
 
 def _b64d(text):
@@ -696,20 +736,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             # cosmetic read would break the dialog for no security gain.
             if not _require_session(self):
                 return
-            rc, out, err = self._run_tool(["ap-info", "--json"],
-                                          API_QUICK_TIMEOUT)
-            info = {"ap_ssid": "", "hidden": False}
-            if rc == 0 and out:
-                try:
-                    parsed = json.loads(out[0])
-                    if (isinstance(parsed, dict)
-                            and isinstance(parsed.get("ssid"), str)
-                            and isinstance(parsed.get("hidden"), bool)):
-                        info = {"ap_ssid": parsed["ssid"],
-                                "hidden": parsed["hidden"]}
-                except ValueError:
-                    pass
-            self._send(200, json.dumps(info), "application/json")
+            self._send(200, json.dumps(_ap_info_now(self)),
+                       "application/json")
         elif path == "/api/admin/audit":
             # Admin bucket (security plan todo 8): session-gated read of the
             # auth-failure ring, most recent first. Rows are ts/ip/kind/code
@@ -1096,7 +1124,28 @@ class StatusHandler(BaseHTTPRequestHandler):
                     args.append("2")
                 else:
                     args.append("0")
+                # Session self-destruct (security plan todo 10): snapshot the
+                # LIVE AP identity BEFORE ap-apply so the post-apply decision
+                # compares against reality, not body presence. A degraded read
+                # (""/False) compares the same way the GET route answers and
+                # never blocks the apply.
+                pre_apply = _ap_info_now(self)
                 rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
+                if rc == 0:
+                    # Rotate ONLY on a real identity change: the submitted
+                    # SSID (already expanded from "random") differs from the
+                    # live one, or hidden is EXPLICITLY set and its bool
+                    # differs. PSK-only and no-op renames never rotate; a
+                    # failed ap-apply restored the old config, so rc != 0
+                    # must not rotate either.
+                    rotate_needed = (
+                        (ssid is not None and ssid != pre_apply["ap_ssid"])
+                        or (hidden is not None
+                            and hidden != pre_apply["hidden"]))
+                    if rotate_needed and _rotate_session_salt():
+                        sys.stderr.write(
+                            "[status-server] apconfig: AP identity changed, "
+                            "all sessions rotated\n")
                 # Random-rename responses carry the generated name so the
                 # client can show + store it BEFORE the restart drops the
                 # radio. Other branches keep the bare _api_response shape.
@@ -1172,19 +1221,9 @@ class StatusHandler(BaseHTTPRequestHandler):
                 return
             elif path == "/api/admin/rotate-sessions":
                 # Security plan todo 7 (force-relogin): regenerate the salt
-                # file. Every outstanding token fails _session_ok's payload
-                # fingerprint compare at the NEXT verify — the outer HMAC key
-                # derives from ADMIN_PSK only, which this never touches.
-                # Atomic write (tmp + os.replace) so a verifier that reads
-                # mid-rotation never sees a torn salt.
-                fresh = secrets.token_hex(32).encode("ascii")
-                try:
-                    fd = os.open(SALT_FILE + ".tmp", os.O_WRONLY | os.O_CREAT
-                                 | os.O_TRUNC, 0o600)
-                    os.write(fd, fresh)
-                    os.close(fd)
-                    os.replace(SALT_FILE + ".tmp", SALT_FILE)
-                except OSError:
+                # file via the shared atomic write (todo 10 reuses it on AP
+                # rename/hide). Same invalidation semantics as before.
+                if not _rotate_session_salt():
                     self._send(500, json.dumps({"error": "persist"}),
                                "application/json")
                     return
