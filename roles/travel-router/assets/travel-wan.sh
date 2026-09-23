@@ -312,6 +312,7 @@ Usage:
   travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan ap-apply <SSID> [PSK] [HIDDEN]  re-render + restart the AP (setup API; HIDDEN: 2=hide, 0=visible, empty=keep)
   travel-wan ap-info [--json]            current AP SSID + broadcast state (JSON)
+  travel-wan stealth-check               read-only WAN-side management-port check (JSON)
   travel-wan ap-ssid                     print the live AP SSID
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
@@ -964,6 +965,81 @@ cmd_ap_info() {
     printf '{"ssid":"%s","hidden":%s}\n' "$(json_escape "$ssid")" "$hidden"
 }
 
+# stealth-check: READ-ONLY WAN-side management-port self-check. Greps the
+# RENDERED ruleset (NFTABLES_TARGET — the same file wan-select writes every
+# tick and loads with `nft -f`) for input-chain rules that ACCEPT traffic
+# arriving on the WAN interface (iifname "<wan_if>") destined to a management
+# port (80/22/53/67). Never mutates anything: no nft call, no file writes.
+# Only input-hook accepts count as exposure — a forward accept (LAN->WAN
+# routing) and a postrouting masquerade (NAT, no iifname) are NOT reachable
+# from the WAN side and must not trip the check.
+NFTABLES_TARGET="${NFTABLES_TARGET:-/etc/nftables.conf}"
+STEALTH_MGMT_PORTS="80 22 53 67"
+
+# stealth_wan_accept_ports : echo the management ports found in rule lines
+# (comments and leading whitespace stripped FIRST — a #comment mentioning
+# iifname/accept must never count as a rule) that match iifname "<wan_if>"
+# AND contain `accept`. Missing ruleset -> empty (default-deny == stealth).
+# A management port counts only as a WHOLE dport number (dport 8080 must
+# never report 80): each dport set is cut on its delimiters.
+stealth_wan_accept_ports() {
+    local wan="$1" line stripped ports p found=""
+    [[ -r "$NFTABLES_TARGET" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"            # strip comments (incl. trailing)
+        stripped="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [[ -n "$stripped" ]] || continue
+        case "$stripped" in
+            *'iifname"'"$wan"'"'*) ;;
+            *) continue ;;
+        esac
+        case "$stripped" in
+            *accept*) ;;
+            *) continue ;;
+        esac
+        case "$stripped" in
+            *"dport{"*"}"*)
+                ports="${stripped#*dport{}"   # set form: dport{53,67}
+                ports="${ports%%\}*}"
+                ;;
+            *"dport"*)
+                # Single form: the whole number right after the first dport
+                # (trailing text like comment "dport 80" must not leak in).
+                ports="${stripped#*dport}"
+                ports="$(printf '%s' "$ports" | sed 's/^[^0-9]*//; s/[^0-9].*//')"
+                ;;
+            *) continue ;;
+        esac
+        found=""
+        for p in $STEALTH_MGMT_PORTS; do
+            case ",$ports," in
+                *",$p,"*) found="${found}${found:+,}$p" ;;
+            esac
+        done
+        [[ -n "$found" ]] && printf '%s\n' "$found"
+    done < "$NFTABLES_TARGET"
+    return 0
+}
+
+cmd_stealth_check() {
+    # wan_if comes from the state file (wan-select writes it every tick;
+    # standalone mode -> empty string = nothing to accept from = stealth).
+    local wan_if="$(json_field wan_if 2>/dev/null || true)"
+    local open_ports="" stealth="true"
+    if [[ -z "$wan_if" ]]; then
+        log "stealth-check: wan_if empty (standalone mode): no WAN-facing input accepts possible"
+    elif [[ ! -r "$NFTABLES_TARGET" ]]; then
+        # Absence of the ruleset file means default-deny (nothing loaded that
+        # accepts from the WAN): treat as stealth, never an error.
+        log "stealth-check: ruleset '$NFTABLES_TARGET' missing/unreadable: treating as default-deny (stealth)"
+    else
+        open_ports="$(stealth_wan_accept_ports "$wan_if" | paste -sd, -)"
+        [[ -n "$open_ports" ]] && stealth="false"
+    fi
+    printf '{"stealth":%s,"wan_if":"%s","open_ports":[%s]}\n' \
+        "$stealth" "$(json_escape "$wan_if")" "$open_ports"
+}
+
 cmd_clients() {
     # Connected-clients rows as a JSON array (or human TAB lines). Same live
     # derivation as status's clients_list; no interface check, so it works
@@ -1218,6 +1294,9 @@ main() {
             ;;
         ap-info)
             cmd_ap_info "${1:-}"
+            ;;
+        stealth-check)
+            cmd_stealth_check
             ;;
         ap-ssid)
             if [[ -s "$AP_SSID_FILE" ]]; then

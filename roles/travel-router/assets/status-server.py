@@ -549,6 +549,28 @@ class StatusHandler(BaseHTTPRequestHandler):
                 return
             self._send(200, json.dumps({"on": _killswitch_on()}),
                        "application/json")
+        elif path == "/api/admin/ap-info":
+            # Admin bucket (admin plan todo 4): session-gated read-only probe
+            # of the LIVE AP identity (current SSID + broadcast state) via
+            # travel-wan ap-info. A failed/degraded tool run answers 200 with
+            # an empty current state — the page preloads it, and a 5xx for a
+            # cosmetic read would break the dialog for no security gain.
+            if not _require_session(self):
+                return
+            rc, out, err = self._run_tool(["ap-info", "--json"],
+                                          API_QUICK_TIMEOUT)
+            info = {"ap_ssid": "", "hidden": False}
+            if rc == 0 and out:
+                try:
+                    parsed = json.loads(out[0])
+                    if (isinstance(parsed, dict)
+                            and isinstance(parsed.get("ssid"), str)
+                            and isinstance(parsed.get("hidden"), bool)):
+                        info = {"ap_ssid": parsed["ssid"],
+                                "hidden": parsed["hidden"]}
+                except ValueError:
+                    pass
+            self._send(200, json.dumps(info), "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_page(SETUP_PAGE, "setup")
         elif path == "/admin" or path == "/admin/":
@@ -605,6 +627,15 @@ class StatusHandler(BaseHTTPRequestHandler):
         # so the name is unpredictable; no separators so it sorts as noise.
         return "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
                        for _ in range(8))
+
+    @staticmethod
+    def _random_ap_psk():
+        # 12 chars over [A-Za-z0-9._-] (the apconfig validator's accepted
+        # set, len 8-63) so a previewed PSK saves as-is; deliberately NOT the
+        # no-lookalike SSID alphabet.
+        return "".join(secrets.choice(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+            for _ in range(12))
 
     @staticmethod
     def _pin_ok(body):
@@ -741,7 +772,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/wan/apconfig"
                 or path == "/api/wan/disconnect"
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"
-                or path == "/api/admin/killswitch"):
+                or path == "/api/admin/killswitch"
+                or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
@@ -752,7 +784,8 @@ class StatusHandler(BaseHTTPRequestHandler):
         # /api/wan/{psks-manage,apconfig} — session AND body.pin. The shared
         # per-IP counter and backoff are identical for both buckets.
         admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig",
-                               "/api/admin/killswitch")
+                               "/api/admin/killswitch",
+                               "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
         with _PIN_THROTTLE_LOCK:
@@ -808,6 +841,14 @@ class StatusHandler(BaseHTTPRequestHandler):
             return
         with _PIN_THROTTLE_LOCK:
             _PIN_FAILS.pop(ip_key, None)
+        if path == "/api/admin/apconfig/preview":
+            # Mints credentials but touches NOTHING: no travel-wan call, no
+            # WRITE_LOCK, no file. The response body is the only channel —
+            # the generated PSK is never logged anywhere.
+            self._send(200, json.dumps({"ssid": self._random_ap_ssid(),
+                                        "psk": self._random_ap_psk()}),
+                       "application/json")
+            return
         with WRITE_LOCK:
             if path == "/api/wan/connect":
                 ssid = body.get("ssid")
