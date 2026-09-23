@@ -80,6 +80,12 @@ PORTAL_CONF = os.environ.get(
 KILLSWITCH_FILE = os.environ.get(
     "TRAVELROUTER_KILLSWITCH_FILE",
     "/etc/rpi-project/travel-router/killswitch")
+# Session-salt file (security plan todo 7, force-relogin). Mixed into the
+# session-token fingerprint; regenerated on the Pi at /run/travel-router/
+# (tmpfs — a reboot re-salts and drops stale tokens for free). Rotating this
+# file is what `POST /api/admin/rotate-sessions` does to log out every device.
+SALT_FILE = os.environ.get(
+    "TRAVELROUTER_SALT_FILE", "/run/travel-router/session-salt")
 
 # HTTP-probe hosts whose DNS the H03 drop-in points at this server. Mirrors
 # portal-dnsmasq.conf.tmpl (dns.msftncsi.com is a DNS-value probe, never here).
@@ -274,8 +280,41 @@ def _session_key():
                     hashlib.sha256).digest()
 
 
+def _load_salt():
+    """Session-salt bytes, RE-READ from disk on every call (review MAJOR on
+    todo 7: a cache would let _session_ok accept tokens minted before a salt
+    rotation — the whole invalidation point dies). Missing file -> generate a
+    fresh 32-byte salt, write it 0600, and use it; on the Pi this fires on the
+    first verify after each boot (tmpfs), so every boot re-salts naturally.
+    Read failure with the file present falls back to a fixed prefix rather
+    than crashing a verify."""
+    try:
+        with open(SALT_FILE, "rb") as fh:
+            data = fh.read()
+        if data:
+            return data
+    except OSError:
+        pass
+    salt = secrets.token_hex(32).encode("ascii")
+    try:
+        fd = os.open(SALT_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, salt)
+        os.close(fd)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass
+    return salt
+
+
 def _psk_fingerprint():
-    return hashlib.sha256(ADMIN_PSK.encode("utf-8")).hexdigest()[:16]
+    """16-hex session fingerprint. Format stays 16 hex (the token payload
+    shape never changes); the salt is mixed in so rotating the salt file
+    invalidates every outstanding token in _session_ok's fingerprint compare.
+    Salt first: rotating the salt must change the digest while ADMIN_PSK is
+    untouched (rotation is force-relogin, never a PSK change)."""
+    return hashlib.sha256(_load_salt() + b"-" + ADMIN_PSK.encode("utf-8")
+                          ).hexdigest()[:16]
 
 
 def _b64e(raw):
@@ -773,6 +812,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/wan/disconnect"
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"
                 or path == "/api/admin/killswitch"
+                or path == "/api/admin/rotate-sessions"
                 or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
@@ -785,6 +825,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         # per-IP counter and backoff are identical for both buckets.
         admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig",
                                "/api/admin/killswitch",
+                               "/api/admin/rotate-sessions",
                                "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
@@ -972,6 +1013,30 @@ class StatusHandler(BaseHTTPRequestHandler):
                     {"ok": True, "on": on,
                      **({} if rendered else {"render": "failed"})}),
                     "application/json")
+                return
+            elif path == "/api/admin/rotate-sessions":
+                # Security plan todo 7 (force-relogin): regenerate the salt
+                # file. Every outstanding token fails _session_ok's payload
+                # fingerprint compare at the NEXT verify — the outer HMAC key
+                # derives from ADMIN_PSK only, which this never touches.
+                # Atomic write (tmp + os.replace) so a verifier that reads
+                # mid-rotation never sees a torn salt.
+                fresh = secrets.token_hex(32).encode("ascii")
+                try:
+                    fd = os.open(SALT_FILE + ".tmp", os.O_WRONLY | os.O_CREAT
+                                 | os.O_TRUNC, 0o600)
+                    os.write(fd, fresh)
+                    os.close(fd)
+                    os.replace(SALT_FILE + ".tmp", SALT_FILE)
+                except OSError:
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                sys.stderr.write(
+                    "[status-server] rotate-sessions: salt rotated, all "
+                    "sessions invalidated\n")
+                self._send(200, json.dumps({"ok": True}),
+                           "application/json")
                 return
             else:
                 rc, out, err = self._run_tool(["recheck"], API_QUICK_TIMEOUT)
