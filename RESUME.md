@@ -14,9 +14,17 @@ proven. The ap-stealth plan is DONE; nothing pending for it.
 
 Plan `.omo/plans/travel-router-ap-stealth.md`: **ALL 3 TODOs DONE**
 (a85bb1b, b3f51ea, d71ff81 + session fixes faaff26, a17bad5; docs 01984f5,
-048df90). Suite monotonic: **436 passed, 0 failed**. Evidence:
+048df90). Suite monotonic: **437 passed, 0 failed**. Evidence:
 `.omo/evidence/travel-router-ap-stealth/hostapd-probe-fix.txt` — witness
 run final verdict + T1-T4 results + operational notes at the bottom.
+
+2026-09-23 (rpi-8e21bb, fresh flash): first-boot race produced a systemd
+DEADLOCK — wan-select's blocking `systemctl try-restart travel-router-status`
+inside wan-select.service (status is After=wan-select.service) froze both
+units; status page down. Fixed with `--no-block` (wan-select.sh) + suite
+regression assert R1b (validate-local.sh). Fix deployed live on the Pi
+(/usr/local/lib/travel-router/wan-select.sh); page 200 verified. Repo
+change uncommitted (awaiting owner OK).
 
 Live AP state on the Pi right now: SSID **YZ47K3MZ** (random rename
 applied), VISIBLE (un-hidden), PSK **fubar123**, admin login Password123,
