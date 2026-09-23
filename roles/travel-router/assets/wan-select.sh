@@ -39,6 +39,10 @@ NMCLI="${NMCLI:-nmcli}"
 RFKILL="${RFKILL:-rfkill}"
 TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
 TRAVELROUTER_BLOCK_FILE="${TRAVELROUTER_BLOCK_FILE:-/etc/rpi-project/travel-router/blocked-macs}"
+# Kill-switch flag: PRESENT = cut client->WAN forwarding (kill switch ON);
+# ABSENT = internet flows (kill switch OFF). A fresh flash has no file, so
+# the default is always the ONLINE state (never a locked-out router).
+TRAVELROUTER_KILLSWITCH_FILE="${TRAVELROUTER_KILLSWITCH_FILE:-/etc/rpi-project/travel-router/killswitch}"
 TRAVELROUTER_WAN_PREFER="${TRAVELROUTER_WAN_PREFER:-auto}"
 TRAVELROUTER_LAN_CIDR="${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}"
 TRAVELROUTER_AP_COUNTRY="${TRAVELROUTER_AP_COUNTRY:-}"
@@ -226,6 +230,11 @@ run_or_log "$RFKILL" unblock wifi
 # power_save; `ip link` has no such argument and would abort every run.
 run_or_log "$IW" dev "$LAN_IF" set power_save off
 
+# kill_switch_on : true when the kill-switch flag file exists (kill switch
+# ON -> the LAN->WAN forward accept is stripped from the render). Absent or
+# unreadable file -> off (internet flows). Absence is the safe default.
+kill_switch_on() { [[ -e "$TRAVELROUTER_KILLSWITCH_FILE" ]]; }
+
 # --- (4) Render + load nftables for current WAN state ------------------------
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
 # nftables.conf.tmpl carries a FULL-LINE elements marker in the blocked_macs
@@ -239,10 +248,23 @@ else
   BLOCKED_SED_EXPR="/^ *__BLOCKED_MACS_ELEM__ *\$/d"
 fi
 if [[ -n "$WAN_IF" ]]; then
-  sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
+  # Kill switch: ON -> strip the LAN->WAN forward accept. The expression
+  # targets the accept line by its iifname+oifname pair of RAW placeholders
+  # and must run BEFORE the generic placeholder substitutions (after those,
+  # the placeholder no longer exists to match). OFF -> no-op expr.
+  if kill_switch_on; then
+    KILLSED_EXPR='/iifname "__LAN_INTERFACE__".*oifname "__WAN_INTERFACE__" accept$/s|oifname "__WAN_INTERFACE__"|oifname "wan-none"|'
+    log "kill switch ON (flag present): omitting LAN->WAN forward accept"
+  else
+    KILLSED_EXPR='s|oifname "oifname"|oifname "oifname"|'
+  fi
+  sed -e "$KILLSED_EXPR" \
+      -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e "s|__WAN_INTERFACE__|${WAN_IF}|g" \
       -e "$BLOCKED_SED_EXPR" \
-      "$ASSETS/nftables.conf.tmpl" >"$RENDER_TMP"
+      "$ASSETS/nftables.conf.tmpl" \
+    | grep -vE 'oifname "(wan-none|standalone-none)"' \
+        >"$RENDER_TMP"
 else
   # Standalone: replace the WAN placeholder with a literal string, then strip
   # the two WAN-facing rule lines entirely so the file still parses.

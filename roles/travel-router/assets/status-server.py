@@ -73,6 +73,13 @@ ADMIN_PAGE = os.path.join(_ASSET_DIR, "admin.html")
 # exists, OS connectivity-probe Hosts arriving here are 302'd to /setup.
 PORTAL_CONF = os.environ.get(
     "TRAVELROUTER_PORTAL_CONF", "/etc/dnsmasq.d/travel-router-portal.conf")
+# Internet kill-switch flag (security plan todo 4). PRESENT = cut client->WAN
+# forwarding; ABSENT = internet flows. A fresh flash has no file, so the
+# default is always the ONLINE state — absence is the safe default, never
+# inverted. 0600/root like every other store under this dir.
+KILLSWITCH_FILE = os.environ.get(
+    "TRAVELROUTER_KILLSWITCH_FILE",
+    "/etc/rpi-project/travel-router/killswitch")
 
 # HTTP-probe hosts whose DNS the H03 drop-in points at this server. Mirrors
 # portal-dnsmasq.conf.tmpl (dns.msftncsi.com is a DNS-value probe, never here).
@@ -162,6 +169,51 @@ def _state_field(key):
             return _json_field(fh.read(), key)
     except OSError:
         return None
+
+
+def _killswitch_on():
+    """Kill switch state (security plan todo 4): the flag file PRESENT means
+    cut internet (ON); ABSENT means internet flows (OFF). Absence is the
+    safe default — a fresh flash must serve clients, never a locked-out
+    router. Never inverted."""
+    return os.path.exists(KILLSWITCH_FILE)
+
+
+def _killswitch_write(on):
+    """Set/clear the kill-switch flag. on=True -> write an empty flag file
+    (0600); on=False -> remove it. Returns False only when the persist step
+    itself failed (the toggle did not stick)."""
+    if on:
+        try:
+            fd = os.open(KILLSWITCH_FILE,
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.close(fd)
+        except OSError:
+            return False
+    else:
+        try:
+            os.remove(KILLSWITCH_FILE)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return True
+
+
+def _killswitch_reload():
+    """Trigger the immediate re-render (+ `nft -f`) via wan-select, the same
+    mechanism the block-list verbs use. Best-effort: True when the reload
+    command returned 0; a failure still converges on the 30s timer tick.
+    The seam is read per call so a fixture harness can point it at a stub
+    without re-importing the module."""
+    reload_cmd = os.environ.get("TRAVELROUTER_WAN_SELECT_RELOAD",
+                                "sudo systemctl start wan-select.service")
+    try:
+        proc = subprocess.run(reload_cmd, shell=True, timeout=30,
+                              capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
 
 
 def get_status():
@@ -489,6 +541,14 @@ class StatusHandler(BaseHTTPRequestHandler):
             except OSError:
                 lines = []
             self._send(200, json.dumps({"log": lines}), "application/json")
+        elif path == "/api/admin/killswitch":
+            # Admin bucket (security plan todo 4): session-gated read — the
+            # kill-switch state is management-plane metadata a guest must
+            # not learn (it reveals whether the box is being throttled).
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({"on": _killswitch_on()}),
+                       "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_page(SETUP_PAGE, "setup")
         elif path == "/admin" or path == "/admin/":
@@ -680,7 +740,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/wan/psks-manage"
                 or path == "/api/wan/apconfig"
                 or path == "/api/wan/disconnect"
-                or path == "/api/wan/forget" or path == "/api/wan/recheck"):
+                or path == "/api/wan/forget" or path == "/api/wan/recheck"
+                or path == "/api/admin/killswitch"):
             self._send(404, b"404 not found", "text/plain")
             return
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
@@ -690,7 +751,8 @@ class StatusHandler(BaseHTTPRequestHandler):
         # body.pin is the ONLY credential ("PIN suffices"). Admin verbs:
         # /api/wan/{psks-manage,apconfig} — session AND body.pin. The shared
         # per-IP counter and backoff are identical for both buckets.
-        admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig")
+        admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig",
+                               "/api/admin/killswitch")
         ip_key = self.client_address[0]
         now = time.time()
         with _PIN_THROTTLE_LOCK:
@@ -843,6 +905,33 @@ class StatusHandler(BaseHTTPRequestHandler):
                     self._send(400, json.dumps({"error": "ssid"}), "application/json")
                     return
                 rc, out, err = self._run_tool(["forget", ssid], API_QUICK_TIMEOUT)
+            elif path == "/api/admin/killswitch":
+                # Security plan todo 4. on=True -> write the flag (cut);
+                # on=False -> clear it (internet flows; absence = safe
+                # default, never inverted). Persist first, then re-render
+                # immediately (same reload path the block verbs use) so the
+                # cut is live now, not on the next 30s tick. A failed reload
+                # does NOT fail the request: the write stuck and the timer
+                # converges — the response carries a "render" hint instead.
+                on = body.get("on")
+                if not isinstance(on, bool):
+                    self._send(400, json.dumps({"error": "killswitch"}),
+                               "application/json")
+                    return
+                if not _killswitch_write(on):
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                rendered = _killswitch_reload()
+                if not rendered:
+                    sys.stderr.write(
+                        "[status-server] killswitch: wan-select re-render "
+                        "FAILED (applies on the next 30s tick)\n")
+                self._send(200, json.dumps(
+                    {"ok": True, "on": on,
+                     **({} if rendered else {"render": "failed"})}),
+                    "application/json")
+                return
             else:
                 rc, out, err = self._run_tool(["recheck"], API_QUICK_TIMEOUT)
         self._api_response(rc, out, err)

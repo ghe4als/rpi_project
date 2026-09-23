@@ -311,6 +311,7 @@ Usage:
   travel-wan blocked                     list blocked MACs (one per line)
   travel-wan psks-del <index>            delete the Nth psks-list row
   travel-wan ap-apply <SSID> [PSK] [HIDDEN]  re-render + restart the AP (setup API; HIDDEN: 2=hide, 0=visible, empty=keep)
+  travel-wan ap-info [--json]            current AP SSID + broadcast state (JSON)
   travel-wan ap-ssid                     print the live AP SSID
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
@@ -939,6 +940,30 @@ cmd_status() {
     fi
 }
 
+# ap-info: current AP SSID + broadcast (hidden) state as one JSON line. The
+# SSID is the LIVE value (AP_SSID_FILE, updated by every ap-apply); the
+# hidden state is parsed from the LIVE hostapd conf's ignore_broadcast_ssid
+# line — 1 AND 2 both mean hidden (1 = empty beacon, answers probes; 2 =
+# fully hidden). Read-only, and every source degrades: missing/empty SSID
+# file -> ssid "", missing/unreadable conf -> hidden=false (never an error,
+# so the admin page can preload the dialog from a degraded AP).
+cmd_ap_info() {
+    local ssid="" hidden="false" line=""
+    if [[ -s "$AP_SSID_FILE" ]]; then
+        ssid="$(head -1 "$AP_SSID_FILE" 2>/dev/null || true)"
+    fi
+    # set -e makes a failed sed (missing/unreadable conf) abort the whole
+    # verb: guard readability, and || true the pipeline so the degrade path
+    # (missing/unreadable -> hidden=false) is exercised, never an abort.
+    if [[ -r "$AP_CONF" ]]; then
+        line="$(sed -n 's/^ignore_broadcast_ssid=//p' "$AP_CONF" 2>/dev/null | head -1 || true)"
+    fi
+    if [[ -n "$line" && "$line" != "0" ]]; then
+        hidden="true"
+    fi
+    printf '{"ssid":"%s","hidden":%s}\n' "$(json_escape "$ssid")" "$hidden"
+}
+
 cmd_clients() {
     # Connected-clients rows as a JSON array (or human TAB lines). Same live
     # derivation as status's clients_list; no interface check, so it works
@@ -1190,6 +1215,9 @@ main() {
             ;;
         ap-apply)
             cmd_ap_apply "${1:-}" "${2:-}" "${3:-}"
+            ;;
+        ap-info)
+            cmd_ap_info "${1:-}"
             ;;
         ap-ssid)
             if [[ -s "$AP_SSID_FILE" ]]; then
