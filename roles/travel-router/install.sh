@@ -311,6 +311,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0755 "$ASSETS/staged-env-refresh.sh" /usr/local/lib/travel-router/staged-env-refresh.sh
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
   install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
+  install -m 0644 "$ASSETS/admin.html"         /usr/local/lib/travel-router/admin.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
   install -m 0644 "$ASSETS/portal-dnsmasq.conf.tmpl" /usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl
   # ap-apply searches AP_TEMPLATE (/etc/rpi-project/travel-router/) then the
@@ -329,6 +330,7 @@ else
   cp "$ASSETS/staged-env-refresh.sh" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/staged-env-refresh.sh"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
   cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
+  cp "$ASSETS/admin.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/admin.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
   cp "$ASSETS/portal-dnsmasq.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl"
   mkdir -p "${DRY_RUN_PREFIX}/etc/rpi-project/travel-router"

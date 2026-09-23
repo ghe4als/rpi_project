@@ -15,8 +15,11 @@ Stdlib only (http.server + json). Serves:
                       a PSK)
   GET /api/wan/psks-manage -> session-gated metadata read (admin bucket)
   GET /api/wan/log -> session-gated DHCP log read (admin)
+  GET /api/admin/audit -> session-gated auth-failure attempts (401/403/429
+                      metadata rows: ts/ip/kind/code only, never a PSK/PIN;
+                      also appended best-effort to a JSON-lines audit file)
   POST /api/wan/*  -> client verbs PIN-gated, admin verbs session+PIN
-                     (admin-split posture; see below)
+                      (admin-split posture; see below)
 Anything else (other path or method) -> 404.
 
 POSTURE SPLIT (admin plan Todo 1): the /api/wan surface has two buckets.
@@ -51,6 +54,8 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -86,6 +91,15 @@ KILLSWITCH_FILE = os.environ.get(
 # file is what `POST /api/admin/rotate-sessions` does to log out every device.
 SALT_FILE = os.environ.get(
     "TRAVELROUTER_SALT_FILE", "/run/travel-router/session-salt")
+# Auth-failure audit log (security plan todo 8). JSON-lines, best-effort
+# append per 401/403/429 auth rejection; /var/log/travel-router/*.log is
+# bounded by the role's logrotate drop-in (no rotation logic here). The env
+# seam lets the dev runner point at a fixture path.
+AUDIT_FILE = os.environ.get(
+    "TRAVELROUTER_AUDIT_FILE", "/var/log/travel-router/audit.log")
+AUDIT_CAP = 200
+_AUDIT_LOCK = threading.Lock()
+_AUDIT_RING = deque(maxlen=AUDIT_CAP)
 
 # HTTP-probe hosts whose DNS the H03 drop-in points at this server. Mirrors
 # portal-dnsmasq.conf.tmpl (dns.msftncsi.com is a DNS-value probe, never here).
@@ -132,6 +146,36 @@ API_QUICK_TIMEOUT = 30
 # SSID policy: nmcli treats a leading dash as an option, control chars and
 # over-long SSIDs are never legitimate 802.11 SSIDs (max 32 bytes).
 SSID_MAX_BYTES = 32
+
+
+def _audit_kind(path, method):
+    """Audit bucket (security plan todo 8), derived mechanically from the
+    request line only (never the body): login -> "login", other POST ->
+    "write", everything else (GET reads) -> "read". A wrong PIN on a GET is
+    still an auth attempt; the bucket is where it landed, not what it hoped
+    to touch."""
+    if method == "POST":
+        return "login" if path == "/api/auth/login" else "write"
+    return "read"
+
+
+def _auth_audit(handler, kind, code):
+    """Record one auth rejection (401/403/429) in the bounded in-memory ring
+    and the bounded audit file. Observe-only: never alters the response, and
+    a row carries ONLY {ts, ip, kind, code} — body content (PSKs/PINs) is
+    structurally absent because this signature never accepts it. ts is ISO
+    8601 UTC ("YYYY-MM-DDTHH:MM:SSZ", second resolution — attempts are
+    security metadata, not a stopwatch). File append is best-effort: an
+    unwritable file skips the write, never the request."""
+    row = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "ip": handler.client_address[0], "kind": kind, "code": code}
+    with _AUDIT_LOCK:
+        _AUDIT_RING.append(row)
+    try:
+        with open(AUDIT_FILE, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
 
 
 def _load_state_file():
@@ -297,6 +341,7 @@ def _load_salt():
         pass
     salt = secrets.token_hex(32).encode("ascii")
     try:
+        os.makedirs(os.path.dirname(SALT_FILE), exist_ok=True)
         fd = os.open(SALT_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.write(fd, salt)
         os.close(fd)
@@ -369,6 +414,8 @@ def _require_session(handler):
     parsed as a smuggled follow-up request (mirrors the scan/status idiom)."""
     if _session_ok(handler.headers.get("X-Session")):
         return True
+    _auth_audit(handler, _audit_kind(urlparse(handler.path).path,
+                                     handler.command), 401)
     handler._send(401, json.dumps({"error": "auth"}), "application/json",
                   extra_headers=[("Connection", "close")])
     handler.close_connection = True
@@ -398,12 +445,16 @@ def _pin_gate(handler, supplied):
         else:
             blocked = False
     if blocked:
+        _auth_audit(handler, _audit_kind(urlparse(handler.path).path,
+                                         handler.command), 429)
         handler._send(429, json.dumps({"error": "rate_limited"}),
                       "application/json",
                       extra_headers=[("Connection", "close")])
         handler.close_connection = True
         return False
     if not SETUP_PIN or not isinstance(supplied, str):
+        _auth_audit(handler, _audit_kind(urlparse(handler.path).path,
+                                         handler.command), 401)
         handler._send(401, json.dumps({"error": "auth"}), "application/json",
                       extra_headers=[("Connection", "close")])
         handler.close_connection = True
@@ -415,6 +466,8 @@ def _pin_gate(handler, supplied):
             tier = _pin_backoff_tier(entry[0])
             if tier:
                 entry[1] = time.time() + tier
+        _auth_audit(handler, _audit_kind(urlparse(handler.path).path,
+                                         handler.command), 403)
         handler._send(403, json.dumps({"error": "pin"}), "application/json",
                       extra_headers=[("Connection", "close")])
         handler.close_connection = True
@@ -610,6 +663,17 @@ class StatusHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
             self._send(200, json.dumps(info), "application/json")
+        elif path == "/api/admin/audit":
+            # Admin bucket (security plan todo 8): session-gated read of the
+            # auth-failure ring, most recent first. Rows are ts/ip/kind/code
+            # metadata only — PSKs and PINs never enter the ring. Absent file
+            # degrades like /api/wan/log: empty list, never a 5xx.
+            if not _require_session(self):
+                return
+            with _AUDIT_LOCK:
+                attempts = list(reversed(_AUDIT_RING))
+            self._send(200, json.dumps({"attempts": attempts}),
+                       "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_page(SETUP_PAGE, "setup")
         elif path == "/admin" or path == "/admin/":
@@ -641,7 +705,11 @@ class StatusHandler(BaseHTTPRequestHandler):
             return None, 415
         if self.headers.get("X-Requested-With") != "XMLHttpRequest":
             # Custom header: a cross-site form/fetch cannot set it without a
-            # CORS preflight, and this server never answers preflight.
+            # CORS preflight, and this server never answers preflight. Auth-
+            # surface rejection (todo 8) — audited here at the single choke
+            # point; body-shape errors below stay unlogged (not auth).
+            _auth_audit(self, _audit_kind(urlparse(self.path).path,
+                                          self.command), 403)
             return None, 403
         body = self.rfile.read(length)
         try:
@@ -727,6 +795,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 else:
                     pin_fails = None
             if pin_fails is not None:
+                _auth_audit(self, "login", 429)
                 self._send(429, json.dumps({"error": "rate_limited"}),
                            "application/json",
                            extra_headers=[("Connection", "close")])
@@ -737,6 +806,10 @@ class StatusHandler(BaseHTTPRequestHandler):
                 # Malformed/absent body degrades to 401, not a parser-error
                 # oracle: a login attempt without a parseable psk is simply a
                 # failed login. Not counted as a guess (no PSK was compared).
+                # NOT audited here: body-shape codes (411/400/413/415) are not
+                # auth rejections, and the CSRF 403 was already audited at the
+                # _read_json_body choke point — logging again would double-row
+                # one rejection.
                 self._send(401, json.dumps({"error": "auth"}),
                            "application/json",
                            extra_headers=[("Connection", "close")])
@@ -751,6 +824,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                     tier = _pin_backoff_tier(entry[0])
                     if tier:
                         entry[1] = time.time() + tier
+                _auth_audit(self, "login", 401)
                 self._send(401, json.dumps({"error": "auth"}),
                            "application/json",
                            extra_headers=[("Connection", "close")])
@@ -783,6 +857,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 else:
                     pin_fails = None
             if pin_fails is not None:
+                _auth_audit(self, _audit_kind(path, "POST"), 429)
                 self._send(429, json.dumps({"error": "rate_limited"}),
                            "application/json",
                            extra_headers=[("Connection", "close")])
@@ -841,6 +916,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             # 429 fires before the body is read; like the scan/status
             # branches, an unread body under keep-alive would be parsed as
             # the next (smuggled) request. Close the connection instead.
+            _auth_audit(self, _audit_kind(path, "POST"), 429)
             self._send(429, json.dumps({"error": "rate_limited"}),
                        "application/json", extra_headers=[("Connection", "close")])
             self.close_connection = True
@@ -865,6 +941,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 session_authed = _session_ok(self.headers.get("X-Session"))
                 self._session_authed = session_authed
             if not session_authed:
+                _auth_audit(self, _audit_kind(path, "POST"), 401)
                 self._send(401, json.dumps({"error": "auth"}),
                            "application/json",
                            extra_headers=[("Connection", "close")])
@@ -877,6 +954,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 tier = _pin_backoff_tier(entry[0])
                 if tier:
                     entry[1] = time.time() + tier
+            _auth_audit(self, _audit_kind(path, "POST"), 403)
             err_key = "pin" if SETUP_PIN else "pin_unset"
             self._send(403, json.dumps({"error": err_key}), "application/json")
             return

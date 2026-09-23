@@ -22,6 +22,11 @@
 # captive-portal probe hijack, standalone mode only). It writes/removes that
 # drop-in ONLY on a state change and restarts dnsmasq exactly then (never per
 # tick; never SIGHUP — dnsmasq does not re-read dnsmasq.d drop-ins on HUP).
+# Same H03 ownership covers the two optional DNS-hardening drop-ins below:
+# travel-router-dns-block.conf (blocked-domains NXDOMAIN list) and
+# travel-router-dns-local.conf (local-only mode). Both are keyed on their own
+# flag/list files — PRESENT = feature ON, ABSENT/empty = OFF — and default to
+# absent, so a fresh flash produces no drop-ins and zero dnsmasq churn.
 # Probes must pass through whenever a WAN exists so the hotel portal reaches
 # the client device. It never creates a bridge, and never starts a WAN-side
 # DHCP client (NM owns the WAN).
@@ -50,6 +55,14 @@ NFTABLES_TARGET="${NFTABLES_TARGET:-/etc/nftables.conf}"
 DNSMASQ_CONF_DIR="${DNSMASQ_CONF_DIR:-/etc/dnsmasq.d}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PORTAL_CONF="${DNSMASQ_CONF_DIR}/travel-router-portal.conf"
+# DNS hardening (both default OFF = seam file absent): the blocked-domains
+# list renders one NXDOMAIN line per valid row; the local-only flag renders
+# no-resolv + local=/#/ (never address=/#/ — that hijacks every domain to
+# the router IP, the captive-portal behavior, the opposite of local-only).
+TRAVELROUTER_BLOCKED_DOMAINS_FILE="${TRAVELROUTER_BLOCKED_DOMAINS_FILE:-/etc/rpi-project/travel-router/blocked-domains}"
+TRAVELROUTER_DNS_LOCAL_FILE="${TRAVELROUTER_DNS_LOCAL_FILE:-/etc/rpi-project/travel-router/dns-local}"
+DNS_BLOCK_CONF="${DNSMASQ_CONF_DIR}/travel-router-dns-block.conf"
+DNS_LOCAL_CONF="${DNSMASQ_CONF_DIR}/travel-router-dns-local.conf"
 
 # nftables template location. When run by the service ASSETS may not be set;
 # derive it from this script's own path as a fallback.
@@ -105,6 +118,33 @@ blocked_macs_elements() {
     seen="${seen}|$m"
     printf '%s\n' "$m"
   done < "$TRAVELROUTER_BLOCK_FILE"
+  return 0
+}
+
+# blocked_domains_lines : emit the blocked-domains list as dnsmasq
+# `address=/<domain>/` lines. A bare address=/x/ (no trailing address) is
+# dnsmasq's NXDOMAIN idiom for that domain — deliberately NOT address=/x/#,
+# which would answer with the router's own address (hijack, not block).
+# Same defensive-reader posture as blocked_macs_elements: each row is
+# trimmed, shape-checked against a hostname pattern and deduped; comments,
+# blanks and malformed rows are skipped with a stderr note; a missing file
+# yields nothing. Never aborts the 30s tick.
+blocked_domains_lines() {
+  [[ -r "$TRAVELROUTER_BLOCKED_DOMAINS_FILE" ]] || return 0
+  local row d seen=""
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    d="$(printf '%s' "$row" | tr -d '[:space:]')"
+    [[ -n "$d" ]] || continue
+    case "$d" in \#*) continue ;; esac
+    if [[ ! "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$ ]]; then
+      log "blocked-domains: skipping malformed line '${d}'" >&2
+      continue
+    fi
+    d="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
+    case "|$seen|" in *"|$d|"*) continue ;; esac
+    seen="${seen}|$d"
+    printf 'address=/%s/\n' "$d"
+  done < "$TRAVELROUTER_BLOCKED_DOMAINS_FILE"
   return 0
 }
 
@@ -379,6 +419,63 @@ elif [[ -f "$PORTAL_CONF" ]]; then
   if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
     rm -f "$PORTAL_CONF"
   fi
+  run_or_log "$SYSTEMCTL" restart dnsmasq.service
+fi
+
+# --- (7) Optional DNS hardening (H03 idiom; see header) -----------------------
+# Two independently-toggled drop-ins, each keyed on its own seam file
+# (PRESENT = ON, absent/empty = OFF; defaults OFF). Per drop-in: wanted ->
+# render + write only when content differs; not wanted -> remove only when
+# present. dnsmasq restarts at most ONCE per tick, ONLY when at least one
+# drop-in's presence toggled — a same-presence content rewrite alone does
+# NOT restart (the list edit propagates on the next natural dnsmasq event;
+# per-tick restart churn is the thing H03 exists to prevent).
+DNS_WANT_BLOCK=0
+DNS_BLOCK_RENDER=""
+if [[ -s "$TRAVELROUTER_BLOCKED_DOMAINS_FILE" ]]; then
+  DNS_BLOCK_RENDER=$(blocked_domains_lines)
+  [[ -n "$DNS_BLOCK_RENDER" ]] && DNS_WANT_BLOCK=1
+fi
+DNS_WANT_LOCAL=0
+[[ -e "$TRAVELROUTER_DNS_LOCAL_FILE" ]] && DNS_WANT_LOCAL=1
+DNS_LOCAL_RENDER=$'# travel-router local-only DNS (wan-select): no upstream\nno-resolv\nlocal=/#/\n'
+
+apply_dns_dropin() {
+  local target="$1" render="$2" wanted="$3"
+  local existed=0
+  [[ -e "$target" ]] && existed=1
+  if [[ "$wanted" == "1" ]]; then
+    if [[ "$existed" == "1" ]] && cmp -s "$target" <(printf '%s' "$render"); then
+      return 1
+    fi
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
+      mkdir -p "$DNSMASQ_CONF_DIR" 2>/dev/null || true
+      local tmp="${target}.tmp.$$"
+      printf '%s' "$render" >"$tmp"
+      mv -f "$tmp" "$target"
+    fi
+    log "dns drop-in rendered -> ${target}"
+    # Toggled only when the file was ABSENT on entry; rewriting an existing
+    # drop-in (new list content, same presence) is not a presence toggle.
+    [[ "$existed" == "0" ]] && return 0
+    return 1
+  else
+    if [[ "$existed" == "0" ]]; then
+      return 1
+    fi
+    if [[ "${TRAVELROUTER_DRY_RUN:-0}" != "1" ]]; then
+      rm -f "$target"
+    fi
+    log "dns drop-in removed -> ${target}"
+    return 0
+  fi
+}
+
+DNS_TOGGLE=0
+apply_dns_dropin "$DNS_BLOCK_CONF" "$DNS_BLOCK_RENDER" "$DNS_WANT_BLOCK" && DNS_TOGGLE=1
+apply_dns_dropin "$DNS_LOCAL_CONF" "$DNS_LOCAL_RENDER" "$DNS_WANT_LOCAL" && DNS_TOGGLE=1
+if [[ "$DNS_TOGGLE" == "1" ]]; then
+  log "dns drop-in presence toggled -> restarting dnsmasq"
   run_or_log "$SYSTEMCTL" restart dnsmasq.service
 fi
 
