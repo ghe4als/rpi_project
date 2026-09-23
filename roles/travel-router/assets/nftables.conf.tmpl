@@ -6,14 +6,17 @@ flush ruleset
 # WAN change never applies. With flush the whole ruleset swaps atomically.
 
 table inet travel_router {
+table inet travel_router {
     # Blocked devices (admin block list). wan-select.sh renders the block
-    # file (one MAC per line) into the marker on the elements line below
-    # (empty when no device is blocked). A blocked MAC drops at the TOP of
-    # input AND forward — BEFORE the established-connection accepts, or a
-    # just-blocked client would keep its live sessions (nft is first-match).
+    # file (one MAC per line) into the full-line marker below: populated ->
+    # an `elements = { .. }` line, empty/absent file -> the marker line is
+    # DELETED (a set with no elements line; never an empty `{ }` list).
+    # A blocked MAC drops at the TOP of input AND forward — BEFORE the
+    # established-connection accepts, or a just-blocked client would keep
+    # its live sessions (nft is first-match).
     set blocked_macs {
         type ether_addr
-        elements = { __BLOCKED_MACS_ELEM__ }
+        __BLOCKED_MACS_ELEM__
     }
 
     chain input {

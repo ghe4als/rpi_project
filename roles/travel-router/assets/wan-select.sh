@@ -228,20 +228,27 @@ run_or_log "$IW" dev "$LAN_IF" set power_save off
 
 # --- (4) Render + load nftables for current WAN state ------------------------
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
-# nftables.conf.tmpl carries a full-line elements marker (see the set decl);
-# this renders it to "aa:bb:cc:dd:ee:ff,12:34:56:78:9a:bc" ("" when empty).
+# nftables.conf.tmpl carries a FULL-LINE elements marker in the blocked_macs
+# set (see the template): populated -> "        elements = { aa:bb:..,.. }",
+# empty -> "" so the marker line vanishes (an empty `{ }` element list is
+# NOT valid nft syntax — omitting the line is the guaranteed-parse form).
 BLOCKED_ELEM=$(blocked_macs_elements | paste -sd, -)
+if [[ -n "$BLOCKED_ELEM" ]]; then
+  BLOCKED_SED_EXPR="s|^ *__BLOCKED_MACS_ELEM__ *\$|        elements = { ${BLOCKED_ELEM} }|"
+else
+  BLOCKED_SED_EXPR="/^ *__BLOCKED_MACS_ELEM__ *\$/d"
+fi
 if [[ -n "$WAN_IF" ]]; then
   sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e "s|__WAN_INTERFACE__|${WAN_IF}|g" \
-      -e "s|__BLOCKED_MACS_ELEM__|${BLOCKED_ELEM}|g" \
+      -e "$BLOCKED_SED_EXPR" \
       "$ASSETS/nftables.conf.tmpl" >"$RENDER_TMP"
 else
   # Standalone: replace the WAN placeholder with a literal string, then strip
   # the two WAN-facing rule lines entirely so the file still parses.
   sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e 's|__WAN_INTERFACE__|standalone-none|g' \
-      -e "s|__BLOCKED_MACS_ELEM__|${BLOCKED_ELEM}|g" \
+      -e "$BLOCKED_SED_EXPR" \
       "$ASSETS/nftables.conf.tmpl" \
     | grep -v 'oifname "standalone-none"' \
         >"$RENDER_TMP"
