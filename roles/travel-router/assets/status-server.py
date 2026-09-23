@@ -2,26 +2,39 @@
 """LAN status + PIN-gated setup API for the travel-router.
 
 Stdlib only (http.server + json). Serves:
-  GET /            -> small static HTML page that polls /status
-  GET /status      -> JSON status (shells out to `travel-wan status --json`,
-                      reachability cached in-process with a 30s TTL so an
-                      offline WAN does not stall every page load)
+  GET /            -> static generic warning page (links to /setup)
+  GET /status      -> PIN-gated JSON status (X-Pin header; shells out to
+                      `travel-wan status --json`, reachability cached
+                      in-process with a 30s TTL so an offline WAN does not
+                      stall every page load)
   GET /health      -> 200 {"status":"ok"}
-  GET /api/wan/known -> PIN-gated known-networks JSON (C6; X-Pin, same
-                      throttle as POST / psks-manage; travel-wan known rows:
-                      NAME/TIMESTAMP/AUTOCONNECT metadata, never a PSK)
-  GET /api/wan/psks-manage -> PIN-gated metadata read (X-Pin, throttled)
-  POST /api/wan/*  -> PIN-gated setup API (H01 posture change; see below)
+  GET /setup       -> client setup page shell (PIN-only client surface)
+  GET /admin       -> admin page shell (data flows only via admin-gated APIs)
+  GET /api/wan/known -> PIN-gated known-networks JSON (X-Pin header; travel-wan
+                      known rows: NAME/TIMESTAMP/AUTOCONNECT metadata, never
+                      a PSK)
+  GET /api/wan/psks-manage -> session-gated metadata read (admin bucket)
+  GET /api/wan/log -> session-gated DHCP log read (admin)
+  POST /api/wan/*  -> client verbs PIN-gated, admin verbs session+PIN
+                     (admin-split posture; see below)
 Anything else (other path or method) -> 404.
 
-POSTURE CHANGE (H01): this server used to be strictly read-only (every write
-verb 404). The phone setup feature requires a writable surface, so
-POST /api/wan/{scan,status,connect,disconnect,forget,recheck,psks} is now a
-real dispatch. It stays gated: JSON-only bodies (8KB cap) + X-Requested-With
-header (CSRF guard; no CORS headers are ever emitted) +, for write verbs,
-TRAVELROUTER_SETUP_PIN from the environment compared in constant time. PIN
-unset/empty -> every write verb 403s (deny-by-default; un-provisioned Pis
-never grant write access). PUT/PATCH/DELETE stay reject-bound (404).
+POSTURE SPLIT (admin plan Todo 1): the /api/wan surface has two buckets.
+CLIENT ("PIN suffices"; a session is neither required nor rejected):
+GET /status + GET /api/wan/known (X-Pin header) and the POST verbs
+/api/wan/{scan,status,connect,psks,disconnect,forget,recheck} (body.pin).
+ADMIN (X-Session via PSK login, plus body.pin on writes): /api/wan/apconfig,
+/api/wan/psks-manage, GET /api/wan/log, and every /api/admin/* verb. Every
+PIN path (both buckets) feeds the shared per-IP _PIN_FAILS throttle (C1).
+JSON-only bodies (8KB cap) + the X-Requested-With CSRF header still guard
+every JSON POST; no CORS headers are ever emitted. PIN unset/empty -> every
+PIN-gated verb denies (GET 401; POST write 403 "pin"/"pin_unset") —
+deny-by-default so un-provisioned Pis never grant access.
+PUT/PATCH/DELETE stay reject-bound (404).
+
+HISTORY: H01 turned a strictly read-only server into a writable one whose
+writes needed session + body.pin; the admin split (Todo 1) re-grouped those
+gates into the client/admin buckets described above.
 
 The server binds the IP in the wan-select state file so the bind never goes
 stale; port comes from TRAVELROUTER_STATUS_PORT (default 80).
@@ -53,8 +66,9 @@ SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
 # EnvironmentFile install.sh stages (same seam as the PIN).
 ADMIN_PSK = os.environ.get("TRAVELROUTER_ADMIN_PSK", "")
 SESSION_TTL_SECONDS = 43200  # 12h: one hotel-setup window, then re-login
-SETUP_PAGE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "setup.html")
+_ASSET_DIR = os.path.dirname(os.path.abspath(__file__))
+SETUP_PAGE = os.path.join(_ASSET_DIR, "setup.html")
+ADMIN_PAGE = os.path.join(_ASSET_DIR, "admin.html")
 # Captive-portal hijack drop-in (wan-select owns + toggles it; H03). When it
 # exists, OS connectivity-probe Hosts arriving here are 302'd to /setup.
 PORTAL_CONF = os.environ.get(
@@ -270,6 +284,62 @@ def _require_session(handler):
     return False
 
 
+# --- client-bucket PIN gate (admin plan Todo 1) --------------------------------
+# The client surface is PIN-gated: X-Pin header on GET, body.pin on POST.
+# 401 vs 403: an ABSENT pin (or an un-provisioned server, SETUP_PIN empty) is
+# an authentication failure -> 401, mirroring _require_session; nothing was
+# compared, so it never counts as a guess. A present-but-wrong pin is a failed
+# authorization -> 403 that feeds the SAME per-IP _PIN_FAILS throttle as every
+# other PIN guess (C1), and a correct pin pops the entry (reset-on-success,
+# same as the write path). A source with an armed block window answers 429
+# BEFORE any pin compare (the attempt still advances the count, mirroring the
+# login/write throttle). Connection: close on every deny so no keep-alive
+# bytes can be parsed as a smuggled follow-up.
+def _pin_gate(handler, supplied):
+    ip_key = handler.client_address[0]
+    now = time.time()
+    with _PIN_THROTTLE_LOCK:
+        entry = _PIN_FAILS.get(ip_key)
+        blocked_until = entry[1] if entry else 0.0
+        if now < blocked_until:
+            entry[0] += 1
+            blocked = True
+        else:
+            blocked = False
+    if blocked:
+        handler._send(429, json.dumps({"error": "rate_limited"}),
+                      "application/json",
+                      extra_headers=[("Connection", "close")])
+        handler.close_connection = True
+        return False
+    if not SETUP_PIN or not isinstance(supplied, str):
+        handler._send(401, json.dumps({"error": "auth"}), "application/json",
+                      extra_headers=[("Connection", "close")])
+        handler.close_connection = True
+        return False
+    if not hmac.compare_digest(supplied, SETUP_PIN):
+        with _PIN_THROTTLE_LOCK:
+            entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
+            entry[0] += 1
+            tier = _pin_backoff_tier(entry[0])
+            if tier:
+                entry[1] = time.time() + tier
+        handler._send(403, json.dumps({"error": "pin"}), "application/json",
+                      extra_headers=[("Connection", "close")])
+        handler.close_connection = True
+        return False
+    with _PIN_THROTTLE_LOCK:
+        _PIN_FAILS.pop(ip_key, None)
+    return True
+
+
+def _require_pin_header(handler):
+    """True when the GET carries the correct X-Pin; otherwise the 401/403 has
+    already been sent (see _pin_gate for the absent-vs-wrong split and the
+    throttle wiring)."""
+    return _pin_gate(handler, handler.headers.get("X-Pin"))
+
+
 # C2 (auth plan Todo 5): the LAN-facing root page is a STRICT generic warning.
 # It must stay static and data-free: no device fields (wan_ssid/wan_ip/
 # clients/ap_state), no /status polling — anyone on the travel AP sees it.
@@ -315,19 +385,22 @@ class StatusHandler(BaseHTTPRequestHandler):
     def _reject_write(self):
         self._send(404, b"404 not found", "text/plain")
 
-    def _serve_setup(self):
+    def _serve_page(self, page_path, page_name):
+        """Serve a static shell page (setup.html / admin.html) with
+        Cache-Control: no-store. The page must never be cached: WAN state and
+        credential behavior change between captive-portal phases."""
         try:
-            with open(SETUP_PAGE, "rb") as fh:
+            with open(page_path, "rb") as fh:
                 body = fh.read()
         except OSError:
-            sys.stderr.write("[status-server] setup page missing: %s\n" % SETUP_PAGE)
-            self._send(500, b"setup page missing on this install", "text/plain")
+            sys.stderr.write("[status-server] %s page missing: %s\n"
+                             % (page_name, page_path))
+            msg = ("%s page missing on this install" % page_name).encode("ascii")
+            self._send(500, msg, "text/plain")
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        # The page must never be cached: WAN state and PIN behavior change
-        # between captive-portal phases.
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
@@ -355,16 +428,19 @@ class StatusHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/status":
-            # C2/C4: /status is session-gated (Todo 5 stub, Todo 6 real
-            # verify). The device JSON (mode/wan_ssid/wan_ip/clients_list) is
-            # LAN-visible data; without a session the answer is a bare 401 —
-            # same body for missing and invalid tokens (no oracle).
-            if not _require_session(self):
+            # Client bucket (admin split, Todo 1): X-Pin is the credential —
+            # a session neither unlocks nor blocks ("PIN suffices"; the admin
+            # page polls /status during an AP restart with the PIN, not a
+            # session). Absent pin -> 401, wrong pin -> 403 via _pin_gate
+            # (throttled, connection closed).
+            if not _require_pin_header(self):
                 return
             self._send(200, json.dumps(get_status()), "application/json")
         elif path == "/api/wan/known":
-            # Session-gated metadata read: the session is the read credential.
-            if not _require_session(self):
+            # Client bucket: X-Pin header, throttled. travel-wan known rows
+            # are NAME/TIMESTAMP/AUTOCONNECT metadata, never a PSK, so the
+            # setup PIN suffices as the read credential.
+            if not _require_pin_header(self):
                 return
             rc, out, err = self._run_tool(["known"], API_QUICK_TIMEOUT)
             if rc is None:
@@ -378,9 +454,9 @@ class StatusHandler(BaseHTTPRequestHandler):
                                   "autoconnect": parts[2]})
             self._send(200, json.dumps({"known": known}), "application/json")
         elif path == "/api/wan/psks-manage":
-            # Session-gated metadata read: the X-Session token is also the
-            # CSRF gate (a cross-site form/fetch cannot set a custom header
-            # without a preflight this server never answers).
+            # Admin bucket: session-gated metadata read. The X-Session token
+            # is also the CSRF gate (a cross-site form/fetch cannot set a
+            # custom header without a preflight this server never answers).
             if not _require_session(self):
                 return
             rc, out, err = self._run_tool(["psks-list"], API_QUICK_TIMEOUT)
@@ -394,7 +470,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                     rows.append({"type": parts[0], "index": i, "ssid": parts[1]})
             self._send(200, json.dumps({"rows": rows}), "application/json")
         elif path == "/api/wan/log":
-            # Session-gated "recently connected" read (auth plan Todo 7): the
+            # Admin bucket — session-gated "recently connected" read: the
             # last ~50 non-empty lines of the bounded DHCP log (Todo 3). The
             # env seam lets the dev runner point at a fixture; absence of the
             # file degrades to an empty array, never a 5xx. DHCP rows are
@@ -414,7 +490,12 @@ class StatusHandler(BaseHTTPRequestHandler):
                 lines = []
             self._send(200, json.dumps({"log": lines}), "application/json")
         elif path == "/setup" or path == "/setup/":
-            self._serve_setup()
+            self._serve_page(SETUP_PAGE, "setup")
+        elif path == "/admin" or path == "/admin/":
+            # Admin page shell (admin plan Todo 2): unauthenticated to LOAD,
+            # mirroring /setup — every data path is a session/PIN-gated API,
+            # so the HTML itself carries no device data.
+            self._serve_page(ADMIN_PAGE, "admin")
         elif path == "/" or path == "/index.html":
             self._send(200, _WARNING_HTML, "text/html")
         else:
@@ -551,15 +632,40 @@ class StatusHandler(BaseHTTPRequestHandler):
                        "application/json")
             return
         if path == "/api/wan/scan" or path == "/api/wan/status":
-            # Session-gated reads (Todo 6): the check fires before any work,
-            # and _require_session closes the connection on 401 so an unread
-            # body cannot smuggle. These branches never read their request
-            # body, so with HTTP/1.1 keep-alive an unsent body would be parsed
-            # as the next (smuggled) request on the same socket. Close the
-            # connection instead: header must be emitted between
-            # send_response and end_headers (send_header buffers in call
-            # order), and close_connection=True is defense-in-depth.
-            if not _require_session(self):
+            # Client bucket (admin split, Todo 1): the PIN read twins —
+            # credential is body.pin (never a session). The throttle fires
+            # before the body is read, and EVERY deny closes the connection:
+            # with HTTP/1.1 keep-alive an unread body would be parsed as the
+            # next (smuggled) request on the same socket. Header must be
+            # emitted between send_response and end_headers (send_header
+            # buffers in call order); close_connection=True is
+            # defense-in-depth. A body that fails policy (no length, bad
+            # CSRF header, unparseable) degrades to 401 with no pin compared
+            # and no throttle count (mirrors the login body-error degrade).
+            ip_key = self.client_address[0]
+            now = time.time()
+            with _PIN_THROTTLE_LOCK:
+                entry = _PIN_FAILS.get(ip_key)
+                blocked_until = entry[1] if entry else 0.0
+                if now < blocked_until:
+                    entry[0] += 1
+                    pin_fails = entry[0]
+                else:
+                    pin_fails = None
+            if pin_fails is not None:
+                self._send(429, json.dumps({"error": "rate_limited"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            body, err_code = self._read_json_body()
+            if err_code is not None:
+                self._send(401, json.dumps({"error": "auth"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
+            if not _pin_gate(self, body.get("pin")):
                 return
             if path == "/api/wan/status":
                 self._send(200, json.dumps(get_status()), "application/json",
@@ -580,6 +686,11 @@ class StatusHandler(BaseHTTPRequestHandler):
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
         # parsed. A blocked attempt is still a PIN guess, so it also advances
         # the fail count (lets a persistent brute-forcer escalate tiers).
+        # Client verbs: /api/wan/{connect,psks,disconnect,forget,recheck} —
+        # body.pin is the ONLY credential ("PIN suffices"). Admin verbs:
+        # /api/wan/{psks-manage,apconfig} — session AND body.pin. The shared
+        # per-IP counter and backoff are identical for both buckets.
+        admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig")
         ip_key = self.client_address[0]
         now = time.time()
         with _PIN_THROTTLE_LOCK:
@@ -603,22 +714,26 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send(err_code, json.dumps({"error": _code_msg(err_code)}),
                        "application/json")
             return
-        # Two-factor writes (Todo 6): a valid session AND a correct body.pin.
-        # The session check comes first and is pin_unset-aware so a session
-        # holder sees 403 {"error":"pin_unset"} on an unprovisioned router,
-        # while the same request without a session stays a bare 401 — a guest
-        # cannot probe the PIN's existence (the pin_unset distinction never
-        # leaks pre-session). SETUP_PIN-empty is pinned False for the whole
-        # process, so caching the auth state does not change behavior.
-        session_authed = getattr(self, "_session_authed", None)
-        if session_authed is None:
-            session_authed = _session_ok(self.headers.get("X-Session"))
-            self._session_authed = session_authed
-        if not session_authed:
-            self._send(401, json.dumps({"error": "auth"}), "application/json",
-                       extra_headers=[("Connection", "close")])
-            self.close_connection = True
-            return
+        # Bucket-split credential gate (admin plan Todo 1; supersedes the
+        # H01/Todo-6 two-factor gate). Client writes: a correct body.pin
+        # ALONE authorizes — a session is neither required nor rejected, so
+        # a guest on the travel AP can connect/scan/forget with just the
+        # PIN. Admin writes (psks-manage, apconfig) still demand the session
+        # FIRST (401 when absent/invalid), then body.pin (403 on wrong/
+        # missing; pin_unset on an un-provisioned router is only revealed
+        # to a session holder — a no-session request stays a bare 401, so a
+        # guest cannot probe the PIN's existence).
+        if admin_write:
+            session_authed = getattr(self, "_session_authed", None)
+            if session_authed is None:
+                session_authed = _session_ok(self.headers.get("X-Session"))
+                self._session_authed = session_authed
+            if not session_authed:
+                self._send(401, json.dumps({"error": "auth"}),
+                           "application/json",
+                           extra_headers=[("Connection", "close")])
+                self.close_connection = True
+                return
         if not self._pin_ok(body):
             with _PIN_THROTTLE_LOCK:
                 entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])

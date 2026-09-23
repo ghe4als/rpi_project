@@ -1005,6 +1005,191 @@ done
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 
+# --- (5ap) client/admin credential split + /admin route (admin plan T1/T2) -----
+sec "5ap. client/admin gate split + /admin route (admin-split Todos 1-2)"
+# Posture under test (admin plan Todo 1, exhaustive classification):
+#   CLIENT ("PIN suffices"; a session is neither required nor rejected):
+#     GET /status + GET /api/wan/known (X-Pin header), and POST
+#     /api/wan/{scan,status,connect,psks,disconnect,forget,recheck} (body.pin;
+#     POST /api/wan/status is a client READ twin of GET /status).
+#   ADMIN (X-Session via PSK login; body.pin additionally on writes):
+#     /api/wan/{psks-manage,apconfig} writes, GET /api/wan/psks-manage,
+#     GET /api/wan/log, and all future /api/admin/*.
+# Absent pin -> 401 (never 403); wrong pin -> 403 feeding the shared per-IP
+# _PIN_FAILS throttle in BOTH buckets. The legacy session-gate asserts
+# (5c/5d/5g/5t/5ac2/5ac3/5ak) still pin the OLD posture and are rewritten to
+# this one in admin plan todo 8 — this section pins the NEW posture only.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STWAP="$B/stub-travel-wan-ap"
+printf '#!/bin/bash\ncase "$1" in scan) printf "A\\t1\\t50\\tWPA2\\tHotelNet\\n"; exit 0;; known) printf "HotelNet\\t1690000000\\tyes\\n"; exit 0;; psks-list) printf "s\\tX\\tpk1\\n"; exit 0;; esac\nexit 1\n' > "$STWAP"; chmod +x "$STWAP"
+APLOG="$B/ap-split.txt"
+: > "$APLOG"
+echo "=== 5ap client/admin split transcript ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ===" >> "$APLOG"
+ap_start() { # port -> fresh server (fresh in-memory throttle state)
+  TRAVELROUTER_SETUP_PIN="1234" TRAVELROUTER_ADMIN_PSK="${TESTADMIN_PSK:-AdminPass99}" \
+  TRAVELWAN_BIN="$STWAP" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
+  TRAVELROUTER_STATUS_PORT="$1" TRAVELROUTER_BIND_HOST=127.0.0.1 \
+    python3 "$A/status-server.py" >>"$B/srv-ap.log" 2>&1 &
+  APPID=$!
+  wait_healthy "$1" || true
+}
+ap_stop() { kill "$APPID" 2>/dev/null; wait "$APPID" 2>/dev/null; }
+ap_post() { # path json [extra-curl-args...] -> "code|body" (X-Requested-With on)
+  local resp
+  resp=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H 'X-Requested-With: XMLHttpRequest' "$@" -d "$2" \
+    "http://127.0.0.1:18110$1" 2>/dev/null)
+  echo "POST $1 -> ${resp##*$'\n'}" >> "$APLOG"
+  echo "${resp##*$'\n'}|${resp%$'\n'*}"
+}
+ap_get() { # path [extra-curl-args...] -> "code|body"
+  local resp
+  resp=$(curl -s -w '\n%{http_code}' "$@" "http://127.0.0.1:18110$1" 2>/dev/null)
+  echo "GET $1 -> ${resp##*$'\n'}" >> "$APLOG"
+  echo "${resp##*$'\n'}|${resp%$'\n'*}"
+}
+ap_start 18110
+TOK_5AP=$(login_psk 18110 "${TESTADMIN_PSK:-AdminPass99}")
+# (A) client GET bucket: X-Pin is the credential, no session involved
+apx=$(ap_get /status -H 'X-Pin: 1234')
+[[ "$apx" == 200*'"mode"'* ]] \
+  && ok "5ap GET /status + X-Pin, NO session -> 200" || bad "5ap /status+pin: [$apx]"
+apx=$(ap_get /status)
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /status absent X-Pin -> 401 (not 403)" || bad "5ap /status no-pin: [$apx]"
+apx=$(ap_get /status -H 'X-Pin: 9')
+[[ "$apx" == 403*'"pin"'* ]] \
+  && ok "5ap GET /status wrong X-Pin -> 403 pin (throttled guess)" || bad "5ap /status wrong-pin: [$apx]"
+apx=$(ap_get /api/wan/known -H 'X-Pin: 1234')
+[[ "$apx" == 200*'"known"'*'"HotelNet"'* ]] \
+  && ok "5ap GET /api/wan/known + X-Pin, NO session -> 200 rows" || bad "5ap known+pin: [$apx]"
+apx=$(ap_get /api/wan/known)
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /api/wan/known absent X-Pin -> 401" || bad "5ap known no-pin: [$apx]"
+apx=$(ap_get /api/wan/known -H "X-Session: $TOK_5AP")
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /api/wan/known + session-only -> 401 (session is not the client credential)" \
+  || bad "5ap known sess-only: [$apx]"
+# (B) client POST bucket: body.pin on every verb, CSRF header still mandatory
+apx=$(ap_post /api/wan/status '{"pin":"1234"}')
+[[ "$apx" == 200*'"mode"'* ]] \
+  && ok "5ap POST /api/wan/status body.pin, NO session -> 200 (client read twin)" \
+  || bad "5ap POST status: [$apx]"
+apx=$(ap_post /api/wan/scan '{"pin":"1234"}')
+[[ "$apx" == 200*'"lines"'* ]] \
+  && ok "5ap POST /api/wan/scan body.pin, NO session -> 200" || bad "5ap POST scan: [$apx]"
+for ep in connect psks disconnect forget recheck; do
+  case "$ep" in
+    connect) apb='{"pin":"1234","ssid":"HotelNet"}';;
+    psks)    apb='{"pin":"1234","ssid":"HotelNet"}';;
+    forget)  apb='{"pin":"1234","ssid":"HotelNet"}';;
+    *)       apb='{"pin":"1234"}';;
+  esac
+  apx=$(ap_post "/api/wan/$ep" "$apb")
+  [[ "$apx" == 200*'"ok"'* ]] \
+    && ok "5ap POST /api/wan/$ep body.pin, NO session -> 200" || bad "5ap POST $ep: [$apx]"
+done
+apx=$(ap_post /api/wan/connect '{"pin":"9","ssid":"HotelNet"}')
+[[ "$apx" == 403*'"pin"'* ]] \
+  && ok "5ap POST connect wrong body.pin, no session -> 403 pin" || bad "5ap wrong-pin write: [$apx]"
+apx=$(ap_post /api/wan/connect '{"ssid":"HotelNet"}')
+[[ "$apx" == 403*'"pin"'* ]] \
+  && ok "5ap POST connect missing body.pin -> 403 pin (write envelope keeps the pin/pin_unset split)" \
+  || bad "5ap missing-pin write: [$apx]"
+apx=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"pin":"1234","ssid":"HotelNet"}' http://127.0.0.1:18110/api/wan/connect 2>/dev/null)
+[[ "$apx" == "403" ]] \
+  && ok "5ap POST connect WITHOUT X-Requested-With -> 403 (CSRF kept on client writes)" \
+  || bad "5ap csrf client write code=$apx (want 403)"
+apx=$(ap_post /api/wan/connect '{"pin":"1234","ssid":"HotelNet"}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"ok"'* ]] \
+  && ok "5ap POST connect WITH session + pin -> 200 (session neither required nor rejected)" \
+  || bad "5ap sess+pin write: [$apx]"
+# (C) admin bucket reads: session required, pin irrelevant on reads
+apx=$(ap_get /api/wan/psks-manage)
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET psks-manage no session -> 401 (admin read)" || bad "5ap pm no-sess: [$apx]"
+apx=$(ap_get /api/wan/log)
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /api/wan/log no session -> 401 (admin read)" || bad "5ap log no-sess: [$apx]"
+apx=$(ap_get /api/wan/psks-manage -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"rows"'* ]] \
+  && ok "5ap GET psks-manage + session -> 200 rows" || bad "5ap pm+sess: [$apx]"
+apx=$(ap_get /api/wan/log -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"log"'* ]] \
+  && ok "5ap GET /api/wan/log + session -> 200 (degrades to empty array)" || bad "5ap log+sess: [$apx]"
+# (D) admin bucket writes: session FIRST (401 without), then body.pin (403)
+apx=$(ap_post /api/wan/psks-manage '{"pin":"1234","action":"add","ssid":"S","psk":"p"}')
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap POST psks-manage NO session -> 401 (admin write, pin alone insufficient)" \
+  || bad "5ap pm no-sess write: [$apx]"
+apx=$(ap_post /api/wan/apconfig '{"pin":"1234","ssid":"NewName","psk":"newpsk9x"}')
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap POST apconfig NO session -> 401 (admin write)" || bad "5ap apcfg no-sess: [$apx]"
+apx=$(ap_post /api/wan/psks-manage '{"action":"add","ssid":"S","psk":"p"}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 403*'"pin"'* ]] \
+  && ok "5ap POST psks-manage session, no pin -> 403 pin" || bad "5ap pm no-pin: [$apx]"
+apx=$(ap_post /api/wan/apconfig '{"pin":"9","ssid":"NewName","psk":"newpsk9x"}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 403*'"pin"'* ]] \
+  && ok "5ap POST apconfig session, wrong pin -> 403 pin" || bad "5ap apcfg wrong-pin: [$apx]"
+apx=$(ap_post /api/wan/psks-manage '{"pin":"1234","action":"add","ssid":"S","psk":"p"}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"ok"'* ]] \
+  && ok "5ap POST psks-manage session+pin -> 200 envelope" || bad "5ap pm happy: [$apx]"
+apx=$(ap_post /api/wan/apconfig '{"pin":"1234","ssid":"NewName","psk":"newpsk9x"}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"ok"'* ]] \
+  && ok "5ap POST apconfig session+pin -> 200 envelope" || bad "5ap apcfg happy: [$apx]"
+# (E) /admin route (todo 2): distinct unauthenticated page shell, no-store
+apx=$(ap_get /admin)
+adm_code="${apx%%|*}"; adm_body="${apx#*|}"
+[[ "$adm_code" == "200" ]] \
+  && ok "5ap GET /admin -> 200 (page loads unauthenticated, mirrors /setup)" \
+  || bad "5ap /admin code=$adm_code"
+[[ "$adm_body" == *'id="admin-page"'* ]] \
+  && ok "5ap /admin body carries the admin-page marker" || bad "5ap /admin marker missing"
+apx=$(ap_get /admin/)
+[[ "$apx" == 200* ]] && ok "5ap GET /admin/ (trailing slash) -> 200" || bad "5ap /admin/ code=${apx%%|*}"
+apx=$(ap_get /setup)
+su_body="${apx#*|}"
+[[ "$adm_body" != "$su_body" ]] \
+  && ok "5ap /admin serves content DISTINCT from /setup" || bad "5ap /admin == /setup body?!"
+ahdr=$(curl -s -D - -o /dev/null http://127.0.0.1:18110/admin 2>/dev/null | tr -d '\r')
+echo "$ahdr" | grep -qi '^cache-control: no-store$' \
+  && ok "5ap /admin carries Cache-Control: no-store" || bad "5ap /admin cache hdr: $(echo "$ahdr" | head -3 | tr '\n' '|')"
+# (F) shared per-IP throttle wired to the GET X-Pin path (fresh server: the
+# earlier 403s above already advanced 127.0.0.1's counter on 18110)
+ap_stop
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+ap_start 18111
+apg() { curl -s -o /dev/null -w '%{http_code}' -H "X-Pin: $1" http://127.0.0.1:18111/status 2>/dev/null; }
+apg_codes=""
+for i in 1 2 3 4 5; do apx=$(apg "wrong$i"); apg_codes="$apg_codes$apx "; done
+echo "--- 5 wrong X-Pin GETs: $apg_codes" >> "$APLOG"
+[[ "$apg_codes" == "403 403 403 403 403 " ]] \
+  && ok "5ap 5 wrong X-Pin GETs -> 403 x5 (GET guesses count toward the throttle)" \
+  || bad "5ap wrong-GET codes=[$apg_codes]"
+apx=$(apg wrong6)
+[[ "$apx" == "429" ]] \
+  && ok "5ap 6th wrong X-Pin GET -> 429 (5th-fail tier arms on the GET path)" \
+  || bad "5ap 6th wrong GET code=$apx (want 429)"
+apx=$(apg 1234)
+[[ "$apx" == "429" ]] \
+  && ok "5ap correct X-Pin while blocked -> 429 (throttle precedes pin check)" \
+  || bad "5ap blocked correct GET code=$apx (want 429)"
+sleep 5.5
+apx=$(apg 1234)
+[[ "$apx" == "200" ]] \
+  && ok "5ap correct X-Pin after tier expiry -> 200 (entry reset)" \
+  || bad "5ap post-expiry GET code=$apx (want 200)"
+apx=$(apg wrongafter)
+[[ "$apx" == "403" ]] \
+  && ok "5ap wrong X-Pin after reset -> 403 not 429 (reset proven)" \
+  || bad "5ap post-reset GET code=$apx (want 403)"
+ap_stop
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+grep -q '1234' "$APLOG" && bad "5ap PIN leaked into split transcript (forbidden)" \
+  || ok "5ap transcript free of PIN"
+
 # --- (5x) exclusions + UI contract battery (setup-v2 M2/M3/M6/M7/M1) -----------
 sec "5x. profile exclusions + UI contracts (setup-v2)"
 # (a) cmd_known excludes preconfigured + tr-probe (Brook must survive).
