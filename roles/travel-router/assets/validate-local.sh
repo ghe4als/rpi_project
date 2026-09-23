@@ -201,6 +201,12 @@ jval() { grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$2" 2>/dev/null | 
 # R1: auto -> ethernet-first (durable assert, Momus NOTE 5)
 out=$(run_wan auto "$B/state1.json"); rc=$?
 [[ $rc -eq 0 && "$(jval wan_if "$B/state1.json")" == "eth0" ]] && ok "auto -> wan_if=eth0 (ethernet-first)" || bad "auto preference: rc=$rc wan_if=$(jval wan_if "$B/state1.json")"
+# R1b: fresh state (lan_ip "" -> 192.168.50.1) + IP present -> the status-unit
+# restart MUST be enqueued --no-block: a blocking try-restart here deadlocks
+# (status is After=wan-select.service; live failure on rpi-8e21bb 2026-09-23).
+grep -qF 'systemctl try-restart --no-block travel-router-status.service' "$B/calls.log" \
+  && ok "R1b lan_ip change -> try-restart --no-block (deadlock guard)" \
+  || bad "R1b try-restart missing/--no-block absent: $(grep 'try-restart' "$B/calls.log" | head -1)"
 # R2: unknown value -> ethernet-first fallback
 out=$(run_wan banana "$B/state2.json"); rc=$?
 [[ $rc -eq 0 && "$(jval wan_if "$B/state2.json")" == "eth0" ]] && ok "unknown WAN_PREFER -> ethernet-first" || bad "unknown prefer rc=$rc"

@@ -335,8 +335,14 @@ if [[ "$PREV_LAN" != "$LAN_IP" ]]; then
     fi
   fi
   if [[ "$_lan_ip_ready" -eq 1 ]]; then
-    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP present; try-restart travel-router-status.service"
-    run_or_log systemctl try-restart travel-router-status.service
+    # --no-block is REQUIRED: this runs INSIDE wan-select.service while the
+    # status unit is ordered After=wan-select.service. A blocking try-restart
+    # deadlocks (status start job waits for wan-select's start job, wan-select
+    # waits on systemctl) — seen live 2026-09-23 on rpi-8e21bb: wan-select
+    # stuck "activating" 19min, status down, 30s timer frozen. --no-block
+    # enqueues the job and returns; the start fires when wan-select finishes.
+    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP present; try-restart --no-block travel-router-status.service"
+    run_or_log systemctl try-restart --no-block travel-router-status.service
   else
     log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP NOT yet attached to $LAN_IF; status service starts next 30s tick (avoids Errno 99 bind race)"
   fi
