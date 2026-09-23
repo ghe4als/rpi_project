@@ -38,6 +38,7 @@ NFT="${NFT:-nft}"
 NMCLI="${NMCLI:-nmcli}"
 RFKILL="${RFKILL:-rfkill}"
 TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
+TRAVELROUTER_BLOCK_FILE="${TRAVELROUTER_BLOCK_FILE:-/etc/rpi-project/travel-router/blocked-macs}"
 TRAVELROUTER_WAN_PREFER="${TRAVELROUTER_WAN_PREFER:-auto}"
 TRAVELROUTER_LAN_CIDR="${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}"
 TRAVELROUTER_AP_COUNTRY="${TRAVELROUTER_AP_COUNTRY:-}"
@@ -81,6 +82,26 @@ read_state_json() {
 # iface_addr IF : echo the first IPv4 addr of an interface, or "".
 iface_addr() {
   "$IP" -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1
+}
+
+# blocked_macs_elements : emit the contents of the block file as nft set
+# elements, one per line ("aa:bb:cc:dd:ee:ff"), ready to be joined with
+# ", " into the `elements = { ... }` list of the blocked_macs set.
+# The render must NEVER fail or inject junk because of a bad store, so each
+# line is lowercased, whitespace-trimmed, shape-checked (full 6-group MAC)
+# and deduped; comments/blanks/invalid rows are skipped. Missing file ->
+# empty (no blocks). Same defensive-reader posture as read_state_json.
+blocked_macs_elements() {
+  [[ -r "$TRAVELROUTER_BLOCK_FILE" ]] || return 0
+  local row m seen=""
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    m="$(printf '%s' "$row" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    [[ "$m" =~ ^[0-9a-f]{2}(:[0-9a-f]{2}){5}$ ]] || continue
+    case "|$seen|" in *"|$m|"*) continue ;; esac
+    seen="${seen}|$m"
+    printf '%s\n' "$m"
+  done < "$TRAVELROUTER_BLOCK_FILE"
+  return 0
 }
 
 # --- Load role.env defensively (two-path idiom matches tailscale-up.sh) -----
@@ -207,15 +228,20 @@ run_or_log "$IW" dev "$LAN_IF" set power_save off
 
 # --- (4) Render + load nftables for current WAN state ------------------------
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
+# nftables.conf.tmpl carries a full-line elements marker (see the set decl);
+# this renders it to "aa:bb:cc:dd:ee:ff,12:34:56:78:9a:bc" ("" when empty).
+BLOCKED_ELEM=$(blocked_macs_elements | paste -sd, -)
 if [[ -n "$WAN_IF" ]]; then
   sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e "s|__WAN_INTERFACE__|${WAN_IF}|g" \
+      -e "s|__BLOCKED_MACS_ELEM__|${BLOCKED_ELEM}|g" \
       "$ASSETS/nftables.conf.tmpl" >"$RENDER_TMP"
 else
   # Standalone: replace the WAN placeholder with a literal string, then strip
   # the two WAN-facing rule lines entirely so the file still parses.
   sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e 's|__WAN_INTERFACE__|standalone-none|g' \
+      -e "s|__BLOCKED_MACS_ELEM__|${BLOCKED_ELEM}|g" \
       "$ASSETS/nftables.conf.tmpl" \
     | grep -v 'oifname "standalone-none"' \
         >"$RENDER_TMP"
