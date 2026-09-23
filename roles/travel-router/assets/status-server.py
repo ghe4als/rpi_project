@@ -85,6 +85,13 @@ PORTAL_CONF = os.environ.get(
 KILLSWITCH_FILE = os.environ.get(
     "TRAVELROUTER_KILLSWITCH_FILE",
     "/etc/rpi-project/travel-router/killswitch")
+# SSH-lockdown flag (security plan todo 9). PRESENT = the render drops
+# LAN-side tcp/22; ABSENT = the tcp { 53, 80, 22 } accept renders unchanged
+# (a fresh flash has no file, so the default is unchanged). 0600/root like
+# every other store under this dir.
+SSHLOCKDOWN_FILE = os.environ.get(
+    "TRAVELROUTER_SSHLOCKDOWN_FILE",
+    "/etc/rpi-project/travel-router/ssh-lockdown")
 # Session-salt file (security plan todo 7, force-relogin). Mixed into the
 # session-token fingerprint; regenerated on the Pi at /run/travel-router/
 # (tmpfs — a reboot re-salts and drops stale tokens for free). Rotating this
@@ -264,6 +271,38 @@ def _killswitch_reload():
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
+
+
+def _sshlockdown_on():
+    """SSH-lockdown state (security plan todo 9): the flag file PRESENT means
+    the rendered firewall drops LAN-side tcp/22 (ON); ABSENT means the tcp
+    { 53, 80, 22 } accept renders unchanged (OFF). Absence is the safe
+    default — a fresh flash must keep the pre-lockdown management behavior.
+    Never inverted."""
+    return os.path.exists(SSHLOCKDOWN_FILE)
+
+
+def _sshlockdown_write(on):
+    """Set/clear the SSH-lockdown flag. on=True -> write an empty flag file
+    (0600, same dir tmp + atomic replace); on=False -> remove it. Returns
+    False only when the persist step itself failed (the toggle did not
+    stick)."""
+    if on:
+        try:
+            fd = os.open(SSHLOCKDOWN_FILE + ".tmp",
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.close(fd)
+            os.replace(SSHLOCKDOWN_FILE + ".tmp", SSHLOCKDOWN_FILE)
+        except OSError:
+            return False
+    else:
+        try:
+            os.remove(SSHLOCKDOWN_FILE)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return True
 
 
 def get_status():
@@ -641,6 +680,14 @@ class StatusHandler(BaseHTTPRequestHandler):
                 return
             self._send(200, json.dumps({"on": _killswitch_on()}),
                        "application/json")
+        elif path == "/api/admin/sshlockdown":
+            # Admin bucket (security plan todo 9): session-gated read — the
+            # lockdown state is management-plane metadata a guest must not
+            # learn (same posture as the kill-switch state read).
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({"on": _sshlockdown_on()}),
+                       "application/json")
         elif path == "/api/admin/ap-info":
             # Admin bucket (admin plan todo 4): session-gated read-only probe
             # of the LIVE AP identity (current SSID + broadcast state) via
@@ -888,6 +935,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/wan/forget" or path == "/api/wan/recheck"
                 or path == "/api/admin/killswitch"
                 or path == "/api/admin/rotate-sessions"
+                or path == "/api/admin/sshlockdown"
                 or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
@@ -901,6 +949,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig",
                                "/api/admin/killswitch",
                                "/api/admin/rotate-sessions",
+                               "/api/admin/sshlockdown",
                                "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
@@ -1086,6 +1135,35 @@ class StatusHandler(BaseHTTPRequestHandler):
                 if not rendered:
                     sys.stderr.write(
                         "[status-server] killswitch: wan-select re-render "
+                        "FAILED (applies on the next 30s tick)\n")
+                self._send(200, json.dumps(
+                    {"ok": True, "on": on,
+                     **({} if rendered else {"render": "failed"})}),
+                    "application/json")
+                return
+            elif path == "/api/admin/sshlockdown":
+                # Security plan todo 9. on=True -> write the flag (the render
+                # drops LAN-side tcp/22 and keeps the WAN path untouched);
+                # on=False -> clear it (the default tcp { 53, 80, 22 } accept
+                # returns; absence = safe default, never inverted). Persist
+                # first, then re-render immediately via the same wan-select
+                # seam the killswitch uses so the drop is live now, not on
+                # the next 30s tick. A failed reload does NOT fail the
+                # request: the write stuck and the timer converges — the
+                # response carries a "render" hint instead.
+                on = body.get("on")
+                if not isinstance(on, bool):
+                    self._send(400, json.dumps({"error": "sshlockdown"}),
+                               "application/json")
+                    return
+                if not _sshlockdown_write(on):
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                rendered = _killswitch_reload()
+                if not rendered:
+                    sys.stderr.write(
+                        "[status-server] sshlockdown: wan-select re-render "
                         "FAILED (applies on the next 30s tick)\n")
                 self._send(200, json.dumps(
                     {"ok": True, "on": on,

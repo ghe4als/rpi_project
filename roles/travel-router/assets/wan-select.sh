@@ -48,6 +48,10 @@ TRAVELROUTER_BLOCK_FILE="${TRAVELROUTER_BLOCK_FILE:-/etc/rpi-project/travel-rout
 # ABSENT = internet flows (kill switch OFF). A fresh flash has no file, so
 # the default is always the ONLINE state (never a locked-out router).
 TRAVELROUTER_KILLSWITCH_FILE="${TRAVELROUTER_KILLSWITCH_FILE:-/etc/rpi-project/travel-router/killswitch}"
+# SSH-lockdown flag: PRESENT = drop LAN-side tcp/22 (SSH lockdown ON); ABSENT
+# = the tcp { 53, 80, 22 } accept renders unchanged (lockdown OFF). A fresh
+# flash has no file, so the default is unchanged management behavior.
+TRAVELROUTER_SSHLOCKDOWN_FILE="${TRAVELROUTER_SSHLOCKDOWN_FILE:-/etc/rpi-project/travel-router/ssh-lockdown}"
 TRAVELROUTER_WAN_PREFER="${TRAVELROUTER_WAN_PREFER:-auto}"
 TRAVELROUTER_LAN_CIDR="${TRAVELROUTER_LAN_CIDR:-192.168.50.1/24}"
 TRAVELROUTER_AP_COUNTRY="${TRAVELROUTER_AP_COUNTRY:-}"
@@ -275,6 +279,13 @@ run_or_log "$IW" dev "$LAN_IF" set power_save off
 # unreadable file -> off (internet flows). Absence is the safe default.
 kill_switch_on() { [[ -e "$TRAVELROUTER_KILLSWITCH_FILE" ]]; }
 
+# ssh_lockdown_on : true when the SSH-lockdown flag file exists (lockdown
+# ON -> the LAN tcp/22 accept is stripped and an explicit tcp-22 drop is
+# injected ahead of it). Absent or unreadable file -> off (the default
+# tcp { 53, 80, 22 } accept renders unchanged). Absence is the safe default,
+# never inverted.
+ssh_lockdown_on() { [[ -e "$TRAVELROUTER_SSHLOCKDOWN_FILE" ]]; }
+
 # --- (4) Render + load nftables for current WAN state ------------------------
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
 # nftables.conf.tmpl carries a FULL-LINE elements marker in the blocked_macs
@@ -298,7 +309,26 @@ if [[ -n "$WAN_IF" ]]; then
   else
     KILLSED_EXPR='s|oifname "oifname"|oifname "oifname"|'
   fi
+else
+  :
+fi
+# SSH lockdown: ON -> strip 22 from the LAN tcp accept AND inject an
+# explicit drop ahead of it (nft is first-match: a bare drop line appended
+# AFTER the accept would lose to the accept and silently do nothing). The
+# injection rides the existing accept line (addressed by its raw-placeholder
+# shape, before the generic substitutions) and keeps the template untouched;
+# OFF -> no-op expr. (BSD/GNU sed both take a literal backslash + newline as
+# the s replacement.)
+if ssh_lockdown_on; then
+  SSHSED_EXPR='/iifname "__LAN_INTERFACE__" tcp dport { 53, 80, 22 } accept$/s|iifname "__LAN_INTERFACE__" tcp dport { 53, 80, 22 } accept|iifname "__LAN_INTERFACE__" tcp dport 22 drop\
+        iifname "__LAN_INTERFACE__" tcp dport { 53, 80 } accept|'
+  log "ssh lockdown ON (flag present): LAN tcp/22 dropped before the status accept"
+else
+  SSHSED_EXPR='s|sshlockdown-nop|sshlockdown-nop|'
+fi
+if [[ -n "$WAN_IF" ]]; then
   sed -e "$KILLSED_EXPR" \
+      -e "$SSHSED_EXPR" \
       -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e "s|__WAN_INTERFACE__|${WAN_IF}|g" \
       -e "$BLOCKED_SED_EXPR" \
@@ -307,8 +337,11 @@ if [[ -n "$WAN_IF" ]]; then
         >"$RENDER_TMP"
 else
   # Standalone: replace the WAN placeholder with a literal string, then strip
-  # the two WAN-facing rule lines entirely so the file still parses.
-  sed -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
+  # the two WAN-facing rule lines entirely so the file still parses. The
+  # lockdown expr must run BEFORE the placeholder substitutions (after those,
+  # the raw-placeholder pattern no longer matches).
+  sed -e "$SSHSED_EXPR" \
+      -e "s|__LAN_INTERFACE__|${LAN_IF}|g" \
       -e 's|__WAN_INTERFACE__|standalone-none|g' \
       -e "$BLOCKED_SED_EXPR" \
       "$ASSETS/nftables.conf.tmpl" \
