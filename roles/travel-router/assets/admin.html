@@ -1,14 +1,711 @@
 <!DOCTYPE html>
+<!--
+  Travel-router admin page — ADMIN surface (admin split, admin plan todo 6).
+  Served by status-server.py at /admin from this file's installed location.
+  Mobile-first, zero external requests (the device may be offline by
+  design), vanilla JS.
+
+  Credential model (admin split todos 1/4): this page trades the admin PSK
+  for an X-Session token (POST /api/auth/login {"psk"}), stored in
+  localStorage "admin-session". Admin reads need the session only
+  (ap-info, psks-manage GET); admin writes additionally carry the setup PIN
+  in the JSON body. /status is a CLIENT endpoint — sessions do NOT unlock
+  it — so every /status fetch (clients list, AP-restart poll) attaches
+  X-Pin from the PIN field. A 401 {"error":"auth"} on any admin call
+  (missing/expired token, or a PSK/salt rotation) drops back to the login
+  panel instead of leaving a dead screen.
+
+  AP-settings preview: "Random name" / "Random password" POST
+  /api/admin/apconfig/preview (session + pin) and FILL the SSID/PSK fields
+  with the returned values, so they can be written down BEFORE save.
+  Save -> POST /api/wan/apconfig {pin, ssid?, psk?, hidden?}; the radio
+  drops mid-restart, so the response is never treated as proof — the page
+  polls GET /status (X-Pin) every 2s up to 30s and reveals the final SSID
+  (localStorage "admin-last-ssid").
+
+  RENDERING RULE (greppable, mirrored from setup.html): this page builds
+  DOM exclusively with createElement + textContent. HTML string-injection
+  sinks (inner-HTML / insert-Adjacent-HTML / document-dot-write) are
+  FORBIDDEN — SSIDs and error text come from outside.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Travel Router — Admin</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         background: #101418; color: #e8eaed; }
+  main { max-width: 30rem; margin: 0 auto; }
+  h1 { font-size: 1.25rem; }
+  section { background: #1a2027; border-radius: 10px; padding: 0.9rem;
+            margin-bottom: 0.9rem; }
+  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 2px 8px 2px 0; }
+  .label { font-weight: 600; }
+  input, button { font-size: 1rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin: 0.3rem 0;
+          border-radius: 6px; border: 1px solid #3a434e; background: #101418;
+          color: #e8eaed; }
+  button { padding: 0.55rem 1rem; margin: 0.3rem 0.3rem 0.3rem 0;
+           border-radius: 8px; border: 0; background: #2d7ff9; color: white;
+           font-weight: 600; }
+  button.secondary { background: #3a434e; }
+  button:disabled { opacity: 0.5; }
+  .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
+  .warn { color: #ffb84d; }
+  .ok { color: #5dd879; }
+
+  .netcard { background: #222a33; border-radius: 8px; padding: 0.7rem 0.8rem;
+             margin: 0.4rem 0; }
+  .netcard .ssid { font-weight: 700; font-size: 1.02rem; word-break: break-all; }
+  .netcard .meta { font-size: 0.85rem; color: #9aa5b1; margin-top: 0.25rem;
+                   display: flex; align-items: center; flex-wrap: wrap;
+                   gap: 0.4rem 0.6rem; }
+  .badge { display: inline-block; font-size: 0.72rem; padding: 1px 6px;
+           border-radius: 999px; background: #2d7ff9; color: white;
+           font-weight: 600; letter-spacing: 0.02em; }
+  .badge.auto { background: #2d6f4d; color: #d6ffe6; }
+  .netcard .cardbtns { margin-top: 0.5rem; display: flex; flex-wrap: wrap;
+                       gap: 0.35rem; }
+  .netcard .cardmsg { min-height: 1.1em; font-size: 0.82rem; color: #9aa5b1;
+                      margin-top: 0.35rem; word-break: break-all; }
+  .netcard .cardmsg.warn { color: #ffb84d; }
+  .netcard .cardmsg.ok { color: #5dd879; }
+  .dim { color: #6b7682; font-style: italic; }
+  .notedown { font-size: 0.85rem; color: #ffb84d; word-break: break-all;
+              margin: 0.4rem 0; }
+
+  dialog { border: 1px solid #3a434e; border-radius: 10px; background: #1a2027;
+           color: #e8eaed; padding: 1rem; max-width: 26rem; width: 92%; }
+  dialog::backdrop { background: rgba(4, 8, 12, 0.7); }
+  .drow { margin: 0.4rem 0; }
+  .dmsg { min-height: 1.2em; font-size: 0.85rem; color: #9aa5b1;
+          word-break: break-all; }
+  .dmsg.warn { color: #ffb84d; }
+  .dmsg.ok { color: #5dd879; }
+</style>
 </head>
 <body>
 <main id="admin-page">
-<h1>Travel router admin</h1>
-<p>Administrator console (under construction).</p>
+  <h1>Travel router admin</h1>
+
+  <section id="login-section">
+    <h2>Admin login</h2>
+    <label for="admin-psk">Admin password</label>
+    <input id="admin-psk" type="password" autocomplete="off">
+    <p><button id="login-btn" type="button">Log in</button></p>
+    <p class="msg" id="login-msg"></p>
+  </section>
+
+  <section id="pin-section">
+    <h2>PIN</h2>
+    <label for="pin">Setup PIN</label>
+    <input id="pin" inputmode="numeric" autocomplete="off">
+    <p class="msg" id="pin-msg"></p>
+  </section>
+
+  <section id="clients-section">
+    <h2>Connected clients</h2>
+    <div id="clients-list"></div>
+    <p class="msg" id="clients-msg"></p>
+  </section>
+
+  <section id="pskmanage-section">
+    <h2>Saved passwords</h2>
+    <p class="msg" id="pskmanage-msg"></p>
+    <div id="pskmanage-list"></div>
+    <label for="pm-psk">Add a default password (tried for any network)</label>
+    <input id="pm-psk" type="password" autocomplete="off">
+    <p>
+      <button id="pm-add" type="button">Add default password</button>
+      <button id="pm-refresh" type="button" class="secondary">Refresh list</button>
+    </p>
+  </section>
+
+  <section id="ap-section">
+    <h2>AP settings</h2>
+    <table><tbody id="ap-info-rows"></tbody></table>
+    <label for="ap-ssid">New network name (SSID, optional)</label>
+    <input id="ap-ssid" autocomplete="off" maxlength="32">
+    <p>
+      <button id="ap-random" type="button">Random name</button>
+      <button id="ap-random-psk" type="button">Random password</button>
+    </p>
+    <label for="ap-psk">New password (8-63 chars, optional)</label>
+    <input id="ap-psk" type="password" autocomplete="off">
+    <p>
+      <label for="ap-hidden">
+        <input id="ap-hidden" type="checkbox">
+        Broadcast this SSID (uncheck to hide)
+      </label>
+    </p>
+    <p class="dmsg" id="ap-hidden-warn" style="display:none">
+      Hiding stops the beacon — after the AP restarts, re-add the network manually; hidden networks never appear in scans.
+    </p>
+    <p class="notedown" id="ap-notedown" style="display:none"></p>
+    <p>
+      <button id="ap-save" type="button">Save &amp; restart AP</button>
+    </p>
+    <p class="dmsg" id="ap-msg"></p>
+  </section>
 </main>
+
+<dialog id="ap-confirm">
+  <h2>Confirm AP change</h2>
+  <div class="drow" id="ap-confirm-text"></div>
+  <p>
+    <button id="ap-confirm-save" type="button">I wrote these down — save</button>
+    <button id="ap-confirm-cancel" type="button" class="secondary">Cancel</button>
+  </p>
+  <p class="dmsg" id="ap-confirm-msg"></p>
+</dialog>
+
+<script>
+"use strict";
+// DOM built with createElement/textContent only (see file-header rule).
+
+function cellRow(tbody, label, value) {
+  var tr = document.createElement("tr");
+  var l = document.createElement("td");
+  l.className = "label";
+  l.textContent = label;
+  var v = document.createElement("td");
+  v.textContent = value;
+  tr.appendChild(l); tr.appendChild(v);
+  tbody.appendChild(tr);
+}
+
+function setMsg(id, text, cls) {
+  var el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "msg" + (cls ? " " + cls : "");
+}
+
+function dMsg(id, text, cls) {
+  var el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "dmsg" + (cls ? " " + cls : "");
+}
+
+// --- PIN entry (admin-page idiom; localStorage key "admin-pin" — the
+// client page's "setup-pin" key is never touched) --------------------------
+function pinOrNull() {
+  var pin = document.getElementById("pin").value.trim();
+  if (pin) { try { localStorage.setItem("admin-pin", pin); } catch (e) {} }
+  return pin;
+}
+
+function savedPin() {
+  try { return localStorage.getItem("admin-pin") || ""; } catch (e) { return ""; }
+}
+
+function currentPin() {
+  return pinOrNull() || savedPin();
+}
+
+// --- session gate ----------------------------------------------------------
+// The admin PSK trades for an X-Session token stored in localStorage
+// ("admin-session"); any gated 401 {"error":"auth"} drops back to the login
+// panel through the shared handleAuth path (graceful even across a
+// post-rename salt rotation — security plan todo 10/11).
+var GATE_IDS = ["pin-section", "pskmanage-section", "ap-section",
+                "clients-section"];
+
+function sessToken() {
+  try { return localStorage.getItem("admin-session") || ""; } catch (e) { return ""; }
+}
+
+function showLogin(on) {
+  document.getElementById("login-section").style.display = on ? "" : "none";
+  GATE_IDS.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.style.display = on ? "none" : ""; }
+  });
+}
+
+function handleAuth() {
+  try { localStorage.removeItem("admin-session"); } catch (e) {}
+  showLogin(true);
+  setMsg("login-msg", "session expired — log in again", "warn");
+}
+
+// Every gated fetch funnels through sessionFetch: X-Session rides along, and
+// a 401 {"error":"auth"} answer drops the UI back to the login panel.
+function sessionFetch(url, opts) {
+  var o = opts || {};
+  var h = o.headers || {};
+  var t = sessToken();
+  if (t && !h["X-Session"]) { h["X-Session"] = t; }
+  o.headers = h;
+  return fetch(url, o).then(function (r) {
+    if (r.status === 401) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (d && d.error === "auth") { handleAuth(); }
+        return r;
+      });
+    }
+    return r;
+  });
+}
+
+function api(path, body) {
+  var opts = {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json",
+               "X-Requested-With": "XMLHttpRequest" },
+    body: JSON.stringify(body || {})
+  };
+  return sessionFetch(path, opts);
+}
+
+function handleErr(prefix) {
+  return function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (r.status === 403 && d.error === "pin") {
+        throw new Error("PIN required — enter it in the PIN section (ask the router owner if unknown)");
+      }
+      throw new Error(prefix + " (HTTP " + r.status + ")");
+    });
+  };
+}
+
+// /status is a CLIENT endpoint: X-Pin is the credential — a session neither
+// unlocks nor blocks it. Without a PIN saved yet the fetch is skipped
+// entirely: an empty X-Pin counts as a wrong-PIN attempt and feeds the
+// per-IP fail counter.
+function statusFetch() {
+  var pin = currentPin();
+  if (!pin) { return Promise.resolve(null); }
+  return fetch("/status", { cache: "no-store", headers: { "X-Pin": pin } })
+    .then(function (r) {
+      if (r.status === 401) { return null; }   // PIN required
+      if (r.status === 403) { return null; }   // wrong PIN (throttled)
+      return r.json();
+    })
+    .catch(function () { return null; });
+}
+
+// --- Connected clients (from GET /status clients_list, X-Pin) --------------
+function renderClients(list) {
+  var wrap = document.getElementById("clients-list");
+  while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+  if (list === null) {
+    setMsg("clients-msg", "PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  if (!list || !list.length) {
+    setMsg("clients-msg", "no clients connected");
+    return;
+  }
+  setMsg("clients-msg", "");
+  list.forEach(function (c) {
+    if (!c) { return; }
+    var item = document.createElement("div");
+    item.className = "netcard";
+    // data-mac carries the RAW MAC for the later block/unblock wiring
+    // (security plan todo 11) — never re-derived from rendered text.
+    item.dataset.mac = c.mac || "";
+    var name = document.createElement("div");
+    name.className = "ssid";
+    name.textContent = c.hostname || "(unnamed)";
+    item.appendChild(name);
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var ip = document.createElement("span");
+    ip.textContent = c.ip || "?";
+    meta.appendChild(ip);
+    var mac = document.createElement("span");
+    mac.textContent = c.mac || "?";
+    meta.appendChild(mac);
+    if (c.associated) { meta.appendChild(badge("associated", "auto")); }
+    item.appendChild(meta);
+    wrap.appendChild(item);
+  });
+}
+
+function badge(text, cls) {
+  var b = document.createElement("span");
+  b.className = "badge" + (cls ? " " + cls : "");
+  b.textContent = text;
+  return b;
+}
+
+var LAST_STATUS = null;
+function refreshStatusLast() { return LAST_STATUS; }
+
+function refreshStatus() {
+  return statusFetch().then(function (d) {
+    if (!d) { return; }
+    LAST_STATUS = d;
+    renderClients(d.clients_list || []);
+    var msg = document.getElementById("clients-msg");
+    if (d.ap_state === "down") {
+      msg.textContent = "AP is restarting…";
+      msg.className = "msg warn";
+    } else {
+      msg.className = "msg";
+    }
+  });
+}
+
+// --- AP settings ------------------------------------------------------------
+// Current SSID + Broadcast checkbox preloaded from GET /api/admin/ap-info
+// (session-only). The degraded empty state {"ap_ssid":"","hidden":false}
+// renders as blank Current + checked Broadcast — never a broken dialog.
+function apMsg(text, cls) { dMsg("ap-msg", text, cls); }
+
+function refreshApInfo() {
+  sessionFetch("/api/admin/ap-info", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (!d) { return; }
+      var tbody = document.getElementById("ap-info-rows");
+      while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+      cellRow(tbody, "Current SSID", d.ap_ssid || "");
+      // hidden:false => broadcasting => checked; hidden:true => unchecked
+      document.getElementById("ap-hidden").checked = !d.hidden;
+      document.getElementById("ap-hidden-warn").style.display =
+        d.hidden ? "" : "none";
+    })
+    .catch(function () {
+      // A read failure must never break the dialog — degrade to blank.
+      var tbody = document.getElementById("ap-info-rows");
+      while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+      cellRow(tbody, "Current SSID", "(unknown)");
+    });
+}
+
+// Random preview: POST /api/admin/apconfig/preview (session + pin) fills
+// BOTH fields with returned values; press again to regenerate. Buttons are
+// disabled while in flight; 401 drops to login via sessionFetch.
+function previewFill(kind) {
+  var pin = currentPin();
+  if (!pin) {
+    apMsg("PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  var btns = [document.getElementById("ap-random"),
+              document.getElementById("ap-random-psk")];
+  btns.forEach(function (b) { b.disabled = true; });
+  apMsg("generating…", "");
+  api("/api/admin/apconfig/preview", { pin: pin }).then(function (r) {
+    if (r.status === 403) { return handleErr("preview denied")(r); }
+    if (r.status === 401) { throw new Error("preview denied (HTTP 401)"); }
+    return r.json();
+  }).then(function (d) {
+    if (!d || !d.ssid || !d.psk) { throw new Error("preview failed"); }
+    // kind picks which half regenerates; the other keeps its current value
+    // (or gains its counterpart on the first press — both end up filled).
+    var ssidEl = document.getElementById("ap-ssid");
+    var pskEl = document.getElementById("ap-psk");
+    if (kind === "ssid" || !ssidEl.value) { ssidEl.value = d.ssid; }
+    if (kind === "psk" || !pskEl.value) { pskEl.value = d.psk; }
+    apMsg("values generated — write them down before saving", "warn");
+  }).catch(function (e) {
+    apMsg(String(e.message || e), "warn");
+  }).then(function () {
+    btns.forEach(function (b) { b.disabled = false; });
+  }, function () {
+    btns.forEach(function (b) { b.disabled = false; });
+  });
+}
+
+document.getElementById("ap-random").addEventListener("click", function () {
+  previewFill("ssid");
+});
+document.getElementById("ap-random-psk").addEventListener("click", function () {
+  previewFill("psk");
+});
+
+document.getElementById("ap-hidden").addEventListener("change", function () {
+  document.getElementById("ap-hidden-warn").style.display =
+    this.checked ? "none" : "";
+});
+
+// The "write these down" line appears once a generated value is in play.
+function notedownSsid() {
+  return document.getElementById("ap-ssid").value.trim();
+}
+function notedownPsk() {
+  return document.getElementById("ap-psk").value;
+}
+function updateNotedown() {
+  var ssid = notedownSsid();
+  var psk = notedownPsk();
+  var note = document.getElementById("ap-notedown");
+  if (ssid || psk) {
+    note.style.display = "";
+    note.textContent = "AP will rename to '" + (ssid || "(current SSID)") +
+      "' with password '" + (psk || "(current password)") +
+      "' — write these down.";
+  } else {
+    note.style.display = "none";
+    note.textContent = "";
+  }
+}
+document.getElementById("ap-ssid").addEventListener("input", updateNotedown);
+document.getElementById("ap-psk").addEventListener("input", updateNotedown);
+
+// Save flow: only changed/entered fields are sent; `hidden` always rides
+// along as the checkbox state. Both-empty + unchanged-broadcast is blocked
+// (mirrors the old ap-save validation). A generated value in play requires
+// the explicit confirm step (<dialog> "I wrote these down").
+var PENDING_SAVE = null;
+document.getElementById("ap-save").addEventListener("click", function () {
+  var pin = currentPin();
+  if (!pin) { apMsg("PIN required — enter it in the PIN section", "warn"); return; }
+  var ssidVal = notedownSsid();
+  var pskVal = notedownPsk();
+  var hiddenChecked = document.getElementById("ap-hidden").checked;
+  var body = { pin: pin };
+  if (ssidVal) { body.ssid = ssidVal; }
+  if (pskVal) { body.psk = pskVal; }
+  body.hidden = hiddenChecked;
+  if (!body.ssid && !body.psk) {
+    apMsg("enter a new SSID and/or password", "warn");
+    return;
+  }
+  var genPlay = ssidVal !== "" || pskVal !== "";
+  if (!genPlay) {
+    doApSave(body);
+    return;
+  }
+  // Explicit confirm: second click of Save opens the dialog; "I wrote these
+  // down" commits. The previewed PSK lives ONLY in the field + this dialog
+  // text (never stored, never logged).
+  var text = document.getElementById("ap-confirm-text");
+  while (text.firstChild) { text.removeChild(text.firstChild); }
+  var line = document.createElement("span");
+  line.textContent = "AP will rename to '" + (ssidVal || "(current SSID)") +
+    "' with password '" + (pskVal || "(current password)") +
+    "'. Connected devices drop and must rejoin.";
+  text.appendChild(line);
+  setMsg("ap-confirm-msg", "");
+  document.getElementById("ap-confirm").showModal();
+});
+
+document.getElementById("ap-confirm-cancel").addEventListener("click", function () {
+  document.getElementById("ap-confirm").close();
+});
+
+document.getElementById("ap-confirm-save").addEventListener("click", function () {
+  var pin = currentPin();
+  if (!pin) {
+    setMsg("ap-confirm-msg", "PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  var ssidVal = notedownSsid();
+  var pskVal = notedownPsk();
+  var body = { pin: pin };
+  if (ssidVal) { body.ssid = ssidVal; }
+  if (pskVal) { body.psk = pskVal; }
+  body.hidden = document.getElementById("ap-hidden").checked;
+  document.getElementById("ap-confirm").close();
+  doApSave(body);
+});
+
+// The radio drops mid-restart: the response is NOT proof. Capture the
+// (possibly generated) final SSID BEFORE the restart, store it under
+// "admin-last-ssid", then poll GET /status (X-Pin) every 2s up to 30s and
+// reveal the rejoin message when the AP answers again.
+function doApSave(body) {
+  busy(true);
+  apMsg("reconfiguring — reconnecting…", "");
+  api("/api/wan/apconfig", body).then(function (r) {
+    if (r.status === 403) { return handleErr("apconfig denied")(r); }
+    if (r.status === 400) {
+      return r.json().then(function (e) {
+        throw new Error("rejected: " + (e.error || "bad request"));
+      });
+    }
+    return r.json();
+  }).then(function (d) {
+    if (d && d.ok === false) {
+      throw new Error((d.log && d.log.join(" ")) || "failed");
+    }
+    var finalSsid = "";
+    if (d && d.ssid) { finalSsid = d.ssid; }
+    else if (body.ssid) { finalSsid = body.ssid; }
+    if (finalSsid) {
+      try { localStorage.setItem("admin-last-ssid", finalSsid); } catch (e) {}
+    }
+    var waited = 0;
+    var poll = setInterval(function () {
+      waited += 2000;
+      statusFetch().then(function (d) {
+        if (d) {
+          clearInterval(poll);
+          if (finalSsid) {
+            apMsg("AP reconfigured as '" + finalSsid +
+                  "' — join the new network, then reopen this page", "ok");
+          } else {
+            apMsg("AP reconfigured", "ok");
+          }
+          refreshApInfo();
+          refreshStatus();
+        } else if (waited >= 30000) {
+          clearInterval(poll);
+          apMsg("no response after 30s — check the router", "warn");
+        }
+      });
+    }, 2000);
+  }).catch(function (e) {
+    apMsg(String(e.message || e), "warn");
+  }).then(function () { busy(false); },
+          function () { busy(false); });
+}
+
+function busy(on) {
+  ["ap-save", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
+   "login-btn"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.disabled = on; }
+  });
+}
+
+// --- Saved-passwords manager (ported from pre-strip setup.html pm-*) --------
+// Lists store rows via GET /api/wan/psks-manage (session-only — the admin
+// GET does NOT need X-Pin) and mutates via POST {pin, action, ...}. PSK
+// values never come back — only type/index/ssid are rendered.
+function psksManage(action, extra) {
+  var pin = currentPin();
+  if (!pin) { return Promise.reject(new Error("PIN required — enter it in the PIN section")); }
+  var body = extra || {};
+  body.pin = pin;
+  body.action = action;
+  busy(true);
+  setMsg("pskmanage-msg", "working…");
+  return api("/api/wan/psks-manage", body).then(function (r) {
+    if (r.status === 403) { return handleErr("psks-manage denied")(r); }
+    return r.json();
+  }).then(function (d) {
+    setMsg("pskmanage-msg", "done", "ok");
+    return d;
+  }).catch(function (e) {
+    setMsg("pskmanage-msg", String(e.message || e), "warn");
+    return null;
+  }).then(function (d) { busy(false); return d; },
+          function () { busy(false); return null; });
+}
+
+function renderPskRows(rows) {
+  var list = document.getElementById("pskmanage-list");
+  while (list.firstChild) { list.removeChild(list.firstChild); }
+  if (!rows || !rows.length) {
+    setMsg("pskmanage-msg", "no saved passwords yet");
+    return;
+  }
+  setMsg("pskmanage-msg", "");
+  rows.forEach(function (row) {
+    var item = document.createElement("div");
+    item.className = "netcard";
+    var label = document.createElement("div");
+    label.className = "ssid";
+    // TYPE/SSID only — the PSK column is discarded server-side and is
+    // never requested, rendered, or stored here.
+    label.textContent = (row.type === "d" ? "default" : "network: " + (row.ssid || "?"))
+      + "  (row " + row.index + ")";
+    item.appendChild(label);
+    var del = document.createElement("button");
+    del.type = "button";
+    del.className = "secondary";
+    del.textContent = "Remove";
+    del.addEventListener("click", function () {
+      psksManage("del", { n: row.index }).then(function (d) {
+        if (d) { refreshPskManage(); }
+      });
+    });
+    item.appendChild(del);
+    list.appendChild(item);
+  });
+}
+
+function refreshPskManage() {
+  sessionFetch("/api/wan/psks-manage", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401) { return null; }
+      if (r.status === 403) { return null; }
+      return r.json();
+    })
+    .then(function (d) { if (d) { renderPskRows(d.rows || []); } })
+    .catch(function () {
+      setMsg("pskmanage-msg", "saved passwords unavailable", "warn");
+    });
+}
+
+document.getElementById("pm-refresh").addEventListener("click", refreshPskManage);
+
+document.getElementById("pm-add").addEventListener("click", function () {
+  var psk = document.getElementById("pm-psk").value;
+  if (!psk) { setMsg("pskmanage-msg", "enter a password to add", "warn"); return; }
+  psksManage("add-default", { psk: psk }).then(function (d) {
+    if (d) { document.getElementById("pm-psk").value = ""; refreshPskManage(); }
+  });
+});
+
+// --- Login wiring ------------------------------------------------------------
+function doLogin() {
+  var psk = document.getElementById("admin-psk").value;
+  if (!psk) { setMsg("login-msg", "enter the admin password", "warn"); return; }
+  setMsg("login-msg", "logging in…");
+  fetch("/api/auth/login", {
+    method: "POST", cache: "no-store",
+    headers: { "Content-Type": "application/json",
+               "X-Requested-With": "XMLHttpRequest" },
+    body: JSON.stringify({ psk: psk })
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (r.status === 200 && d.token) {
+        try { localStorage.setItem("admin-session", d.token); } catch (e) {}
+        document.getElementById("admin-psk").value = "";
+        showLogin(false);
+        setMsg("login-msg", "");
+        refreshApInfo();
+        refreshPskManage();
+        refreshStatus();
+      } else if (r.status === 429) {
+        setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
+      } else {
+        setMsg("login-msg", "login failed — wrong admin password?", "warn");
+      }
+    });
+  }).catch(function () {
+    setMsg("login-msg", "login request failed", "warn");
+  });
+}
+document.getElementById("login-btn").addEventListener("click", doLogin);
+document.getElementById("admin-psk").addEventListener("keydown", function (ev) {
+  if (ev.key === "Enter") { doLogin(); }
+});
+
+(function initSession() {
+  var saved = savedPin();
+  if (saved) { document.getElementById("pin").value = saved; }
+  if (!sessToken()) { showLogin(true); return; }
+  // A saved token may be expired (or minted under a previous admin PSK /
+  // pre-rename salt) — validate it once against a gated read; a 401 drops
+  // back to the login panel.
+  sessionFetch("/api/admin/ap-info", { cache: "no-store" }).then(function (r) {
+    if (r.status === 401) { return; }
+    showLogin(false);
+    refreshApInfo();
+    refreshPskManage();
+    refreshStatus();
+  }).catch(function () {
+    showLogin(true);
+  });
+})();
+
+setInterval(function () {
+  if (sessToken() && currentPin()) { refreshStatus(); }
+}, 4000);
+</script>
 </body>
 </html>
