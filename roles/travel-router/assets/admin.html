@@ -23,6 +23,15 @@
   polls GET /status (X-Pin) every 2s up to 30s and reveals the final SSID
   (localStorage "admin-last-ssid").
 
+  Security features (security plan todos 3-10, wired by todo 11): blocked
+  devices + per-client Block, kill-switch toggle, DNS hardening (domains +
+  local-only), force-relogin (rotate-sessions), audit table, SSH lockdown
+  toggle, stealth self-check. Reads are session-gated GETs; every write
+  rides the session + PIN + CSRF idiom through api() and rotates the
+  shared reads on success. rotate-sessions invalidates THIS page's own
+  token by design (todo 7) — the resulting 401 drops to the login panel
+  with a "sessions rotated" message via handleAuth.
+
   RENDERING RULE (greppable, mirrored from setup.html): this page builds
   DOM exclusively with createElement + textContent. HTML string-injection
   sinks (inner-HTML / insert-Adjacent-HTML / document-dot-write) are
@@ -111,6 +120,70 @@
     <h2>Connected clients</h2>
     <div id="clients-list"></div>
     <p class="msg" id="clients-msg"></p>
+  </section>
+
+  <section id="blocked-section">
+    <h2>Blocked devices</h2>
+    <div id="blocked-list"></div>
+    <p class="msg" id="blocked-msg"></p>
+  </section>
+
+  <section id="killswitch-section">
+    <h2>Internet kill switch</h2>
+    <p>
+      <label for="killswitch-toggle">
+        <input id="killswitch-toggle" type="checkbox">
+        Cut internet — clients lose WAN but the router page stays up
+      </label>
+    </p>
+    <p class="msg" id="killswitch-msg"></p>
+  </section>
+
+  <section id="dns-section">
+    <h2>DNS hardening</h2>
+    <p>
+      <label for="dns-local-toggle">
+        <input id="dns-local-toggle" type="checkbox">
+        Local-only DNS (no upstream forwarding)
+      </label>
+    </p>
+    <div id="dns-list"></div>
+    <label for="dns-domain">Domain to block (e.g. tracker.example.com)</label>
+    <input id="dns-domain" autocomplete="off" spellcheck="false">
+    <p>
+      <button id="dns-add" type="button">Block domain</button>
+    </p>
+    <p class="msg" id="dns-msg"></p>
+  </section>
+
+  <section id="audit-section">
+    <h2>Audit (recent auth failures)</h2>
+    <table><tbody id="audit-rows"></tbody></table>
+    <p class="msg" id="audit-msg"></p>
+  </section>
+
+  <section id="sessions-section">
+    <h2>Sessions</h2>
+    <p>
+      <button id="rotate-sessions-btn" type="button">Force relogin</button>
+    </p>
+    <p class="dmsg" id="sessions-msg"></p>
+  </section>
+
+  <section id="sshlockdown-section">
+    <h2>SSH lockdown</h2>
+    <p>
+      <label for="sshlockdown-toggle">
+        <input id="sshlockdown-toggle" type="checkbox">
+        Drop LAN-side SSH (tcp/22) — USB-Ethernet recovery always stays up
+      </label>
+    </p>
+    <p class="msg" id="sshlockdown-msg"></p>
+  </section>
+
+  <section id="stealth-section">
+    <h2>Stealth</h2>
+    <p class="msg" id="stealth-msg"></p>
   </section>
 
   <section id="pskmanage-section">
@@ -212,7 +285,9 @@ function currentPin() {
 // panel through the shared handleAuth path (graceful even across a
 // post-rename salt rotation — security plan todo 10/11).
 var GATE_IDS = ["pin-section", "pskmanage-section", "ap-section",
-                "clients-section"];
+                "clients-section", "blocked-section", "killswitch-section",
+                "dns-section", "audit-section", "sessions-section",
+                "sshlockdown-section", "stealth-section"];
 
 function sessToken() {
   try { return localStorage.getItem("admin-session") || ""; } catch (e) { return ""; }
@@ -290,6 +365,8 @@ function statusFetch() {
 }
 
 // --- Connected clients (from GET /status clients_list, X-Pin) --------------
+// A blocked MAC (from GET /api/admin/blocked) renders a "blocked" badge and
+// no Block button on its client row — the row action is Unblock (below).
 function renderClients(list) {
   var wrap = document.getElementById("clients-list");
   while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
@@ -306,8 +383,8 @@ function renderClients(list) {
     if (!c) { return; }
     var item = document.createElement("div");
     item.className = "netcard";
-    // data-mac carries the RAW MAC for the later block/unblock wiring
-    // (security plan todo 11) — never re-derived from rendered text.
+    // data-mac carries the RAW MAC for the block/unblock wiring — never
+    // re-derived from rendered text.
     item.dataset.mac = c.mac || "";
     var name = document.createElement("div");
     name.className = "ssid";
@@ -322,9 +399,30 @@ function renderClients(list) {
     mac.textContent = c.mac || "?";
     meta.appendChild(mac);
     if (c.associated) { meta.appendChild(badge("associated", "auto")); }
+    if (c.mac && isBlocked(c.mac)) { meta.appendChild(badge("blocked", "warn")); }
     item.appendChild(meta);
+    var cardbtns = document.createElement("div");
+    cardbtns.className = "cardbtns";
+    if (c.mac && !isBlocked(c.mac)) {
+      cardbtns.appendChild(rowBtn("Block", false, function () {
+        blockPost("add", c.mac, "blocked-msg", function () {
+          refreshBlocked();
+          refreshStatus();
+        });
+      }));
+    }
+    item.appendChild(cardbtns);
     wrap.appendChild(item);
   });
+}
+
+function rowBtn(text, secondary, onClick) {
+  var b = document.createElement("button");
+  b.type = "button";
+  if (secondary) { b.className = "secondary"; }
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
 }
 
 function badge(text, cls) {
@@ -336,6 +434,299 @@ function badge(text, cls) {
 
 var LAST_STATUS = null;
 function refreshStatusLast() { return LAST_STATUS; }
+
+// --- Blocked devices (security plan todo 3; GET/POST /api/admin/blocked) ---
+// The block set rides along on every /status poll so the client rows always
+// reflect it (badge vs Block button).
+var BLOCKED_SET = {};
+var BLOCKED_ORDER = [];
+
+function isBlocked(mac) {
+  return Object.prototype.hasOwnProperty.call(BLOCKED_SET, (mac || "").toLowerCase());
+}
+
+function renderBlocked() {
+  var wrap = document.getElementById("blocked-list");
+  while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+  if (!BLOCKED_ORDER.length) {
+    setMsg("blocked-msg", "no blocked devices");
+    return;
+  }
+  setMsg("blocked-msg", "");
+  BLOCKED_ORDER.forEach(function (mac) {
+    var item = document.createElement("div");
+    item.className = "netcard";
+    var label = document.createElement("div");
+    label.className = "ssid";
+    label.textContent = mac;
+    item.appendChild(label);
+    var cardbtns = document.createElement("div");
+    cardbtns.className = "cardbtns";
+    cardbtns.appendChild(rowBtn("Unblock", true, function () {
+      blockPost("del", mac, "blocked-msg", function () {
+        refreshBlocked();
+        refreshStatus();
+      });
+    }));
+    item.appendChild(cardbtns);
+    wrap.appendChild(item);
+  });
+}
+
+function refreshBlocked() {
+  return sessionFetch("/api/admin/blocked", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (!d) { return; }
+      BLOCKED_SET = {};
+      BLOCKED_ORDER = d.blocked || [];
+      BLOCKED_ORDER.forEach(function (m) { BLOCKED_SET[m] = true; });
+      renderBlocked();
+      refreshStatus();
+    })
+    .catch(function () {
+      setMsg("blocked-msg", "blocked list unavailable", "warn");
+    });
+}
+
+// Shared block/unblock POST: pin gate client-side, then the admin idiom.
+// 404 = "not blocked" (a del raced with another device) — shown, not thrown.
+function blockPost(action, mac, msgId, done) {
+  var pin = currentPin();
+  if (!pin) { setMsg(msgId, "PIN required — enter it in the PIN section", "warn"); return; }
+  busy(true);
+  return api("/api/admin/blocked", { pin: pin, action: action, mac: mac })
+    .then(function (r) {
+      if (r.status === 403) { return handleErr("block denied")(r); }
+      if (r.status === 404) { throw new Error("MAC is not blocked"); }
+      return r.json();
+    })
+    .then(function (d) {
+      if (!d || d.ok !== true) { throw new Error("block failed"); }
+      setMsg(msgId, action === "add" ? "blocked" : "unblocked", "ok");
+      if (done) { done(); }
+    })
+    .catch(function (e) { setMsg(msgId, String(e.message || e), "warn"); })
+    .then(function () { busy(false); }, function () { busy(false); });
+}
+
+// --- Internet kill switch (todo 4; GET/POST /api/admin/killswitch) ---------
+function refreshKillswitch() {
+  return sessionFetch("/api/admin/killswitch", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { document.getElementById("killswitch-toggle").checked = !!d.on; }
+    })
+    .catch(function () {
+      setMsg("killswitch-msg", "kill switch state unavailable", "warn");
+    });
+}
+
+function flagToggle(endpoint, msgId, toggleId, label) {
+  var pin = currentPin();
+  var toggle = document.getElementById(toggleId);
+  if (!pin) {
+    toggle.checked = !toggle.checked;
+    setMsg(msgId, "PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  var on = toggle.checked;
+  busy(true);
+  setMsg(msgId, "working…");
+  api(endpoint, { pin: pin, on: on }).then(function (r) {
+    if (r.status === 403) { return handleErr(label + " denied")(r); }
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok !== true) { throw new Error(label + " failed"); }
+    if (d.render === "failed") {
+      setMsg(msgId, label + " saved — firewall render pending (next 30s tick)", "warn");
+    } else {
+      setMsg(msgId, on ? (label + " ON") : (label + " OFF"), "ok");
+    }
+  }).catch(function (e) {
+    toggle.checked = !on;
+    setMsg(msgId, String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+}
+
+// --- DNS hardening (todo 6; GET/POST /api/admin/dns) ------------------------
+function renderDns(rows, localOnly) {
+  document.getElementById("dns-local-toggle").checked = !!localOnly;
+  var wrap = document.getElementById("dns-list");
+  while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+  if (!rows || !rows.length) {
+    setMsg("dns-msg", "no blocked domains");
+    return;
+  }
+  setMsg("dns-msg", "");
+  rows.forEach(function (domain) {
+    var item = document.createElement("div");
+    item.className = "netcard";
+    var label = document.createElement("div");
+    label.className = "ssid";
+    label.textContent = domain;
+    item.appendChild(label);
+    var cardbtns = document.createElement("div");
+    cardbtns.className = "cardbtns";
+    cardbtns.appendChild(rowBtn("Remove", true, function () {
+      dnsPost({ action: "del", domain: domain }, function (d) {
+        renderDns(d.blocked_domains, d.local_only);
+      });
+    }));
+    item.appendChild(cardbtns);
+    wrap.appendChild(item);
+  });
+}
+
+function refreshDns() {
+  return sessionFetch("/api/admin/dns", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { renderDns(d.blocked_domains || [], d.local_only); }
+    })
+    .catch(function () {
+      setMsg("dns-msg", "DNS settings unavailable", "warn");
+    });
+}
+
+function dnsPost(body, done) {
+  var pin = currentPin();
+  if (!pin) { setMsg("dns-msg", "PIN required — enter it in the PIN section", "warn"); return; }
+  body.pin = pin;
+  busy(true);
+  return api("/api/admin/dns", body).then(function (r) {
+    if (r.status === 403) { return handleErr("dns denied")(r); }
+    if (r.status === 400) {
+      return r.json().then(function (e) {
+        throw new Error("rejected: " + (e.error || "bad request"));
+      });
+    }
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok !== true) { throw new Error("dns update failed"); }
+    if (d.render === "failed") {
+      setMsg("dns-msg", "saved — firewall render pending (next 30s tick)", "warn");
+    } else {
+      setMsg("dns-msg", "saved", "ok");
+    }
+    if (done) { done(d); }
+  }).catch(function (e) {
+    setMsg("dns-msg", String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+}
+
+// --- Audit (todo 8; GET /api/admin/audit) ------------------------------------
+function renderAudit(attempts) {
+  var tbody = document.getElementById("audit-rows");
+  while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+  if (!attempts || !attempts.length) {
+    setMsg("audit-msg", "no failed attempts recorded");
+    return;
+  }
+  setMsg("audit-msg", "");
+  attempts.slice(0, 20).forEach(function (a) {
+    var tr = document.createElement("tr");
+    var t = document.createElement("td");
+    t.textContent = a.ts || "?";
+    tr.appendChild(t);
+    var i = document.createElement("td");
+    i.textContent = a.ip || "?";
+    tr.appendChild(i);
+    var k = document.createElement("td");
+    k.textContent = a.kind || "?";
+    tr.appendChild(k);
+    var c = document.createElement("td");
+    c.textContent = String(a.code == null ? "?" : a.code);
+    tr.appendChild(c);
+    tbody.appendChild(tr);
+  });
+}
+
+function refreshAudit() {
+  return sessionFetch("/api/admin/audit", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { renderAudit(d.attempts || []); }
+    })
+    .catch(function () {
+      setMsg("audit-msg", "audit log unavailable", "warn");
+    });
+}
+
+// --- Force relogin (todo 7; POST /api/admin/rotate-sessions) -----------------
+// Rotation invalidates THIS page's own token by design (todo 10 precedent):
+// the 401 the NEXT gated call would get is pre-empted — the session is
+// dropped here and the login panel shows the rotate message instead of the
+// generic "session expired".
+document.getElementById("rotate-sessions-btn").addEventListener("click", function () {
+  var pin = currentPin();
+  if (!pin) { dMsg("sessions-msg", "PIN required — enter it in the PIN section", "warn"); return; }
+  busy(true);
+  api("/api/admin/rotate-sessions", { pin: pin }).then(function (r) {
+    if (r.status === 403) { return handleErr("rotate denied")(r); }
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok !== true) { throw new Error("rotate failed"); }
+    // Drop the (now-invalid) token BEFORE the UI flips: any poll would 401.
+    try { localStorage.removeItem("admin-session"); } catch (e) {}
+    showLogin(true);
+    setMsg("login-msg", "sessions rotated — log in again", "warn");
+  }).catch(function (e) {
+    dMsg("sessions-msg", String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+});
+
+// --- SSH lockdown (todo 9; GET/POST /api/admin/sshlockdown) ------------------
+function refreshSshlockdown() {
+  return sessionFetch("/api/admin/sshlockdown", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { document.getElementById("sshlockdown-toggle").checked = !!d.on; }
+    })
+    .catch(function () {
+      setMsg("sshlockdown-msg", "SSH lockdown state unavailable", "warn");
+    });
+}
+
+// --- Stealth (todo 5; GET /api/admin/stealth) --------------------------------
+function renderStealth(d) {
+  var msg = document.getElementById("stealth-msg");
+  if (d.stealth) {
+    msg.textContent = "Management ports: CLOSED from WAN (good)";
+    msg.className = "msg ok";
+  } else {
+    msg.textContent = "OPEN: " + (d.open_ports || []).join(", ") + " (warning)";
+    msg.className = "msg warn";
+  }
+}
+
+function refreshStealth() {
+  return sessionFetch("/api/admin/stealth", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) { if (d) { renderStealth(d); } })
+    .catch(function () {
+      // Degraded tool read still answers 200/stealth-true server-side; a
+      // transport failure shows nothing rather than a false "OPEN".
+    });
+}
 
 function refreshStatus() {
   return statusFetch().then(function (d) {
@@ -564,7 +955,7 @@ function doApSave(body) {
 
 function busy(on) {
   ["ap-save", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
-   "login-btn"].forEach(function (id) {
+   "login-btn", "dns-add", "rotate-sessions-btn"].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) { el.disabled = on; }
   });
@@ -670,6 +1061,7 @@ function doLogin() {
         refreshApInfo();
         refreshPskManage();
         refreshStatus();
+        refreshAllFeatures();
       } else if (r.status === 429) {
         setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
       } else {
@@ -685,6 +1077,50 @@ document.getElementById("admin-psk").addEventListener("keydown", function (ev) {
   if (ev.key === "Enter") { doLogin(); }
 });
 
+// --- Security-feature wiring (security plan todo 11) -------------------------
+// One shared refresh after login/init and on the gated interval; the toggle
+// listeners POST the admin idiom (session rides via api(), PIN in body).
+document.getElementById("killswitch-toggle").addEventListener("change", function () {
+  flagToggle("/api/admin/killswitch", "killswitch-msg", "killswitch-toggle",
+             "Kill switch");
+});
+document.getElementById("sshlockdown-toggle").addEventListener("change", function () {
+  flagToggle("/api/admin/sshlockdown", "sshlockdown-msg", "sshlockdown-toggle",
+             "SSH lockdown");
+});
+document.getElementById("dns-local-toggle").addEventListener("change", function () {
+  var pin = currentPin();
+  var toggle = document.getElementById("dns-local-toggle");
+  if (!pin) {
+    toggle.checked = !toggle.checked;
+    setMsg("dns-msg", "PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  dnsPost({ action: "set-local", on: toggle.checked }, function (d) {
+    renderDns(d.blocked_domains, d.local_only);
+  });
+});
+document.getElementById("dns-add").addEventListener("click", function () {
+  var domain = document.getElementById("dns-domain").value.trim();
+  if (!domain) { setMsg("dns-msg", "enter a domain to block", "warn"); return; }
+  dnsPost({ action: "add", domain: domain }, function (d) {
+    document.getElementById("dns-domain").value = "";
+    renderDns(d.blocked_domains, d.local_only);
+  });
+});
+
+// Feature reads: kill switch / DNS / blocked / audit / lockdown / stealth.
+// The block set refresh FIRST (the client rows badge off it), so its .then
+// drives refreshStatus() itself; the others are fire-and-forget reads.
+function refreshAllFeatures() {
+  refreshKillswitch();
+  refreshDns();
+  refreshBlocked();
+  refreshAudit();
+  refreshSshlockdown();
+  refreshStealth();
+}
+
 (function initSession() {
   var saved = savedPin();
   if (saved) { document.getElementById("pin").value = saved; }
@@ -698,14 +1134,20 @@ document.getElementById("admin-psk").addEventListener("keydown", function (ev) {
     refreshApInfo();
     refreshPskManage();
     refreshStatus();
+    refreshAllFeatures();
   }).catch(function () {
     showLogin(true);
   });
 })();
 
+// Gated poll (5s, security-todo-11 wiring): only with a live session AND a
+// saved PIN (the clients poll needs X-Pin; the feature reads ride X-Session).
 setInterval(function () {
-  if (sessToken() && currentPin()) { refreshStatus(); }
-}, 4000);
+  if (sessToken() && currentPin()) {
+    refreshStatus();
+    refreshAllFeatures();
+  }
+}, 5000);
 </script>
 </body>
 </html>

@@ -18,6 +18,17 @@ Stdlib only (http.server + json). Serves:
   GET /api/admin/audit -> session-gated auth-failure attempts (401/403/429
                       metadata rows: ts/ip/kind/code only, never a PSK/PIN;
                       also appended best-effort to a JSON-lines audit file)
+  GET /api/admin/stealth -> session-gated read-only WAN stealth self-check
+                      (travel-wan stealth-check pass-through; degraded run
+                      answers 200 {"stealth":true,...}, never a 5xx)
+  GET /api/admin/dns -> session-gated DNS hardening read (blocked-domains
+                      rows + local-only presence)
+  POST /api/admin/dns -> admin write {pin, action:add|del|set-local,
+                      domain?, on?}: edits the wan-select-owned DNS stores,
+                      then triggers ONE wan-select reload
+  GET/POST /api/admin/blocked -> admin read (travel-wan blocked rows) /
+                      write {pin, action:add|del, mac} (travel-wan
+                      block/unblock verbs)
   POST /api/wan/*  -> client verbs PIN-gated, admin verbs session+PIN
                       (admin-split posture; see below)
 Anything else (other path or method) -> 404.
@@ -49,6 +60,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -92,6 +104,19 @@ KILLSWITCH_FILE = os.environ.get(
 SSHLOCKDOWN_FILE = os.environ.get(
     "TRAVELROUTER_SSHLOCKDOWN_FILE",
     "/etc/rpi-project/travel-router/ssh-lockdown")
+# DNS hardening stores (security plan todo 6, wired by todo 11): both are
+# wan-select-owned — the server only EDITS them (same atomic 0600 idiom as
+# the flags above) and triggers the wan-select reload; wan-select renders the
+# dnsmasq drop-ins on the next tick and restarts dnsmasq only when a
+# drop-in's PRESENCE toggles (a list-content rewrite alone never restarts).
+# BLOCKED: one hostname row per line (wan-select's regex); LOCAL: presence =
+# local-only mode. Both default OFF/empty on a fresh flash.
+BLOCKED_DOMAINS_FILE = os.environ.get(
+    "TRAVELROUTER_BLOCKED_DOMAINS_FILE",
+    "/etc/rpi-project/travel-router/blocked-domains")
+DNS_LOCAL_FILE = os.environ.get(
+    "TRAVELROUTER_DNS_LOCAL_FILE",
+    "/etc/rpi-project/travel-router/dns-local")
 # Session-salt file (security plan todo 7, force-relogin). Mixed into the
 # session-token fingerprint; regenerated on the Pi at /run/travel-router/
 # (tmpfs — a reboot re-salts and drops stale tokens for free). Rotating this
@@ -302,6 +327,83 @@ def _sshlockdown_write(on):
             pass
         except OSError:
             return False
+    return True
+
+
+# --- DNS hardening (security plan todo 6, wired by todo 11) ------------------
+# wan-select owns the drop-in RENDER; the server only edits its two input
+# stores (same tmp + os.replace idiom as _sshlockdown_write) and fires the
+# shared wan-select reload. A list edit that keeps a drop-in PRESENT never
+# restarts dnsmasq here — presence-toggle semantics live entirely in
+# wan-select's apply_dns_dropin, which the reload re-runs.
+# Hostname shape mirrors wan-select's blocked_domains_lines reader regex
+# EXACTLY (rows failing it are skipped by the reader anyway, so a permissive
+# writer would let rows silently vanish into a stderr note): label chars
+# only, dot-separated with at least TWO labels (a bare single label like
+# "localhost" is never a valid row here — the reader's `(\.…)+` requires
+# one dot), each label starting/ending alphanumeric.
+_DOMAIN_RE = re.compile(
+    r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+
+
+def _domain_valid(domain):
+    if not isinstance(domain, str) or not domain.strip():
+        return False
+    if len(domain) > 253 or any(ord(c) < 32 or ord(c) == 127 for c in domain):
+        return False
+    return _DOMAIN_RE.fullmatch(domain.strip().lower()) is not None
+
+
+def _blocked_domains_rows():
+    """Raw rows of the blocked-domains store (trimmed, blanks dropped). The
+    shape check is deliberately NOT re-applied: wan-select's reader is the
+    gatekeeper for what reaches dnsmasq, and this read is an admin-page
+    echo of the file, not a re-validation."""
+    try:
+        with open(BLOCKED_DOMAINS_FILE, "r", encoding="utf-8",
+                  errors="replace") as fh:
+            return [r.strip() for r in fh.read().splitlines() if r.strip()]
+    except OSError:
+        return []
+
+
+def _flag_store_write(path, on):
+    """Set (empty 0600 file) or clear a presence flag, atomically. Shared by
+    the dns-local store (todo 6) — killswitch/sshlockdown keep their own
+    bodies because their write paths predate this helper."""
+    if on:
+        try:
+            fd = os.open(path + ".tmp",
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.close(fd)
+            os.replace(path + ".tmp", path)
+        except OSError:
+            return False
+    else:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return True
+
+
+def _blocked_domains_write(rows):
+    """Rewrite the blocked-domains store atomically (0600). An EMPTY list
+    clears the file (wan-select renders no drop-in for an empty/missing
+    store, so an emptied list turns the feature off). Returns False only on
+    a persist failure."""
+    try:
+        os.makedirs(os.path.dirname(BLOCKED_DOMAINS_FILE), exist_ok=True)
+        fd = os.open(BLOCKED_DOMAINS_FILE + ".tmp",
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(row + "\n")
+        os.replace(BLOCKED_DOMAINS_FILE + ".tmp", BLOCKED_DOMAINS_FILE)
+    except OSError:
+        return False
     return True
 
 
@@ -749,6 +851,49 @@ class StatusHandler(BaseHTTPRequestHandler):
                 attempts = list(reversed(_AUDIT_RING))
             self._send(200, json.dumps({"attempts": attempts}),
                        "application/json")
+        elif path == "/api/admin/stealth":
+            # Admin bucket (security plan todo 5, wired by todo 11): the
+            # read-only self-check via `travel-wan stealth-check` (todo 5
+            # verb). Pass-through; a failed/absent tool run degrades to the
+            # stealth posture — never a 5xx for a cosmetic read (same
+            # degrade posture as ap-info above).
+            if not _require_session(self):
+                return
+            rc, out, err = self._run_tool(["stealth-check"], API_QUICK_TIMEOUT)
+            stealth = {"stealth": True, "wan_if": "", "open_ports": []}
+            if rc == 0 and out:
+                try:
+                    parsed = json.loads(out[0])
+                    if (isinstance(parsed, dict)
+                            and isinstance(parsed.get("stealth"), bool)
+                            and isinstance(parsed.get("wan_if"), str)
+                            and isinstance(parsed.get("open_ports"), list)):
+                        stealth = parsed
+                except ValueError:
+                    pass
+            self._send(200, json.dumps(stealth), "application/json")
+        elif path == "/api/admin/dns":
+            # Admin bucket (security plan todo 6, wired by todo 11):
+            # session-gated read of the two hardening stores. Absent/empty
+            # store -> empty list / False (default OFF on a fresh flash).
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({
+                "blocked_domains": _blocked_domains_rows(),
+                "local_only": os.path.exists(DNS_LOCAL_FILE),
+            }), "application/json")
+        elif path == "/api/admin/blocked":
+            # Admin bucket (security plan todo 3, wired by todo 11):
+            # session-gated read of the block store via `travel-wan blocked`
+            # (one normalized MAC per line; empty store -> empty list).
+            if not _require_session(self):
+                return
+            rc, out, err = self._run_tool(["blocked"], API_QUICK_TIMEOUT)
+            macs = []
+            if rc == 0:
+                macs = [m for m in out]
+            self._send(200, json.dumps({"blocked": macs}),
+                       "application/json")
         elif path == "/setup" or path == "/setup/":
             self._serve_page(SETUP_PAGE, "setup")
         elif path == "/admin" or path == "/admin/":
@@ -964,6 +1109,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/admin/killswitch"
                 or path == "/api/admin/rotate-sessions"
                 or path == "/api/admin/sshlockdown"
+                or path == "/api/admin/dns"
+                or path == "/api/admin/blocked"
                 or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
@@ -978,6 +1125,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                                "/api/admin/killswitch",
                                "/api/admin/rotate-sessions",
                                "/api/admin/sshlockdown",
+                               "/api/admin/dns",
+                               "/api/admin/blocked",
                                "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
@@ -1218,6 +1367,100 @@ class StatusHandler(BaseHTTPRequestHandler):
                     {"ok": True, "on": on,
                      **({} if rendered else {"render": "failed"})}),
                     "application/json")
+                return
+            elif path == "/api/admin/dns":
+                # Security plan todo 6 (wired by todo 11). Same
+                # persist-then-one-reload posture as killswitch/sshlockdown:
+                # the wan-select-owned stores are edited atomically (0600),
+                # then ONE shared reload fires so the drop-ins re-render on
+                # the next tick (wan-select restarts dnsmasq only when a
+                # drop-in's PRESENCE toggled — an add to an already-active
+                # list rewrites the file without a restart, by design).
+                # set-local is a presence flag; add/del edit the list. A
+                # failed reload does NOT fail the request (same "render"
+                # hint as the flags).
+                action = body.get("action")
+                if action == "set-local":
+                    on = body.get("on")
+                    if not isinstance(on, bool):
+                        self._send(400, json.dumps({"error": "dns"}),
+                                   "application/json")
+                        return
+                    if not _flag_store_write(DNS_LOCAL_FILE, on):
+                        self._send(500, json.dumps({"error": "persist"}),
+                                   "application/json")
+                        return
+                elif action in ("add", "del"):
+                    domain = body.get("domain")
+                    if not _domain_valid(domain):
+                        self._send(400, json.dumps({"error": "dns"}),
+                                   "application/json")
+                        return
+                    d = domain.strip().lower()
+                    rows = _blocked_domains_rows()
+                    if action == "add":
+                        if d not in rows:
+                            rows.append(d)
+                            if not _blocked_domains_write(rows):
+                                self._send(500, json.dumps(
+                                    {"error": "persist"}),
+                                    "application/json")
+                                return
+                    else:
+                        if d not in rows:
+                            self._send(400, json.dumps({"error": "dns"}),
+                                       "application/json")
+                            return
+                        if not _blocked_domains_write(
+                                [r for r in rows if r != d]):
+                            self._send(500, json.dumps(
+                                {"error": "persist"}),
+                                "application/json")
+                            return
+                else:
+                    self._send(400, json.dumps({"error": "dns"}),
+                               "application/json")
+                    return
+                rendered = _killswitch_reload()
+                if not rendered:
+                    sys.stderr.write(
+                        "[status-server] dns: wan-select re-render FAILED "
+                        "(applies on the next 30s tick)\n")
+                self._send(200, json.dumps(
+                    {"ok": True, "action": action,
+                     "blocked_domains": _blocked_domains_rows(),
+                     "local_only": os.path.exists(DNS_LOCAL_FILE),
+                     **({} if rendered else {"render": "failed"})}),
+                    "application/json")
+                return
+            elif path == "/api/admin/blocked":
+                # Security plan todo 3 (wired by todo 11): the MAC block
+                # verbs live in travel-wan (block/unblock/blocked, todo 2) —
+                # the server is a pass-through, no store of its own. add on
+                # an already-blocked MAC is idempotent (rc 0); del of an
+                # unknown MAC is rc 1 -> 404 ("not blocked"). Validation is
+                # also here so a malformed MAC never reaches the tool
+                # (mirror of travel-wan's mac_ok).
+                action = body.get("action")
+                mac = body.get("mac")
+                if action not in ("add", "del") or not isinstance(mac, str) \
+                        or not re.fullmatch(
+                            r"[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}", mac):
+                    self._send(400, json.dumps({"error": "blocked"}),
+                               "application/json")
+                    return
+                rc, out, err = self._run_tool(
+                    ["block" if action == "add" else "unblock",
+                     mac.lower()], API_QUICK_TIMEOUT)
+                if rc is None:
+                    self._send(504, json.dumps({"error": "timeout"}),
+                               "application/json")
+                    return
+                if rc != 0:
+                    self._send(404, json.dumps({"error": "blocked"}),
+                               "application/json")
+                    return
+                self._send(200, json.dumps({"ok": True}), "application/json")
                 return
             elif path == "/api/admin/rotate-sessions":
                 # Security plan todo 7 (force-relogin): regenerate the salt
