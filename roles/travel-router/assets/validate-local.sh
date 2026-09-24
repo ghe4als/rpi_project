@@ -3040,14 +3040,16 @@ AQ_START() { # -> fresh server (fresh in-memory throttle state) on its port
 }
 AQ_STOP() { kill "$AQPID" 2>/dev/null; wait "$AQPID" 2>/dev/null; }
 aq_get() { # path [extra curl args] -> "code|body"
-  local resp
-  resp=$(curl -s -w '\n%{http_code}' "$@" "http://127.0.0.1:18610$1" 2>/dev/null)
+  local resp p
+  p="$1"; shift # path out of "$@": curl treats every non-option word as a URL
+  resp=$(curl -s -w '\n%{http_code}' "$@" "http://127.0.0.1:18610$p" 2>/dev/null)
   echo "${resp##*$'\n'}|${resp%$'\n'*}"
 }
 aq_post() { # path json [extra curl args] -> "code|body" (CSRF header per call)
-  local resp
+  local resp p j
+  p="$1" j="$2"; shift 2 # path+json out of "$@": exactly one URL reaches curl
   resp=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-    "$@" -d "$2" "http://127.0.0.1:18610$1" 2>/dev/null)
+    "$@" -d "$j" "http://127.0.0.1:18610$p" 2>/dev/null)
   echo "${resp##*$'\n'}|${resp%$'\n'*}"
 }
 aq_post_r() { # same, bounded transport retries on a 000 (suite-load flake:
@@ -3059,6 +3061,23 @@ aq_post_r() { # same, bounded transport retries on a 000 (suite-load flake:
   for i in 1 2 3 4; do
     out=$(aq_post "$@")
     [[ "$out" != 000* && "$out" != *"|000" ]] && { echo "$out"; return; }
+    sleep 1
+  done
+  echo "$out"
+}
+aq_get_r() { # same bounded transport retries as aq_post_r, for reads; a
+  # corrupted-but-200 read (stray codes interleaved with the body under the
+  # full battery) is retried too: the resend is idempotent
+  local out i code body
+  for i in 1 2 3 4; do
+    out=$(aq_get "$@")
+    code="${out%%|*}"; body="${out#*|}"
+    case "$code" in
+      200|401|403)
+        [[ "$body" == '{'* ]] && { echo "$out"; return; } ;;
+      *)
+        [[ "$out" != 000* && "$out" != *"|000" ]] && { echo "$out"; return; } ;;
+    esac
     sleep 1
   done
   echo "$out"
@@ -3125,6 +3144,432 @@ AQ_STOP
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 grep -q '1357' "$B/srv-aq.log" && bad "5aq PIN leaked into server log (forbidden)" \
   || ok "5aq server log free of PIN"
+
+# --- (5ar) security-feature battery (security plan todo 12) -------------------
+sec "5ar. security-feature battery (block/killswitch/ssh/DNS/stealth/salt/audit/destruct)"
+# Deeper per-feature asserts the standalone QAs (.omo/evidence/
+# travel-router-security-features/qa-todo*.sh) cover, in suite form. §5aq owns
+# the /api/admin/* GATE matrix (do not duplicate it here); this section owns
+# the FEATURE semantics: nftables renders, travel-wan verbs, DNS drop-ins,
+# session-salt rotation, audit rows, session self-destruct. Harness shapes are
+# the suite's own: §5b run_wan stub-PATH idiom for renders, one §5aq-style
+# server on 18610 (RESTARTED between phases — env seams are read at import)
+# for the API-shaped salt/audit/destruct asserts.
+AR="$B/5ar"; mkdir -p "$AR/bin" "$AR/sys/class/net/lo" "$AR/sys/class/net/wlan0/wireless" \
+  "$AR/sys/class/net/eth0" "$AR/etc" "$AR/ip-addr" "$AR/nmcli-conn" "$AR/dnsmasq.d" \
+  "$AR/sys/devices/platform/scb/usb/1-1/1-1.1" \
+  "$AR/sys/devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1"
+ln -sf "$AR/sys/devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1" "$AR/sys/class/net/wlan0/device"
+ln -sf "$AR/sys/devices/platform/scb/usb/1-1/1-1.1" "$AR/sys/class/net/eth0/device"
+printf '2: wlan0    inet 192.168.50.1/24 brd 192.168.50.255 scope global wlan0\n       valid_lft forever' > "$AR/ip-addr/wlan0"
+printf '2: eth0    inet 10.0.0.2/24 brd 10.0.0.255 scope global dynamic eth0\n       valid_lft forever' > "$AR/ip-addr/eth0"
+printf 'UpstreamNet' > "$AR/nmcli-conn/eth0"
+for t in iw nft rfkill; do
+  printf '#!/bin/bash\n{ printf "%%s " "$(basename "$0")"; printf "%%s\\n" "$*"; } >> %s/calls.log\nexit 0\n' "$AR" > "$AR/bin/$t"
+done
+printf '#!/bin/bash\n{ printf "%%s " "cp"; printf "%%s\\n" "$*"; } >> %s/calls.log\nexec /bin/cp "$@"\n' "$AR" > "$AR/bin/cp"
+printf '#!/bin/bash\n{ printf "%%s " "systemctl"; printf "%%s\\n" "$*"; } >> %s/calls.log\nexit 0\n' "$AR" > "$AR/bin/systemctl"
+printf '#!/bin/bash\n{ printf "%%s " "hostapd_cli"; printf "%%s\\n" "$*"; } >> %s/calls.log\nexit 0\n' "$AR" > "$AR/bin/hostapd_cli"
+printf '#!/bin/bash\n{ printf "%%s " "sudo"; printf "%%s\\n" "$*"; } >> %s/calls.log\nexec /usr/bin/true\n' "$AR" > "$AR/bin/sudo"
+printf '#!/bin/bash\n{ printf "%%s " "ip"; printf "%%s\\n" "$*"; } >> %s/calls.log\ndev=""; prev=""; for a in "$@"; do [ "$prev" = dev ] && dev="$a"; prev="$a"; done\nif [ -n "$dev" ] && [ -f %s/ip-addr/"$dev" ]; then cat %s/ip-addr/"$dev"; exit 0; fi\nif [ -n "$dev" ]; then exit 1; fi\nexit 0\n' "$AR" "$AR" "$AR" > "$AR/bin/ip"
+printf '#!/bin/bash\n{ printf "%%s " "nmcli"; printf "%%s\\n" "$*"; } >> %s/calls.log\ndev="${@: -1}"; if [ -f %s/nmcli-conn/"$dev" ]; then printf "GENERAL.CONNECTION:%%s\\n" "$(cat %s/nmcli-conn/"$dev")"; exit 0; fi\nexit 1\n' "$AR" "$AR" "$AR" "$AR" > "$AR/bin/nmcli"
+chmod +x "$AR"/bin/*
+printf 'interface=wlan0\nctrl_interface=/var/run/hostapd\n' > "$AR/ap.conf"
+
+ar_wan() { # WAN_PREFER -> run wan-select with §5ar seams; stdout+stderr merged
+  rm -f "$AR/calls.log"; SYSFS_ROOT="$AR/sys" TRAVELROUTER_WAN_PREFER="$1" \
+    TRAVELROUTER_STATE_FILE="$AR/state.json" \
+    TRAVELROUTER_BLOCK_FILE="$AR/blocked-macs" \
+    TRAVELROUTER_KILLSWITCH_FILE="$AR/killswitch" \
+    TRAVELROUTER_SSHLOCKDOWN_FILE="$AR/ssh-lockdown" \
+    TRAVELROUTER_BLOCKED_DOMAINS_FILE="$AR/blocked-domains" \
+    TRAVELROUTER_DNS_LOCAL_FILE="$AR/dns-local" \
+    NFTABLES_TARGET="$AR/etc/nftables.conf" DNSMASQ_CONF_DIR="$AR/dnsmasq.d" \
+    PATH="$AR/bin:$PATH" ASSETS="$A" bash "$A/wan-select.sh" 2>&1
+}
+ar_calls() { cat "$AR/calls.log" 2>/dev/null || true; }
+ar_dnsmasq_calls() { ar_calls | grep -c '^systemctl restart dnsmasq.service$' || true; }
+ar_tw() { # travel-wan verb with §5ar seams
+  PATH="$AR/bin:$PATH" NMCLI="$AR/bin/nmcli" HOSTAPD_CLI="$AR/bin/hostapd_cli" \
+    TRAVELROUTER_AP_CONF="$AR/ap.conf" TRAVELROUTER_AP_SSID_FILE="$AR/ap-ssid" \
+    TRAVELROUTER_STATE_FILE="$AR/state.json" TRAVELROUTER_BLOCK_FILE="$AR/blocked-macs" \
+    NFTABLES_TARGET="$AR/etc/nftables.conf" \
+    SUDO="$AR/bin/sudo" SYSTEMCTL="$AR/bin/systemctl" \
+    bash "$A/travel-wan.sh" "$@" 2>&1
+}
+
+# ---- (a) nftables render battery: blocked_macs -------------------------------
+printf 'aa:bb:cc:dd:ee:ff\n# comment\n\n  12:34:56:78:9A:BC  \nAA:bb:CC:dd:EE:ff\nnot-a-mac\n' > "$AR/blocked-macs"
+: > "$AR/killswitch"; : > "$AR/ssh-lockdown"; : > "$AR/dns-local"
+printf 'tracker.net\n' > "$AR/blocked-domains"
+ar_out=$(ar_wan ethernet); rc=$?
+ARC="$AR/etc/nftables.conf"
+[[ $rc -eq 0 && "$(head -1 "$ARC")" == "flush ruleset" ]] \
+  && ok "5ar render rc=0, flush-first (all features composed)" || bad "5ar render rc=$rc: $(echo "$ar_out" | tail -1)"
+grep -qF 'aa:bb:cc:dd:ee:ff,12:34:56:78:9a:bc' "$ARC" \
+  && ok "5ar blocked_macs populated: lowercased+deduped elements (2 rows from 5 lines)" \
+  || bad "5ar blocked elements: $(grep -A1 'set blocked_macs' "$ARC" | tail -1)"
+[[ "$(grep -c 'ether saddr @blocked_macs drop' "$ARC")" == "2" ]] \
+  && ok "5ar blocked_macs: 2 drop rules (input + forward)" \
+  || bad "5ar blocked drop count=$(grep -c 'ether saddr @blocked_macs drop' "$ARC")"
+# drop BEFORE the established accepts in BOTH chains (chain-relative line math)
+ar_in_drop=$(grep -n 'ether saddr @blocked_macs drop' "$ARC" | head -1 | cut -d: -f1)
+ar_in_est=$(( $(grep -n 'chain input' "$ARC" | cut -d: -f1) - 1 + \
+  $(awk '/chain input/,/^    }/' "$ARC" | grep -n 'ct state established,related accept' | head -1 | cut -d: -f1) ))
+ar_fw_drop=$(grep -n 'ether saddr @blocked_macs drop' "$ARC" | tail -1 | cut -d: -f1)
+ar_fw_est=$(( $(grep -n 'chain forward' "$ARC" | cut -d: -f1) - 1 + \
+  $(awk '/chain forward/,/^    }/' "$ARC" | grep -n 'ct state established,related accept' | head -1 | cut -d: -f1) ))
+[[ -n "$ar_in_drop" && -n "$ar_in_est" && "$ar_in_drop" -lt "$ar_in_est" ]] \
+  && ok "5ar blocked input drop precedes established accept" \
+  || bad "5ar input ordering drop=$ar_in_drop est=$ar_in_est"
+[[ -n "$ar_fw_drop" && -n "$ar_fw_est" && "$ar_fw_drop" -lt "$ar_fw_est" ]] \
+  && ok "5ar blocked forward drop precedes established accept" \
+  || bad "5ar forward ordering drop=$ar_fw_drop est=$ar_fw_est"
+# killswitch ON: LAN->WAN forward accept omitted (never inverted: present=ON)
+! grep -q 'iifname "wlan0" oifname "eth0" accept' "$ARC" \
+  && ok "5ar killswitch ON -> LAN->WAN forward accept omitted" \
+  || bad "5ar killswitch accept still present"
+# ssh lockdown ON: tcp-22 drop injected BEFORE the remaining {53,80} accept
+grep -qF 'iifname "wlan0" tcp dport 22 drop' "$ARC" \
+  && grep -qF 'iifname "wlan0" tcp dport { 53, 80 } accept' "$ARC" \
+  && ok "5ar ssh-lockdown ON -> tcp-22 drop + 22 stripped from the accept" \
+  || bad "5ar ssh-lockdown render: $(grep -n 'tcp dport' "$ARC" | tr '\n' ';')"
+ar_22drop=$(grep -nF 'iifname "wlan0" tcp dport 22 drop' "$ARC" | head -1 | cut -d: -f1)
+ar_22acc=$(grep -nF 'iifname "wlan0" tcp dport { 53, 80 } accept' "$ARC" | head -1 | cut -d: -f1)
+[[ -n "$ar_22drop" && -n "$ar_22acc" && "$ar_22drop" -lt "$ar_22acc" ]] \
+  && ok "5ar ssh-lockdown drop precedes the tcp accept (nft first-match)" \
+  || bad "5ar lockdown ordering drop=$ar_22drop acc=$ar_22acc"
+# default OFF: drop-ins (left by the composed render) removed -> zero restarts
+# default OFF: seam files cleared -> drop-ins deleted, zero dnsmasq calls
+rm -f "$AR/blocked-domains" "$AR/dns-local" "$AR/killswitch" "$AR/ssh-lockdown"
+ar_out=$(ar_wan ethernet); rc=$?
+[[ $rc -eq 0 && ! -e "$AR/dnsmasq.d/travel-router-dns-block.conf" && ! -e "$AR/dnsmasq.d/travel-router-dns-local.conf" && "$(ar_dnsmasq_calls)" == "1" ]] \
+  && ok "5ar DNS seam files cleared -> drop-ins removed, zero dnsmasq calls before (default OFF)" \
+  || bad "5ar DNS drop-ins exist unexpectedly"
+# all three transforms composed simultaneously -> parse-shaped conf
+ar_oc=$(grep -c '{' "$ARC"); ar_cc=$(grep -c '}' "$ARC")
+[[ "$ar_oc" -gt 0 && "$ar_oc" == "$ar_cc" ]] \
+  && ! grep -q '__[A-Z][A-Z_]*__' "$ARC" \
+  && ok "5ar composed render is parse-shaped (brace-balanced, no placeholders)" \
+  || bad "5ar composed braces open=$ar_oc close=$ar_cc placeholder=$(grep -c '__[A-Z]' "$ARC")"
+# empty block file -> no elements line (the guaranteed-parse empty-set form)
+: > "$AR/blocked-macs"
+ar_out=$(ar_wan ethernet); rc=$?
+sed -n '/set blocked_macs/,/^    }/p' "$ARC" > "$AR/setblock.txt"
+[[ $rc -eq 0 ]] && ! grep -qE '^[[:space:]]*elements' "$AR/setblock.txt" \
+  && grep -q 'ether saddr @blocked_macs drop' "$ARC" \
+  && ok "5ar empty block file -> no elements line, drop rules persist" \
+  || bad "5ar empty-set render rc=$rc elements=$(grep -cE 'elements' "$AR/setblock.txt" || true)"
+# missing block file + flags cleared -> default posture (killswitch accept back)
+rm -f "$AR/blocked-macs" "$AR/killswitch" "$AR/ssh-lockdown" "$AR/etc/nftables.conf"
+ar_out=$(ar_wan ethernet); rc=$?
+[[ $rc -eq 0 ]] && grep -q 'iifname "wlan0" oifname "eth0" accept' "$ARC" \
+  && ! grep -qF 'iifname "wlan0" tcp dport 22 drop' "$ARC" \
+  && grep -qF 'iifname "wlan0" tcp dport { 53, 80, 22 } accept' "$ARC" \
+  && ok "5ar flags absent (default) -> forward accept present, no tcp-22 drop" \
+  || bad "5ar default render rc=$rc: $(grep -c 'oifname "eth0" accept' "$ARC") drop=$(grep -c 'tcp dport 22 drop' "$ARC")"
+
+# ---- (b) travel-wan verbs: block/unblock/blocked + stealth-check + ap-info ---
+printf 'aa:bb:cc:dd:ee:ff\n' > "$AR/blocked-macs"
+ar_out=$(ar_wan ethernet >/dev/null); rc=$?   # seed state.json for the verbs
+out=$(ar_tw blocked); rc=$?
+[[ $rc -eq 0 && "$out" == "aa:bb:cc:dd:ee:ff" ]] \
+  && ok "5ar blocked lists the store" || bad "5ar blocked: rc=$rc out=[$out]"
+out=$(ar_tw block 11:22:33:44:55:66); rc=$?
+[[ $rc -eq 0 && "$(cat "$AR/blocked-macs")" == "aa:bb:cc:dd:ee:ff
+11:22:33:44:55:66" ]] \
+  && ok "5ar block valid MAC -> row added + reload" || bad "5ar block: rc=$rc file=$(cat "$AR/blocked-macs" 2>/dev/null)"
+grep -qF 'systemctl start wan-select.service' "$AR/calls.log" \
+  && ok "5ar block reload = systemctl start wan-select.service (immediate)" \
+  || bad "5ar block reload missing: $(grep systemctl "$AR/calls.log" | head -1)"
+grep -qF 'hostapd_cli -i wlan0 deauthenticate 11:22:33:44:55:66' "$AR/calls.log" \
+  && ok "5ar block kick via hostapd_cli (AP iface from AP_CONF)" \
+  || bad "5ar kick missing: $(grep hostapd_cli "$AR/calls.log" | head -1)"
+out=$(ar_tw block 'zz:11:22:33:44:55'); rc=$?
+[[ $rc -ne 0 && "$(grep -c . "$AR/blocked-macs")" == "2" ]] \
+  && ok "5ar invalid MAC (zz group) rejected, store unchanged" \
+  || bad "5ar invalid-mac rc=$rc rows=$(grep -c . "$AR/blocked-macs")"
+out=$(ar_tw unblock aa:bb:cc:dd:ee:ff); rc=$?
+[[ $rc -eq 0 && "$(cat "$AR/blocked-macs")" == "11:22:33:44:55:66" ]] \
+  && ok "5ar unblock removes only the target row" \
+  || bad "5ar unblock: rc=$rc file=$(cat "$AR/blocked-macs" 2>/dev/null)"
+# stealth-check: LAN-only fixture -> stealth true; WAN accept -> false, [22]
+# (comment-stripping trap: a #comment mentioning iifname+accept must never count)
+printf 'flush ruleset\ntable inet travel_router {\n    chain input {\n        type filter hook input priority filter; policy drop;\n        iifname "lo" accept\n        iifname "wlan0" tcp dport { 53, 80, 22 } accept\n        # iifname "eth0" tcp dport 80 accept\n    }\n    chain forward {\n        type filter hook forward priority filter; policy drop;\n        iifname "wlan0" oifname "eth0" accept\n    }\n}' > "$ARC"
+printf '{"mode":"routed","wan_if":"eth0","lan_ip":"192.168.50.1"}' > "$AR/state.json"
+out=$(ar_tw stealth-check); rc=$?
+printf '%s' "$out" | grep -q '"stealth":true' && printf '%s' "$out" | grep -q '"open_ports":\[\]' \
+  && ok "5ar stealth-check: LAN-only accepts + comment trap -> stealth true, []" \
+  || bad "5ar stealth LAN-only: rc=$rc out=[$out]"
+sed -i '' 's|iifname "wlan0" oifname "eth0" accept|iifname "wlan0" oifname "eth0" accept\n        iifname "eth0" tcp dport 22 accept|' "$ARC"
+out=$(ar_tw stealth-check); rc=$?
+printf '%s' "$out" | grep -q '"stealth":false' && printf '%s' "$out" | grep -q '"open_ports":\[22\]' \
+  && ok "5ar stealth-check: WAN tcp/22 accept -> stealth false, [22]" \
+  || bad "5ar stealth WAN: rc=$rc out=[$out]"
+# ap-info: hidden 2/1 -> true; 0/absent-conf -> false (LIVE ssid file + AP conf)
+printf 'TravelNet\n' > "$AR/ap-ssid"
+printf 'interface=wlan0\nignore_broadcast_ssid=2\n' > "$AR/ap.conf"
+out=$(ar_tw ap-info)
+printf '%s' "$out" | grep -q '"hidden":true' && printf '%s' "$out" | grep -q 'TravelNet' \
+  && ok "5ar ap-info: ignore_broadcast_ssid=2 -> hidden true (live ssid)" \
+  || bad "5ar ap-info 2: out=[$out]"
+printf 'interface=wlan0\nignore_broadcast_ssid=1\n' > "$AR/ap.conf"
+out=$(ar_tw ap-info)
+printf '%s' "$out" | grep -q '"hidden":true' \
+  && ok "5ar ap-info: ignore_broadcast_ssid=1 -> hidden true (both 1 and 2 hide)" \
+  || bad "5ar ap-info 1: out=[$out]"
+printf 'interface=wlan0\nignore_broadcast_ssid=0\n' > "$AR/ap.conf"
+out=$(ar_tw ap-info)
+printf '%s' "$out" | grep -q '"hidden":false' \
+  && ok "5ar ap-info: ignore_broadcast_ssid=0 -> hidden false" \
+  || bad "5ar ap-info 0: out=[$out]"
+rm -f "$AR/ap.conf"
+out=$(ar_tw ap-info)
+printf '%s' "$out" | grep -q '"hidden":false' \
+  && ok "5ar ap-info: missing conf degrades to hidden false" \
+  || bad "5ar ap-info degraded: out=[$out]"
+
+# ---- (c) DNS drop-ins (qa-todo6 idiom) ----------------------------------------
+rm -f "$AR/blocked-macs" "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  "$AR/dnsmasq.d/travel-router-dns-local.conf"
+printf 'ads.example.com\n# comment\n\nTracker.NET\nnot_a_domain\n' > "$AR/blocked-domains"
+: > "$AR/dns-local"
+ar_out=$(ar_wan ethernet); rc=$?
+[[ $rc -eq 0 ]] \
+  && grep -q '^address=/ads.example.com/$' "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  && grep -q '^address=/tracker.net/$' "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  && ! grep -q 'not_a_domain' "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  && ! grep -q 'address=/[^ ]*#' "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  && ok "5ar DNS blocked-domains: NXDOMAIN rows (lowercased+deduped), invalid row skipped, no /# hijack form" \
+  || bad "5ar DNS block render rc=$rc: $(cat "$AR/dnsmasq.d/travel-router-dns-block.conf" 2>/dev/null | tr '\n' ';')"
+grep -q '^no-resolv$' "$AR/dnsmasq.d/travel-router-dns-local.conf" \
+  && grep -q '^local=/#/$' "$AR/dnsmasq.d/travel-router-dns-local.conf" \
+  && ! grep -q 'address=/#/' "$AR/dnsmasq.d/travel-router-dns-local.conf" \
+  && ok "5ar DNS local-only: no-resolv + local=/#/ (NEVER address=/#/)" \
+  || bad "5ar DNS local: $(cat "$AR/dnsmasq.d/travel-router-dns-local.conf" 2>/dev/null)"
+[[ "$(ar_dnsmasq_calls)" == "1" ]] \
+  && ok "5ar DNS: first apply -> exactly 1 coalesced restart (both drop-ins)" \
+  || bad "5ar DNS restart count=$(ar_dnsmasq_calls)"
+# content change (same presence) -> rewrite, NO restart (H03 rule)
+printf 'tracker.net\nnewblock.example.org\n' > "$AR/blocked-domains"
+ar_out=$(ar_wan ethernet); rc=$?
+ar_dnsmasq_after_change=$(ar_dnsmasq_calls)
+[[ $rc -eq 0 ]] \
+  && grep -q '^address=/newblock.example.org/$' "$AR/dnsmasq.d/travel-router-dns-block.conf" \
+  && [[ "$ar_dnsmasq_after_change" == "0" ]] \
+  && ok "5ar DNS content-change -> drop-in rewritten, NO restart" \
+  || bad "5ar DNS content-change rc=$rc restarts=$(ar_dnsmasq_after_change)"
+# presence toggle off -> drop-in removed + exactly 1 restart
+rm -f "$AR/dns-local"
+ar_out=$(ar_wan ethernet); rc=$?
+[[ $rc -eq 0 && ! -e "$AR/dnsmasq.d/travel-router-dns-local.conf" \
+  && -f "$AR/dnsmasq.d/travel-router-dns-block.conf" && "$(ar_dnsmasq_calls)" == "1" ]] \
+  && ok "5ar DNS local flag removed -> drop-in deleted, exactly 1 toggle-restart" \
+  || bad "5ar DNS toggle rc=$rc restarts=$(ar_dnsmasq_calls)"
+
+# ---- (d)+(e)+(f) API-shaped: one §5aq-style server on 18610 -------------------
+# Salt seam: TRAVELROUTER_SALT_FILE into $AR (macOS /run is read-only; the
+# suite-globally exported seam from admin todo 8 is inherited, but this
+# section pins the file against $AR explicitly for salt-change asserts).
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+ARLIVE="$AR/live"; printf 'HotelNet\nfalse\n' > "$ARLIVE"
+STWAR="$AR/stub-travel-wan-ar"
+cat > "$STWAR" <<'STUBEOF'
+#!/bin/bash
+if [[ "$1" == "ap-info" ]]; then
+  ssid=""; hidden="false"
+  [[ -f "$LIVE_FILE" ]] && { ssid="$(sed -n '1p' "$LIVE_FILE")"; hidden="$(sed -n '2p' "$LIVE_FILE")"; }
+  printf '{"ssid": "%s", "hidden": %s}\n' "$ssid" "$hidden"
+  exit 0
+fi
+if [[ "$1" == "ap-apply" ]]; then
+  [[ "$APPLY_MODE" == "fail" ]] && { echo "ap-apply: probe failed" >&2; exit 1; }
+  [[ -n "${2-}" ]] && sed -i '' "1s/.*/$2/" "$LIVE_FILE"
+  [[ "${4-}" == "2" ]] && sed -i '' "2s/.*/true/" "$LIVE_FILE"
+  [[ "${4-}" == "0" ]] && sed -i '' "2s/.*/false/" "$LIVE_FILE"
+  exit 0
+fi
+exit 0
+STUBEOF
+chmod +x "$STWAR"
+AR_START() { # -> fresh server (fresh in-memory throttle + audit ring) on 18610
+  APPLY_MODE="${AR_APPLY:-ok}" LIVE_FILE="$ARLIVE" \
+  TRAVELROUTER_SETUP_PIN="1357" TRAVELROUTER_ADMIN_PSK="${TESTADMIN_PSK:-AdminPass99}" \
+  TRAVELWAN_BIN="$STWAR" TRAVELROUTER_STATE_FILE="$AR/state.json" \
+  TRAVELROUTER_SALT_FILE="$AR/session-salt" \
+  TRAVELROUTER_AUDIT_FILE="$AR/audit.jsonl" \
+  TRAVELROUTER_STATUS_PORT=18610 TRAVELROUTER_BIND_HOST=127.0.0.1 \
+    python3 "$A/status-server.py" >>"$B/srv-ar.log" 2>&1 &
+  ARPID=$!
+  wait_healthy 18610 || true
+}
+AR_STOP() { kill "$ARPID" 2>/dev/null; wait "$ARPID" 2>/dev/null; }
+
+# T1 DIAGNOSTIC (temporary — removed in todo 3): fires ONLY on the §5ar(e)
+# parse-fail path (a passing run never executes it; asserts untouched).
+# Snapshots the raw capture bytes, the 18610 listener/process state and the
+# server log tail so the corruption maps to Branch A (stale/dual listener),
+# B (client-side curl-capture artifact, server single+clean) or C
+# (server-emitted bytes).
+ar_t1_capture() {
+  local d="$ROOT/.omo/evidence/travel-router-security-finishing/t1-capture"
+  mkdir -p "$d"
+  {
+    printf '=== T1 fail-path capture: %s | %s ===\n' "$1" "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf -- '--- apx (code|body) od -c ---\n'
+    printf '%s' "${apx:-unset}" | od -c
+    printf -- '--- ar_audit_json (body fed to json.loads) od -c ---\n'
+    printf '%s' "${ar_audit_json:-unset}" | od -c
+    printf -- '--- ARPID=%s | command -v curl=%s ---\n' "${ARPID:-unset}" "$(command -v curl)"
+    printf -- '--- lsof -nP -iTCP:18610 -sTCP:LISTEN ---\n'
+    lsof -nP -iTCP:18610 -sTCP:LISTEN 2>&1
+    printf -- '--- lsof -nP -iTCP:18610 (all states) ---\n'
+    lsof -nP -iTCP:18610 2>&1
+    printf -- '--- ps aux | grep [s]tatus-server.py ---\n'
+    ps aux | grep '[s]tatus-server.py' || true
+    printf -- '--- tail -30 %s ---\n' "$B/srv-ar.log"
+    tail -30 "$B/srv-ar.log" 2>&1
+  } > "$d/fail-capture.txt" 2>&1
+}
+
+# (d) session-salt: rotate invalidates the pre-rotation token IN-PROCESS
+rm -f "$AR/session-salt" "$AR/audit.jsonl"
+AR_APPLY=ok AR_START
+ARTOK=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+[[ -n "$ARTOK" ]] && ok "5ar(d) login mints pre-rotation token" || bad "5ar(d) login failed"
+[[ -f "$AR/session-salt" && "$(stat -f%Lp "$AR/session-salt" 2>/dev/null)" == "600" ]] \
+  && ok "5ar(d) salt file auto-created 0600 in the fixture dir (salt seam)" \
+  || bad "5ar(d) salt file mode=$(stat -f%Lp "$AR/session-salt" 2>/dev/null) exists=$([[ -f "$AR/session-salt" ]] && echo y || echo n)"
+[[ "$(wc -c <"$AR/session-salt" | tr -d ' ')" == "64" ]] \
+  && ok "5ar(d) salt is 64 hex chars (32 bytes)" || bad "5ar(d) salt length=$(wc -c <"$AR/session-salt" | tr -d ' ')"
+apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK")
+[[ "$apx" == 200* ]] && ok "5ar(d) pre-rotation token passes a gated read -> 200" \
+  || bad "5ar(d) pre-rotation gated read: [$apx]"
+apx=$(aq_post_r /api/admin/rotate-sessions '{"pin":"1357"}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK")
+[[ "$apx" == 200*'"ok"'* ]] && ok "5ar(d) POST rotate-sessions -> 200" || bad "5ar(d) rotate: [$apx]"
+apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK")
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ar(d) SAME pre-rotation token after rotate -> 401 (in-process, no cache)" \
+  || bad "5ar(d) post-rotate token: [$apx]"
+ARTOK2=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK2")
+[[ "$apx" == 200* ]] \
+  && ok "5ar(d) fresh login after rotate -> 200 (ADMIN_PSK untouched)" \
+  || bad "5ar(d) fresh login read: [$apx]"
+# external salt overwrite with DIFFERENT content -> 401 WITHOUT calling rotate:
+# _load_salt() is content-mixed and re-read on every verify, so a token minted
+# before the overwrite must fail now; 401 proves the getter re-reads (a stale
+# in-process cache would still 200). (mv with SAME content must stay 200 —
+# the fingerprint is content, not inode — committed behavior, not asserted here.)
+printf '%s\n' "$(openssl rand -hex 32)" > "$AR/session-salt"
+apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK2")
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ar(d) external salt overwrite -> pre-overwrite token 401 (getter re-reads every verify)" \
+  || bad "5ar(d) external overwrite: [$apx]"
+AR_STOP
+
+# (e) audit ring: no-session GET + wrong-pin write + wrong login -> rows;
+# NO PSK/PIN in any row. Fresh server (empty ring) on the same port.
+# Mint order is assert-driven: the API returns the ring newest-first
+# (reversed append order) and the assert wants
+# [login/401, login/401, write/403, read/401], so chronologically the
+# no-session read/401 is minted FIRST and the two login/401 rows LAST.
+sleep 1
+AR_APPLY=ok AR_START
+ARTOK3=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+aq_get /api/admin/audit >/dev/null # no session -> 401, mints the read/401 row
+aq_post /api/wan/apconfig '{"pin":"9999"}' -H 'X-Requested-With: XMLHttpRequest' \
+  -H "X-Session: $ARTOK3" >/dev/null
+for i in 1 2; do
+  aq_post /api/auth/login '{"psk":"definitely-wrong-psk"}' \
+    -H 'X-Requested-With: XMLHttpRequest' >/dev/null
+done
+apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK3")
+[[ "$apx" == 200*'"attempts"'* ]] \
+  && ok "5ar(e) GET /api/admin/audit with session -> 200 {attempts}" \
+  || bad "5ar(e) audit read: [$apx]"
+ar_audit_json="${apx#*|}"
+# rows: shape ts/ip/kind/code; expected sequence newest-first; no secrets.
+ARPSK="${TESTADMIN_PSK:-AdminPass99}"
+printf '%s' "$ar_audit_json" | python3 -c '
+import json, re, sys
+data = json.loads(sys.stdin.read())
+rows = data.get("attempts", [])
+bad = []
+want = [("login", 401), ("login", 401), ("write", 403), ("read", 401)]
+got = [(r.get("kind"), r.get("code")) for r in rows]
+if got != want: bad.append("sequence=%s" % got)
+for r in rows:
+    if set(r.keys()) != {"ts", "ip", "kind", "code"}: bad.append("keys=%s" % r)
+    if r.get("ip") != "127.0.0.1": bad.append("ip=%s" % r)
+    if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", r.get("ts", "")): bad.append("ts=%s" % r)
+if not all(rows[i]["ts"] >= rows[i + 1]["ts"] for i in range(len(rows) - 1)): bad.append("ts-not-descending")
+sys.exit(1 if bad else 0)
+' && ok "5ar(e) rows: login/401 x2 + write/403 + read/401 newest-first, ts/ip shape exact" \
+  || { ar_t1_capture "5ar(e)"; bad "5ar(e) row shape/sequence wrong: $(printf '%s' "$ar_audit_json" | od -c | head -3 | tr '\n' ' ')"; }
+ar_audit_secrets=$(printf '%s %s 9999' "$ARPSK" "1357")
+grep -qF "$ARPSK" "$AR/audit.jsonl" || printf '%s' "$ar_audit_json" | grep -qF "$ARPSK" \
+  && bad "5ar(e) PSK leaked into audit (forbidden)" \
+  || ok "5ar(e) no PSK value in audit file or response"
+grep -qF '1357' "$AR/audit.jsonl" \
+  && bad "5ar(e) PIN leaked into audit file (forbidden)" \
+  || ok "5ar(e) no PIN value in audit file"
+# ring cap: the deque construction is the enforcement (code-level, §5aq8 idiom)
+grep -q 'AUDIT_CAP = 200' "$A/status-server.py" \
+  && grep -q '_AUDIT_RING = deque(maxlen=AUDIT_CAP)' "$A/status-server.py" \
+  && ok "5ar(e) ring cap: deque(maxlen=AUDIT_CAP) — 201st append auto-drops oldest" \
+  || bad "5ar(e) ring cap construction missing"
+AR_STOP
+
+# (f) session-destruct on rename: salt-change matrix via /api/wan/apconfig
+ar_salt() { cat "$AR/session-salt" 2>/dev/null || printf MISSING; }
+# PSK-only change -> salt UNCHANGED, token survives
+rm -f "$AR/session-salt"
+AR_APPLY=ok AR_START
+ARTOK4=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+ar_salt_before=$(ar_salt)
+apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","psk":"newpsk123"}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK4")
+[[ "$apx" == 200*'"ok"'*'"rc": 0'* ]] && ok "5ar(f) PSK-only apconfig -> 200 rc=0" || bad "5ar(f) PSK-only: [$apx]"
+[[ "$(ar_salt)" == "$ar_salt_before" ]] \
+  && ok "5ar(f) PSK-only -> salt UNCHANGED" || bad "5ar(f) PSK-only rotated the salt"
+[[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK4")" == 200* ]] \
+  && ok "5ar(f) PSK-only -> pre-change token still 200" || bad "5ar(f) PSK-only token died"
+AR_STOP
+# rename -> salt CHANGED + pre-rename token 401 + fresh login 200
+rm -f "$AR/session-salt"; printf 'HotelNet\nfalse\n' > "$ARLIVE"
+AR_APPLY=ok AR_START
+ARTOK5=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+ar_salt_before=$(ar_salt)
+apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","ssid":"NewName"}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK5")
+[[ "$apx" == 200*'"ok"'*'"rc": 0'* ]] && ok "5ar(f) rename apconfig -> 200 rc=0" || bad "5ar(f) rename: [$apx]"
+[[ "$(ar_salt)" != "$ar_salt_before" && "$(ar_salt)" != "MISSING" ]] \
+  && ok "5ar(f) rename -> salt CHANGED" || bad "5ar(f) rename salt unchanged"
+[[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK5")" == 401* ]] \
+  && ok "5ar(f) rename -> pre-rename token 401 (self-destruct)" \
+  || bad "5ar(f) pre-rename token survived"
+ARTOK5B=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+[[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK5B")" == 200* ]] \
+  && ok "5ar(f) fresh login after rename -> 200" || bad "5ar(f) post-rename login failed"
+AR_STOP
+# failed ap-apply -> NO rotate (the restore branch must not log everyone out)
+rm -f "$AR/session-salt"; printf 'HotelNet\nfalse\n' > "$ARLIVE"
+AR_APPLY=fail AR_START
+ARTOK6=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+ar_salt_before=$(ar_salt)
+apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","ssid":"NewName"}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK6")
+[[ "$apx" == 200*'"ok": false'*'"rc": 1'* ]] \
+  && ok "5ar(f) failed ap-apply -> 200 envelope {ok:false,rc:1}" || bad "5ar(f) failed-apply: [$apx]"
+[[ "$(ar_salt)" == "$ar_salt_before" ]] \
+  && ok "5ar(f) rc!=0 -> salt UNCHANGED (no rotate on restore)" \
+  || bad "5ar(f) failed apply rotated the salt"
+[[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK6")" == 200* ]] \
+  && ok "5ar(f) rc!=0 -> pre-apply token still 200" || bad "5ar(f) token rotated on failed apply"
+AR_STOP
+pkill -f status-server.py 2>/dev/null; sleep 0.3
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
