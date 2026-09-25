@@ -3405,41 +3405,14 @@ AR_START() { # -> fresh server (fresh in-memory throttle + audit ring) on 18610
 }
 AR_STOP() { kill "$ARPID" 2>/dev/null; wait "$ARPID" 2>/dev/null; }
 
-# T1 DIAGNOSTIC (temporary — removed in todo 3): fires ONLY on the §5ar(e)
-# parse-fail path (a passing run never executes it; asserts untouched).
-# Snapshots the raw capture bytes, the 18610 listener/process state and the
-# server log tail so the corruption maps to Branch A (stale/dual listener),
-# B (client-side curl-capture artifact, server single+clean) or C
-# (server-emitted bytes).
-ar_t1_capture() {
-  local d="$ROOT/.omo/evidence/travel-router-security-finishing/t1-capture"
-  mkdir -p "$d"
-  {
-    printf '=== T1 fail-path capture: %s | %s ===\n' "$1" "$(date '+%Y-%m-%d %H:%M:%S')"
-    printf -- '--- apx (code|body) od -c ---\n'
-    printf '%s' "${apx:-unset}" | od -c
-    printf -- '--- ar_audit_json (body fed to json.loads) od -c ---\n'
-    printf '%s' "${ar_audit_json:-unset}" | od -c
-    printf -- '--- ARPID=%s | command -v curl=%s ---\n' "${ARPID:-unset}" "$(command -v curl)"
-    printf -- '--- lsof -nP -iTCP:18610 -sTCP:LISTEN ---\n'
-    lsof -nP -iTCP:18610 -sTCP:LISTEN 2>&1
-    printf -- '--- lsof -nP -iTCP:18610 (all states) ---\n'
-    lsof -nP -iTCP:18610 2>&1
-    printf -- '--- ps aux | grep [s]tatus-server.py ---\n'
-    ps aux | grep '[s]tatus-server.py' || true
-    printf -- '--- tail -30 %s ---\n' "$B/srv-ar.log"
-    tail -30 "$B/srv-ar.log" 2>&1
-  } > "$d/fail-capture.txt" 2>&1
-}
-
 # (d) session-salt: rotate invalidates the pre-rotation token IN-PROCESS
 rm -f "$AR/session-salt" "$AR/audit.jsonl"
 AR_APPLY=ok AR_START
 ARTOK=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
 [[ -n "$ARTOK" ]] && ok "5ar(d) login mints pre-rotation token" || bad "5ar(d) login failed"
-[[ -f "$AR/session-salt" && "$(stat -f%Lp "$AR/session-salt" 2>/dev/null)" == "600" ]] \
+[[ -f "$AR/session-salt" && "$(stat -f%Lp "$AR/session-salt" 2>/dev/null || stat -c%a "$AR/session-salt" 2>/dev/null)" == "600" ]] \
   && ok "5ar(d) salt file auto-created 0600 in the fixture dir (salt seam)" \
-  || bad "5ar(d) salt file mode=$(stat -f%Lp "$AR/session-salt" 2>/dev/null) exists=$([[ -f "$AR/session-salt" ]] && echo y || echo n)"
+  || bad "5ar(d) salt file mode=$(stat -f%Lp "$AR/session-salt" 2>/dev/null || stat -c%a "$AR/session-salt" 2>/dev/null) exists=$([[ -f "$AR/session-salt" ]] && echo y || echo n)"
 [[ "$(wc -c <"$AR/session-salt" | tr -d ' ')" == "64" ]] \
   && ok "5ar(d) salt is 64 hex chars (32 bytes)" || bad "5ar(d) salt length=$(wc -c <"$AR/session-salt" | tr -d ' ')"
 apx=$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK")
@@ -3507,8 +3480,7 @@ for r in rows:
 if not all(rows[i]["ts"] >= rows[i + 1]["ts"] for i in range(len(rows) - 1)): bad.append("ts-not-descending")
 sys.exit(1 if bad else 0)
 ' && ok "5ar(e) rows: login/401 x2 + write/403 + read/401 newest-first, ts/ip shape exact" \
-  || { ar_t1_capture "5ar(e)"; bad "5ar(e) row shape/sequence wrong: $(printf '%s' "$ar_audit_json" | od -c | head -3 | tr '\n' ' ')"; }
-ar_audit_secrets=$(printf '%s %s 9999' "$ARPSK" "1357")
+  || bad "5ar(e) row shape/sequence wrong: $(printf '%s' "$ar_audit_json" | od -c | head -3 | tr '\n' ' ')"
 grep -qF "$ARPSK" "$AR/audit.jsonl" || printf '%s' "$ar_audit_json" | grep -qF "$ARPSK" \
   && bad "5ar(e) PSK leaked into audit (forbidden)" \
   || ok "5ar(e) no PSK value in audit file or response"
