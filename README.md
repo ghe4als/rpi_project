@@ -246,6 +246,7 @@ DHCP/DNS, a status page and a **phone setup page** at `http://192.168.50.1`
 TRAVELROUTER_AP_SSID="TravelNet"
 TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
 TRAVELROUTER_SETUP_PIN="1234"            # required; unlocks the phone setup page
+TRAVELROUTER_ADMIN_PSK="choose-a-passphrase"  # required; >=8 printable ASCII; logs into the admin page (/admin)
 TRAVELROUTER_DEFAULT_PSKS="homepsk1,homepsk2"  # optional: default PSKs tried by "Try saved passwords"
 ROLE="travel-router"
    ```
@@ -259,12 +260,87 @@ ROLE="travel-router"
 
 **Threat model.** The router's management plane (status/setup pages, SSH) is
 only reachable from the private travel AP — nftables drops traffic arriving
-from the WAN side to the router. The setup PIN is the gate against other
-guests joining your travel AP. Saved PSKs sit at rest as 0600 (root-owned)
-on the Pi, but during `connect`/`try-psks` they are transiently visible in
-process arguments (`/proc/<pid>/cmdline`); the only local accounts are `pi`
-and root, both already privileged, so no privilege boundary is crossed today
-— PSK-in-argv accepted risk.
+from the WAN side to the router (the admin page's stealth self-check, below,
+verifies exactly this against the rendered ruleset). The setup PIN is the
+gate against other guests joining your travel AP. Saved PSKs sit at rest as
+0600 (root-owned) on the Pi, but during `connect`/`try-psks` they are
+transiently visible in process arguments (`/proc/<pid>/cmdline`); the only
+local accounts are `pi` and root, both already privileged, so no privilege
+boundary is crossed today — PSK-in-argv accepted risk.
+
+### Security features (admin page, default-off)
+
+The admin page at `http://192.168.50.1/admin` is the management surface for
+a set of opt-in security features. Log in with `TRAVELROUTER_ADMIN_PSK`;
+writes additionally need the setup PIN (the session/CSRF header rules for
+curl are in Troubleshooting). **Every feature flag defaults OFF** — a fresh
+flash blocks nothing, cuts nothing, hides nothing; each toggle persists as
+a flag file under `/etc/rpi-project/travel-router/` and survives reboots.
+None of these features appears on the client `/setup` page.
+
+- **Block list** (default OFF — empty list, nothing blocked). Block a
+  device by MAC from the admin page's Connected-clients list (per-client
+  Block button; blocked devices get a "blocked" badge, and the Blocked
+  devices section offers Unblock) or over SSH: `travel-wan block <MAC>` /
+  `travel-wan unblock <MAC>` / `travel-wan blocked`. A blocked MAC is
+  dropped at the TOP of the nftables input AND forward chains — before the
+  established-connection accepts, so its live sessions die too — and is
+  deauthenticated from the AP immediately. The list persists across the
+  30s re-render and reboots.
+- **Internet kill switch** (default OFF — client internet flows). One
+  toggle on the admin page cuts every client's LAN→WAN forwarding while
+  the status/admin pages stay reachable. Mechanism: when the flag file
+  exists, the nftables render omits the LAN→WAN forward accept; clearing
+  the flag restores internet. Presence is the cut, absence is always the
+  online state — never inverted.
+- **DNS hardening** (default OFF — both halves). Two independent toggles
+  on the admin page: a blocked-domains list (each listed domain is
+  answered NXDOMAIN by dnsmasq) and a local-only mode (`no-resolv` +
+  `local=/#/` — no upstream forwarding at all). Both render as dnsmasq
+  drop-ins; clearing the list/flag removes the drop-in again, and dnsmasq
+  restarts only when a drop-in appears or disappears, not on every edit.
+- **Force-relogin** (default: no state — a one-shot action, not a flag).
+  The admin page's "Force relogin" button (`POST
+  /api/admin/rotate-sessions`) rotates the session-salt file that is mixed
+  into every session token's fingerprint, so ALL sessions — including the
+  admin's own — fail their next request and every device must log in
+  again. `TRAVELROUTER_ADMIN_PSK` itself is unchanged.
+- **Session self-destruct on AP rename/hide** (no default-off state — not
+  a toggle; this is how the AP-settings flow always behaves). When an
+  AP-settings change that
+  CHANGES the SSID or the hidden flag applies successfully, the session
+  salt rotates automatically: every session minted before the change dies,
+  including the admin's own — the admin page handles the resulting 401 by
+  dropping back to the login panel (log in again on the new SSID).
+  PSK-only changes, no-op renames, and failed applies (the previous config
+  is auto-restored) never rotate.
+- **Auth-failure audit** (default: always-on logging, admin-only read —
+  not a flag). Every 401/403/429 auth rejection (failed logins, wrong-PIN
+  writes, session-gated reads without a session) lands in a bounded
+  200-row ring, surfaced in the admin page's Audit table (`GET
+  /api/admin/audit`, session-gated). Rows carry only timestamp, source IP,
+  kind (login/write/read) and HTTP code — never a PSK or PIN value.
+- **SSH lockdown** (default OFF — SSH reachable from the travel AP). When
+  toggled ON from the admin page, the nftables render drops tcp/22 on the
+  LAN (AP) interface ONLY: the drop is injected BEFORE the remaining
+  `{53, 80}` accept (nftables is first-match, so the drop wins). The admin
+  page (tcp/80) stays reachable, so recovery is simply toggling lockdown
+  back off. WAN-side note: inbound SSH from the WAN/USB-Ethernet side is
+  policy-dropped with or without this feature — see Recovery below.
+- **WAN-stealth self-check** (default: read-only, always available — not a
+  flag). The admin page's Stealth section (or `travel-wan stealth-check`
+  over SSH) greps the rendered nftables ruleset for WAN-side accepts on
+  management ports and reports `stealth: true/false` plus any open ports.
+  It changes nothing; in the default posture it reports stealth.
+- **AP-settings preview/change flow** (no default-off state — not a flag;
+  the standard admin change path). The AP settings section can mint a
+  random SSID (8 chars from a no-lookalike alphabet) and a random PSK via
+  `POST
+  /api/admin/apconfig/preview` (session + PIN; mints credentials, touches
+  nothing), then apply via `POST /api/wan/apconfig`: the new hostapd
+  config is parse-probed on a throwaway copy (the live radio is never
+  touched by an invalid config) and the previous config is auto-restored
+  if the AP fails to come up after the restart.
 
 ### First-boot simulation (provisioning WiFi becomes the first WAN)
 
@@ -415,9 +491,15 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
 6. **Recovery / fallback (SSH)** — after role-setup the Pi is reachable ONLY
    via the travel SSID (SSH to 192.168.50.1, creds from `.env`; the
    `travel-wan` CLI still works: `ssh pi@192.168.50.1 travel-wan
-   connect <SSID> <PSK>`) or by plugging a USB Ethernet adapter
-   (NetworkManager stays managing it, so wired connectivity is restored for
-   recovery). Forgot the PIN? Re-provision, or edit
+   connect <SSID> <PSK>`) or by plugging a USB Ethernet adapter:
+   NetworkManager keeps managing it, so the Pi regains wired connectivity
+   (a DHCP address plus outbound internet — first-boot apt and WAN duty
+   work). Wired connectivity is NOT wired SSH, though: the nftables input
+   chain is policy-drop with accepts only on the travel-AP interface, so
+   inbound connections arriving from the wired/WAN side — SSH included —
+   are dropped by default. SSH is reachable only from the travel AP side,
+   and only while SSH lockdown (above) is off; locked out of the AP side
+   entirely, re-provision. Forgot the PIN? Re-provision, or edit
    `/boot/firmware/role/role.env` on the bootfs partition and restart
    `travel-router-status.service`. A FAILED role-setup stays enabled and
    retries on the next boot. If first-boot home WiFi was unreachable, apt
@@ -427,7 +509,10 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
 7. **Upgrading a previously provisioned Pi** — Pis flashed before this
    feature have no setup PIN, so the phone setup API stays deny-by-default
    there: re-provision, or hand-add `TRAVELROUTER_SETUP_PIN` to `role.env`
-   and restart `travel-router-status.service`.
+   and restart `travel-router-status.service`. The same applies to
+   `TRAVELROUTER_ADMIN_PSK` (the admin-page login): with no ADMIN_PSK set,
+   login is deny-by-default and no session is ever issued — hand-add it to
+   `role.env` and restart `travel-router-status.service`.
 
 ## How it works
 

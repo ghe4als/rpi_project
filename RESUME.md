@@ -1,51 +1,48 @@
-# RESUME — travel-router-ap-stealth (COMPLETE — witness run passed, plan closed)
+# RESUME — travel-router-security-features (suite committed, F-wave running)
 
 <!--
-SESSION 2026-09-22. Witness run COMPLETE on hardware (HEAD a17bad5,
-reflash bookworm armhf 2026-06-18): T1 login, T5 write-path + restore,
-T2 random rename (travel-router -> YZ47K3MZ), T3 hide (scan negative,
-manual rejoin works), T4 un-hide (envelope delivered, client kept, scan
-positive). ALL PASS. Plan checkbox 3 ticked. Suite 436/0. Outage root
-cause (empty country render + dead liveness poll) fixed + hardware-
-proven. The ap-stealth plan is DONE; nothing pending for it.
+SESSION 2026-09-24. Security-features plan closed out to green: todo 12 suite
+battery committed f61b7d3 (travel-router-security-finishing plan, T1-T3). The
+5ar(e) flake root-caused to a CLIENT-side curl artifact (path passed as an
+extra URL arg; curl prints a -w "\n000" line per URL) — server was always
+clean. Fixed by shifting path/body out of $@ in aq_get/aq_post + restoring the
+missing no-session read/401 in the (e) flow. Suite >=570/0 across 6
+consecutive full runs. T4 README docs done (SSH-recovery wording corrected:
+wired IP ≠ inbound SSH; policy-drop documented). F1-F4 verification wave
+remains; owner-call items below.
 -->
 
 ## Current state
 
-Plan `.omo/plans/travel-router-ap-stealth.md`: **ALL 3 TODOs DONE**
-(a85bb1b, b3f51ea, d71ff81 + session fixes faaff26, a17bad5; docs 01984f5,
-048df90). Suite monotonic: **437 passed, 0 failed**. Evidence:
-`.omo/evidence/travel-router-ap-stealth/hostapd-probe-fix.txt` — witness
-run final verdict + T1-T4 results + operational notes at the bottom.
+Plan `.omo/plans/travel-router-security-features.md`: todos 1-13 ALL TICKED
+(last: 3 + 12 ticked by f61b7d3, 13 by the docs commit). Old plan
+`.omo/plans/travel-router-security-finishing.md` tracks the finishing wave:
+T1-T4 DONE, T5 done now, F1-F4 = final verification wave (in flight;
+surface results and wait for the user's explicit okay before declaring the
+old plan complete).
 
-2026-09-23 (rpi-8e21bb, fresh flash): first-boot race produced a systemd
-DEADLOCK — wan-select's blocking `systemctl try-restart travel-router-status`
-inside wan-select.service (status is After=wan-select.service) froze both
-units; status page down. Fixed with `--no-block` (wan-select.sh) + suite
-regression assert R1b (validate-local.sh). Fix deployed live on the Pi
-(/usr/local/lib/travel-router/wan-select.sh); page 200 verified. Repo
-change uncommitted (awaiting owner OK).
-
-Live AP state on the Pi right now: SSID **YZ47K3MZ** (random rename
-applied), VISIBLE (un-hidden), PSK **fubar123**, admin login Password123,
-PIN 5555. Note: this SSID is a witness-run artifact — re-provisioning
-resets AP name/PSK to `.env` values (travel-router) by design whenever
-the user wants the standard name back.
+- Suite gate: monotonic; now **570 passed, 0 failed** (6 consecutive green
+  runs at T2+T3). Evidence `.omo/evidence/travel-router-security-finishing/
+  t3-green-runs.txt`.
+- Commits: `f61b7d3` test(travel-router): suite for security features; docs
+  commit adds README security-features section (README:271-345, default-off
+  per feature) + the SSH-recovery correction (README ~:491-502).
+- Flake root cause (.omo/evidence/travel-router-security-finishing/
+  t1-diagnosis.txt): aq_get/aq_post passed the bare path as an extra curl
+  URL -> curl -w "\n000" prefix, client-side never on the wire. Do NOT
+  re-narrate it as a keep-alive/loopback issue; the aq_post_r comment
+  misattributes the fix.
 
 ## Owner-call items
 
-None — provision.sh CR-strip committed (c14e320); tasks/5-session-auth.md
-scratch removed (2026-09-22, content superseded by landed Todo 6 commit
-8846d5a + evidence file). WPA3 capability-check recipe documented in
-README (d2fa0f4): Zero W = WPA2 ceiling (BCM43430A1 has no SAE); new
-hardware -> run the `iw phy0 info` recipe before buying/editing.
+- 2026-09-23 wan-select --no-block fix deployed live
+  (/usr/local/lib/travel-router/wan-select.sh on rpi-8e21bb) — if the
+  provisioned tree differs from HEAD's wan-select.sh, next re-provision
+  reconciles. Confirm on next hardware session if desired.
 
 ## Next session steps
 
-None for ap-stealth — plan closed. Any new work starts a fresh plan.
-Standing ops notes live in the evidence file (envelope loss on radio-
-restarting applies; hidden-network manual rejoin; invalid-PSK test
-vectors must be structurally invalid).
+- F1-F4 verdicts, then close both plans; any new work starts a fresh plan.
 
 ## Standing rules (do not relearn)
 
@@ -54,14 +51,7 @@ vectors must be structurally invalid).
 - NEVER run hostapd against the live conf or a conf with `interface=wlan0`
   while hostapd-travel runs — use a dead-iface probe copy only.
 - Login API needs `X-Requested-With: XMLHttpRequest` from curl.
-- Suite gate: monotonic; now 436/0.
-
-## Standing rules (do not relearn)
-
-- Mac on `192.168.0.x` = home LAN (Brook) → Pi unreachable; STOP and ask the
-  user to switch to the travel SSID (192.168.50.x). Never poll.
-- NEVER run hostapd against the live conf or a conf with `interface=wlan0`
-  while hostapd-travel runs — use a dead-iface probe copy only.
-- Login API needs `X-Requested-With: XMLHttpRequest` from curl.
-- Owner-call items: NONE (all cleared 2026-09-22).
-- Suite gate: monotonic; now 436/0.
+- The suite is client/capture-fragile: every curl wrapper must pass the URL
+  EXACTLY ONCE (path is NOT part of "$@" in aq_get/aq_post).
+- Suite gate: monotonic; do not re-derive the 5ar(e) order — the (e) ring
+  mint order is assert-driven (read/401 -> write/403 -> login/401 x2).
