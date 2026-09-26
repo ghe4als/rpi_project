@@ -1331,21 +1331,47 @@ mk_restart_stub "$c3/restart-fail.sh" 1
 mkdir -p "$c3/ap-etc" "$c3/ctrl"
 # Fixture conf declares ctrl_interface (rendered template carries the line);
 # the liveness poll needs the socket present, so pre-create it in a fixture
-# ctrl dir (this battery asserts file MODES, not daemon liveness).
+# ctrl dir and pair it with a hostapd_cli stub: the poll treats a socket whose
+# hostapd does not report ENABLED as a DOWN radio (see _ap_radio_up).
 : > "$c3/ctrl/uap0"
+# hostapd_cli stubs. -enabled reports the interface up; -preenable reports the
+# COUNTRY_UPDATE state the socket appears in, which is NOT up.
+# Key shape copied from real hostapd 2.10 AP-mode `status` on rpi-8e21bb:
+# the interface state is a BARE `state=` key, with no wpa_state/interface_state
+# anywhere in the output. Stubs that invent a longer spelling would let the
+# suite pass against a key the daemon never emits.
+cat > "$c3/hostapd-cli-enabled.sh" <<'EOF'
+#!/bin/bash
+# -p must name the ctrl socket DIRECTORY and -i the interface. A -p aimed at
+# the socket file is a non-directory, so a real hostapd_cli answers an empty
+# status and every rename rolls back — refuse to pretend that is "up".
+[[ "$1" == "-p" && -d "$2" ]] || { echo "stub: -p must be a socket DIR (got '$2')" >&2; exit 3; }
+printf 'state=ENABLED\nphy=phy0\nfreq=2437\nchannel=6\nssid[0]=NewNet\nnum_sta[0]=0\n'
+exit 0
+EOF
+cat > "$c3/hostapd-cli-preenable.sh" <<'EOF'
+#!/bin/bash
+[[ "$1" == "-p" && -d "$2" ]] || { echo "stub: -p must be a socket DIR (got '$2')" >&2; exit 3; }
+printf 'state=COUNTRY_UPDATE\nphy=phy0\nfreq=2437\nchannel=6\nssid[0]=NewNet\n'
+exit 0
+EOF
+chmod +x "$c3/hostapd-cli-enabled.sh" "$c3/hostapd-cli-preenable.sh"
 # Fixture live conf is deliberately 0644 so the 600 asserts below prove the
 # chmods ran (a 0644->0644 no-op would pass vacuously).
 printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
 chmod 0644 "$c3/ap-etc/hostapd-travel.conf"
 printf 'OldNet\n' > "$c3/ap-ssid"
 printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_AP_COUNTRY=US\nTRAVELROUTER_AP_CHANNEL=6\nTRAVELROUTER_AP_INTERFACE=uap0\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n' > "$c3/role.env"
-c3aprun() {  # $1 = MODELOG target, $2 = SYSTEMCTL stub
+c3aprun() {  # $1 = MODELOG target, $2 = SYSTEMCTL stub, $3 = hostapd_cli stub (default: reports ENABLED)
   ( umask 022
     export TRAVELROUTER_AP_CONF="$c3/ap-etc/hostapd-travel.conf"
     export TRAVELROUTER_AP_TEMPLATE="$A/hostapd.conf.tmpl"
     export TRAVELROUTER_HOSTAPD_BIN="$c3stat"
     export TRAVELROUTER_AP_SSID_FILE="$c3/ap-ssid"
     export TRAVELROUTER_CTRL_DIR="$c3/ctrl"
+    export TRAVELROUTER_APCONFIG_LOG="$c3/apconfig.log"
+    export TRAVELROUTER_AP_UP_TIMEOUT=2
+    export HOSTAPD_CLI="${3:-$c3/hostapd-cli-enabled.sh}"
     export SUDO="$c3/sudo.sh" SYSTEMCTL="$2" MODELOG="$1"
     export TRAVELROUTER_AP_SSID=TestNet TRAVELROUTER_AP_PSK=TestPass123 TRAVELROUTER_AP_INTERFACE=uap0
     set -- ap-apply NewNet NewPass456
@@ -1378,6 +1404,48 @@ c3aprun "$c3/modes2.log" "$c3/restart-fail.sh" >"$c3/ap2.out" 2>"$c3/ap2.err" ||
 [[ $rc -eq 1 ]] && ok "5z ap-apply restart-fail rc=1" || bad "5z fail path rc=$rc (want 1)"
 m=$(stat -f%Lp "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null || stat -c%a "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null)
 [[ "$m" == "600" ]] && ok "5z restored conf 0600 (bak chmod unconditional)" || bad "5z restored conf mode=$m (want 600)"
+
+# (4) REGRESSION (field bug): a ctrl socket that exists while hostapd still
+# reports the interface COUNTRY_UPDATE is a DOWN radio, not an up one. The
+# apply must fail AND leave the pre-rename conf in place. Socket presence used
+# to return 0 and consume $AP_CONF.bak, so a radio that failed moments later
+# had nothing to roll back to and the AP stayed down until a re-flash.
+: > "$c3/modes3.log"
+printf 'interface=uap0\nssid=OldNet\n' > "$c3/ap-etc/hostapd-travel.conf"
+chmod 0644 "$c3/ap-etc/hostapd-travel.conf"
+# Reset the live-SSID record to match the conf: the rollback restores whatever
+# was in this file BEFORE the apply, so it has to be seeded, not inherited
+# from the previous test.
+printf 'OldNet\n' > "$c3/ap-ssid"
+rc=0
+c3aprun "$c3/modes3.log" "$c3/restart-ok.sh" "$c3/hostapd-cli-preenable.sh" >"$c3/ap3.out" 2>"$c3/ap3.err" || rc=$?
+[[ $rc -eq 1 ]] \
+  && ok "5z socket-present-but-not-ENABLED -> rc=1 (no false 'up')" \
+  || bad "5z pre-enable apply rc=$rc (want 1)"
+grep -q '^ssid=OldNet$' "$c3/ap-etc/hostapd-travel.conf" \
+  && ok "5z pre-rename conf survives a false-up apply (ssid=OldNet)" \
+  || bad "5z conf lost the pre-rename backup: $(grep -c '^ssid=NewNet$' "$c3/ap-etc/hostapd-travel.conf" 2>/dev/null) NewNet line(s)"
+# The live-SSID record must be rolled back WITH the conf. Left holding the
+# aborted SSID, ap-info reports a name that is not broadcasting and the next
+# psk-only change renders the aborted rename for real - found on rpi-8e21bb.
+grep -q '^OldNet$' "$c3/ap-ssid" 2>/dev/null \
+  && ok "5z ap-ssid rolled back with the conf after a failed apply" \
+  || bad "5z ap-ssid left holding the aborted SSID: $(head -1 "$c3/ap-ssid" 2>/dev/null)"
+grep -q 'no AP-ENABLED within' "$c3/apconfig.log" 2>/dev/null \
+  && ok "5z durable apconfig log records the not-ENABLED verdict" \
+  || bad "5z apconfig.log missing the not-ENABLED verdict line"
+# The failure line must carry what hostapd_cli actually said, so a poll that
+# never ENABLED can be told apart from a poll that never reached the CLI.
+grep -q 'last_hostapd_cli_status=.*COUNTRY_UPDATE' "$c3/apconfig.log" 2>/dev/null \
+  && ok "5z failure log captures what hostapd_cli actually reported" \
+  || bad "5z failure log lacks the captured hostapd_cli status: $(grep -o 'last_hostapd_cli_status=.*' "$c3/apconfig.log" 2>/dev/null | tail -1)"
+grep -q 'rollback' "$c3/apconfig.log" 2>/dev/null \
+  && ok "5z durable apconfig log records the rollback attempt" \
+  || bad "5z apconfig.log missing a rollback line"
+# The success path must still consume the .bak, and must say so in the log.
+grep -q 'OK: AP verified beaconing' "$c3/apconfig.log" 2>/dev/null \
+  && ok "5z durable apconfig log records the verified-beaconing success" \
+  || bad "5z apconfig.log missing the verified-beaconing line"
 
 # --- (5aa) scan/status POST desync: connection closed, no smuggled request ----
 sec "5aa. scan/status POST closes connection (smuggled keep-alive body not served)"
@@ -2084,6 +2152,25 @@ if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$ah/pfx" TRAVELROUTER_ROLE_ENV="$TMP/r
     || bad "5ah(c) /var/log/travel-router NOT created under prefix"
   m=$(stat -f%Lp "$ah/pfx/var/log/travel-router/dhcp.log" 2>/dev/null || stat -c%a "$ah/pfx/var/log/travel-router/dhcp.log" 2>/dev/null)
   [[ "$m" == "644" ]] && ok "5ah(d) dhcp.log 0644 (MAC/IP metadata only, no PSKs)" || bad "5ah(d) dhcp.log mode=$m (want 644)"
+  m=$(stat -f%Lp "$ah/pfx/var/log/travel-router/apconfig.log" 2>/dev/null || stat -c%a "$ah/pfx/var/log/travel-router/apconfig.log" 2>/dev/null)
+  [[ "$m" == "644" ]] && ok "5ah(f) apconfig.log pre-created 0644 (durable AP-rename forensics)" \
+    || bad "5ah(f) apconfig.log mode=$m (want 644) - install must pre-create it for the radio restart to log into"
+  # The live-SSID record that ap-info/ap-apply read must be seeded by install and
+  # must AGREE with the SSID actually rendered into the conf: an unwritten or
+  # divergent ap-ssid is why the admin page reported ap_ssid:"" on a healthy AP.
+  ah_ap_ssid="$ah/pfx/etc/rpi-project/travel-router/ap-ssid"
+  if [[ -f "$ah_ap_ssid" ]]; then
+    ok "5ah(e) install seeds the ap-ssid live-SSID record"
+    m=$(stat -f%Lp "$ah_ap_ssid" 2>/dev/null || stat -c%a "$ah_ap_ssid" 2>/dev/null)
+    [[ "$m" == "600" ]] && ok "5ah(e) ap-ssid 0600" || bad "5ah(e) ap-ssid mode=$m (want 600)"
+    ah_rendered="$(sed -n 's/^ssid=//p' "$ah/pfx/etc/hostapd/hostapd-travel.conf" 2>/dev/null | head -1)"
+    ah_seeded="$(head -1 "$ah_ap_ssid" 2>/dev/null)"
+    [[ -n "$ah_rendered" && "$ah_seeded" == "$ah_rendered" ]] \
+      && ok "5ah(e) ap-ssid agrees with the rendered conf SSID" \
+      || bad "5ah(e) ap-ssid '$ah_seeded' != rendered conf ssid '$ah_rendered'"
+  else
+    bad "5ah(e) install did NOT seed $ah_ap_ssid"
+  fi
 else
   bad "5ah dry-run render run exited nonzero"
 fi

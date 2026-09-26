@@ -37,6 +37,66 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PSK_FILE="${TRAVELROUTER_PSK_FILE:-/etc/rpi-project/travel-router/known-psks}"
 AP_SSID_FILE="${TRAVELROUTER_AP_SSID_FILE:-/etc/rpi-project/travel-router/ap-ssid}"
 BLOCK_FILE="${TRAVELROUTER_BLOCK_FILE:-/etc/rpi-project/travel-router/blocked-macs}"
+# AP-rename forensics sink. journald is volatile on the Pi, and the admin page
+# that requests a rename is served over the radio that rename restarts, so a
+# rename that takes the AP down destroys both the journal and the HTTP response
+# that would have reported it. logrotate already covers /var/log/travel-router/*.log.
+TRAVELROUTER_APCONFIG_LOG="${TRAVELROUTER_APCONFIG_LOG:-/var/log/travel-router/apconfig.log}"
+# Budget for reaching AP-ENABLED. Must exceed a Zero W SDIO radio's
+# COUNTRY_UPDATE window, otherwise a genuine bind failure is never observed.
+TRAVELROUTER_AP_UP_TIMEOUT="${TRAVELROUTER_AP_UP_TIMEOUT:-25}"
+
+# One durable ap-apply log line, mirrored to stderr for the API envelope.
+# Callers must never pass a PSK.
+aplog() {
+    local ts
+    ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' '-')"
+    printf '%s [apconfig] %s\n' "$ts" "$*" >&2
+    printf '%s [apconfig] %s\n' "$ts" "$*" >>"$TRAVELROUTER_APCONFIG_LOG" 2>/dev/null || true
+}
+
+# Does hostapd report the AP interface ENABLED over its ctrl socket?
+# Socket presence is NOT sufficient: hostapd creates <ctrl_interface>/<iface>
+# during driver init, while the interface is still UNINITIALIZED/COUNTRY_UPDATE.
+# A caller that accepts the bare socket as "up" discards the config backup
+# before the radio is beaconing, which leaves an AP-down condition with nothing
+# to roll back to. Callers must treat a not-ENABLED radio as DOWN.
+AP_RADIO_STATUS=""
+_ap_radio_up() {
+    local ctrl_dir="$1" ap_iface="$2" cand sock=""
+    AP_RADIO_STATUS=""
+    for cand in "$ctrl_dir/$ap_iface" "$ctrl_dir/${ap_iface}.1"; do
+        if [[ -e "$cand" ]]; then sock="$cand"; break; fi
+    done
+    [[ -n "$sock" ]] || return 1
+    if command -v "$HOSTAPD_CLI" >/dev/null 2>&1; then
+        # -p takes the ctrl socket DIRECTORY and -i names the interface; -p on
+        # the socket file itself points hostapd_cli at a non-directory, so it
+        # finds no socket and answers an empty status.
+        # Verdict is taken from the captured string, never from an exit status:
+        # piping into `grep -q` risks SIGPIPE surfacing under pipefail as a
+        # false "radio down". AP_RADIO_STATUS carries it out for the caller's
+        # failure log.
+        AP_RADIO_STATUS="$("$HOSTAPD_CLI" -p "$ctrl_dir" -i "$ap_iface" status 2>/dev/null | tr '\n' ' ' | cut -c1-200 || true)"
+        # hostapd 2.10 AP mode reports the interface as a bare `state=` key
+        # (verified on rpi-8e21bb: `state=ENABLED`, no wpa_state/interface_state
+        # in the output at all). Substring-matched so a build that does emit the
+        # longer spellings still satisfies it.
+        [[ "$AP_RADIO_STATUS" == *"state=ENABLED"* ]]
+        return $?
+    fi
+    # hostapd_cli absent: fall back to socket presence rather than failing every
+    # apply. The caller logs which criterion was in force.
+    return 0
+}
+
+# An empty $1 means there was no prior record; that is a no-op, not a failure.
+_ap_restore_ssid() {
+    [[ -n "$1" ]] || return 0
+    printf '%s\n' "$1" > "$AP_SSID_FILE" 2>/dev/null || return 0
+    chmod 0600 "$AP_SSID_FILE" 2>/dev/null || true
+    return 0
+}
 
 # --- PSK candidate store (wifi-ui-known-psk wave) -----------------------------
 # Schema: one row per line, 3 TAB-separated fields:
@@ -666,14 +726,16 @@ cmd_ap_apply() {
     else
         hidden_sed_expr="/${m_hidden}/d"
     fi
+    aplog "render: ssid=${new_ssid} iface=${ap_iface} country=${r_country} channel=${r_channel} hidden='${new_hidden:-keep}' psk=SET template=${tmpl}"
     sed -e "s|${m_iface}|${ap_iface}|g" \
         -e "s|${m_ssid}|${new_ssid}|g" \
         -e "s|${m_country}|${r_country}|g" \
         -e "s|${m_channel}|${r_channel}|g" \
         -e "s|${m_psk}|${new_psk}|g" \
         -e "$hidden_sed_expr" \
-        "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "ap-apply: cannot render new conf"; return 2; }
+        "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; aplog "FAIL: cannot render new conf from ${tmpl}"; log "ap-apply: cannot render new conf"; return 2; }
     chmod 0600 "$tmp"
+    aplog "render: wrote ${tmp}"
     # Parse-probe on a COPY (dead iface) — see the ap-apply block comment:
     # the gate is the stderr marker hostapd prints for parse errors, NOT the
     # daemon rc (rc 1 for BOTH parse errors and nl80211 init failure).
@@ -686,72 +748,118 @@ cmd_ap_apply() {
     rm -f "$probe" 2>/dev/null || true
     if [[ "$probe_out" == *"errors found in configuration file"* ]]; then
         rm -f "$tmp"
+        aplog "probe: REJECT - hostapd parse errors: $(printf '%s' "$probe_out" | tr '\n' ' ' | cut -c1-200)"
         log "ap-apply: new hostapd config is invalid (hostapd parse errors); nothing changed"
         return 1
     fi
+    aplog "probe: accept (no parse-error marker in hostapd output)"
     cp "$AP_CONF" "$AP_CONF.bak" 2>/dev/null || true
     chmod 0600 "$AP_CONF.bak" 2>/dev/null || true
     if ! mv -f "$tmp" "$AP_CONF" 2>/dev/null; then
         rm -f "$tmp"
+        aplog "FAIL: cannot replace ${AP_CONF} (conf unchanged)"
         log "ap-apply: cannot replace '$AP_CONF' (conf unchanged)"
         rm -f "$AP_CONF.bak" 2>/dev/null || true
         return 2
     fi
+    aplog "installed: ${AP_CONF} (pre-rename copy at ${AP_CONF}.bak)"
     local apdir="." aptmp
     apdir="$(dirname "$AP_SSID_FILE")"
     mkdir -p "$apdir" 2>/dev/null || true
+    # Keep the pre-apply identity so a failed apply can put it back. Leaving
+    # the aborted SSID here makes ap-info report a name that is not
+    # broadcasting, and ap-apply reads this file to fill an omitted SSID slot -
+    # so the next psk-only change would render the aborted rename for real.
+    local ap_ssid_prev=""
+    [[ -f "$AP_SSID_FILE" ]] && ap_ssid_prev="$(head -1 "$AP_SSID_FILE" 2>/dev/null || true)"
     aptmp="$apdir/.ap-ssid.$$"
     printf '%s\n' "$new_ssid" > "$aptmp" 2>/dev/null \
         && chmod 0600 "$aptmp" 2>/dev/null || true
     if ! mv -f "$aptmp" "$AP_SSID_FILE" 2>/dev/null; then
         rm -f "$aptmp" 2>/dev/null || true
+        aplog "WARN: ap-ssid write failed (${AP_SSID_FILE}); ap-info will report an empty SSID"
         log "ap-apply: ap-ssid write failed (scan exclusion keeps old value)"
+    else
+        aplog "ap-ssid: recorded '${new_ssid}' in ${AP_SSID_FILE}"
     fi
-    if ! "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1; then
+    local restart_rc=0
+    "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || restart_rc=$?
+    aplog "restart: systemctl restart hostapd-travel rc=${restart_rc} (Type=simple: rc0 proves exec only, not bind)"
+    if [[ $restart_rc -ne 0 ]]; then
         log "ap-apply: hostapd restart FAILED — restoring previous config"
+        _ap_restore_ssid "$ap_ssid_prev"
         if [[ -f "$AP_CONF.bak" ]]; then
             mv -f "$AP_CONF.bak" "$AP_CONF" 2>/dev/null || true
             "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || true
+            aplog "rollback: previous config + ap-ssid restored after restart rc!=0"
+        else
+            aplog "rollback INCOMPLETE after restart rc!=0: no ${AP_CONF}.bak on disk"
         fi
         return 1
     fi
-    # Type=simple: restart rc 0 only proves the exec, not that the daemon
-    # parsed the new conf and bound the iface. Poll the ctrl_interface socket
-    # (created iff the daemon came up); dead daemon -> same .bak rollback.
-    # -e not -S: a stale socket file is accepted (parse-probe already gated
-    # conf validity; SIGKILL-stale sockets are the rare residue). The poll is
-    # skipped when the conf declares no ctrl_interface (socket is the only
-    # cheap liveness proof we have) and in batteries (CTRL_DIR seam).
-    # Read the ctrl dir from the INSTALLED conf ($AP_CONF): b3f51ea read it
-    # from $tmp, which the mv above had already removed — the poll ALWAYS
-    # self-skipped in production and a dead daemon was never detected.
+    # Liveness = hostapd reporting the interface ENABLED (see _ap_radio_up).
+    # The ctrl dir is read from the INSTALLED conf, never $tmp: the mv above
+    # already consumed $tmp, so a $tmp read yields an empty ctrl dir and skips
+    # the poll entirely.
     local ctrl_dir="${TRAVELROUTER_CTRL_DIR:-$(sed -n 's/^ctrl_interface=//p' "$AP_CONF" 2>/dev/null | head -1)}"
+    local verified=no
     if [[ -n "$ctrl_dir" && -z "${TRAVELROUTER_SKIP_CTRL_POLL:-}" ]]; then
+        command -v "$HOSTAPD_CLI" >/dev/null 2>&1 \
+            || aplog "WARN: $HOSTAPD_CLI unavailable - liveness degrades to socket presence, which a not-yet-ENABLED radio satisfies"
         local wait_i alive=0
-        for wait_i in 1 2 3 4 5 6; do
+        for ((wait_i = 1; wait_i <= TRAVELROUTER_AP_UP_TIMEOUT; wait_i++)); do
             sleep 1
-            if [[ -e "$ctrl_dir/$ap_iface" || -e "$ctrl_dir/${ap_iface}.1" ]]; then
+            if _ap_radio_up "$ctrl_dir" "$ap_iface"; then
                 alive=1
+                aplog "poll: AP-ENABLED after ${wait_i}s (ctrl=${ctrl_dir} iface=${ap_iface})"
                 break
             fi
         done
-        # A Restart=on-failure crash loop recreates the socket on every
-        # attempt, so a socket hit alone is NOT liveness: require the unit to
-        # be active and not mid-restart while the socket exists.
+        # A Restart=on-failure crash loop recreates the socket on every attempt,
+        # so require the unit to be active and not mid-restart as well.
         if [[ $alive -eq 1 ]]; then
             local ustate usub
             ustate="$("$SUDO" "$SYSTEMCTL" is-active hostapd-travel.service 2>/dev/null || true)"
             usub="$("$SUDO" "$SYSTEMCTL" show hostapd-travel.service -p SubState --value 2>/dev/null || true)"
-            [[ "$ustate" == "active" && "$usub" != "auto-restart" ]] || alive=0
+            if [[ "$ustate" != "active" || "$usub" == "auto-restart" ]]; then
+                aplog "poll: unit unhealthy (is-active=${ustate} sub=${usub}) - treating AP as down"
+                alive=0
+            fi
         fi
         if [[ $alive -ne 1 ]]; then
+            local have_bak=no rb_i
+            [[ -f "$AP_CONF.bak" ]] && have_bak=yes
+            aplog "FAIL: no AP-ENABLED within ${TRAVELROUTER_AP_UP_TIMEOUT}s; backup_present=${have_bak}; last_hostapd_cli_status='${AP_RADIO_STATUS:-<none-captured>}'"
             log "ap-apply: hostapd did not come up after restart — restoring previous config"
-            if [[ -f "$AP_CONF.bak" ]]; then
+            _ap_restore_ssid "$ap_ssid_prev"
+            if [[ "$have_bak" == yes ]]; then
                 mv -f "$AP_CONF.bak" "$AP_CONF" 2>/dev/null || true
                 "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || true
+                for ((rb_i = 1; rb_i <= TRAVELROUTER_AP_UP_TIMEOUT; rb_i++)); do
+                    sleep 1
+                    if _ap_radio_up "$ctrl_dir" "$ap_iface"; then
+                        aplog "rollback OK: previous config + ap-ssid restored, radio beaconing again after ${rb_i}s"
+                        break
+                    fi
+                    if [[ "$rb_i" -eq "$TRAVELROUTER_AP_UP_TIMEOUT" ]]; then
+                        # This check can be UNANSWERABLE (wrong ctrl dir, absent
+                        # hostapd_cli), so failing it is not evidence of an outage.
+                        aplog "rollback UNVERIFIED: previous config + ap-ssid restored and hostapd restarted, but the radio could not be CONFIRMED beaconing within ${rb_i}s. Liveness is unproven, not disproven - check the AP from a client before re-flashing."
+                    fi
+                done
+            else
+                aplog "rollback INCOMPLETE: no backup on disk; the installed conf is the NEW one and the AP identity is unverified"
             fi
             return 1
         fi
+        verified=yes
+    fi
+    # $AP_CONF.bak is the only copy of the pre-rename config, so it must
+    # outlive the window in which the radio can still fail to bind.
+    if [[ "$verified" == yes ]]; then
+        aplog "OK: AP verified beaconing; dropping backup $AP_CONF.bak"
+    else
+        aplog "poll skipped (ctrl_dir='${ctrl_dir}' skip='${TRAVELROUTER_SKIP_CTRL_POLL:-}'); dropping backup with no liveness proof"
     fi
     rm -f "$AP_CONF.bak" 2>/dev/null || true
     log "ap-apply: AP reconfigured (clients are rejoining)"

@@ -390,6 +390,15 @@ sed -e "s|__AP_INTERFACE__|${ap}|g" \
     "$ASSETS/hostapd.conf.tmpl" > "$hostapd_conf"
 chmod 0600 "$hostapd_conf"
 
+# ap-info and ap-apply read the live SSID from this file. Left unwritten, the
+# admin page's AP identity reads {"ssid":""} on a perfectly healthy AP until
+# the first successful rename. Seed it with the SSID just rendered.
+ap_ssid_file="${DRY_RUN_PREFIX}/etc/rpi-project/travel-router/ap-ssid"
+if [ -n "$TRAVELROUTER_AP_SSID" ]; then
+    printf '%s\n' "$TRAVELROUTER_AP_SSID" > "$ap_ssid_file"
+    chmod 0600 "$ap_ssid_file"
+fi
+
 dnsmasq_conf="${DRY_RUN_PREFIX}/etc/dnsmasq.d/travel-router.conf"
 sed -e "s|__LAN_INTERFACE__|${ap}|g" \
     -e "s|__DHCP_RANGE__|${TRAVELROUTER_DHCP_RANGE:-192.168.50.100,192.168.50.200,12h}|g" \
@@ -403,6 +412,11 @@ log_dir="${DRY_RUN_PREFIX}/var/log/travel-router"
 mkdir -p "$log_dir"
 touch "$log_dir/dhcp.log"
 chmod 0644 "$log_dir/dhcp.log"
+# AP-rename forensics share the logrotate stanza below (*.log). Pre-creating
+# the file matters because the radio restart can drop the management
+# connection, and journald on the Pi does not survive a reboot.
+touch "$log_dir/apconfig.log"
+chmod 0644 "$log_dir/apconfig.log"
 logrotate_conf="${DRY_RUN_PREFIX}/etc/logrotate.d/travel-router-dhcp"
 mkdir -p "${DRY_RUN_PREFIX}/etc/logrotate.d"
 cat > "$logrotate_conf" <<'EOF'
