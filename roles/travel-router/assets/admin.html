@@ -353,12 +353,11 @@ function handleErr(prefix) {
 // entirely: an empty X-Pin counts as a wrong-PIN attempt and feeds the
 // per-IP fail counter.
 function statusFetch() {
-  var pin = currentPin();
-  if (!pin) { return Promise.resolve(null); }
-  return fetch("/status", { cache: "no-store", headers: { "X-Pin": pin } })
+  // /status is ADMIN-ONLY (session-gated, S02) — the admin page already has
+  // a session token from login. The public minimal status is GET /api/status.
+  return sessionFetch("/status", { cache: "no-store" })
     .then(function (r) {
-      if (r.status === 401) { return null; }   // PIN required
-      if (r.status === 403) { return null; }   // wrong PIN (throttled)
+      if (r.status === 401) { return null; }
       return r.json();
     })
     .catch(function () { return null; });

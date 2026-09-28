@@ -670,21 +670,104 @@ def _require_pin_header(handler):
 # clients/ap_state), no /status polling — anyone on the travel AP sees it.
 # The /setup link is the only way onward; the setup page itself carries the
 # management UI (gated client-side from auth Todo 7).
-_WARNING_HTML = """<!DOCTYPE html>
+_STATUS_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Private Travel Network</title>
+<title>Travel Router Status</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         background: #101418; color: #e8eaed; }
+  main { max-width: 30rem; margin: 0 auto; }
+  h1 { font-size: 1.25rem; }
+  section { background: #1a2027; border-radius: 10px; padding: 0.9rem;
+            margin-bottom: 0.9rem; }
+  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 2px 8px 2px 0; }
+  .label { font-weight: 600; }
+  .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
+  .ok { color: #5dd879; }
+  .warn { color: #ffb84d; }
+  a { color: #2d7ff9; }
 </style>
 </head>
 <body>
-<h1>Private travel network</h1>
-<p>This is a private travel network. Authorized users only.
-Unauthorized access is prohibited.</p>
-<p>Configure the network at <a href="/setup">/setup</a>.</p>
+<main>
+  <h1>Travel Router Status</h1>
+  <section>
+    <h2>Network</h2>
+    <table><tbody id="status-rows"></tbody></table>
+    <p class="msg" id="status-msg"></p>
+  </section>
+  <section>
+    <h2>Helpful Links</h2>
+    <ul id="links-list"></ul>
+  </section>
+</main>
+<script>
+"use strict";
+// DOM built with createElement/textContent only (same rule as setup.html/admin.html).
+
+function cellRow(tbody, label, value) {
+  var tr = document.createElement("tr");
+  var l = document.createElement("td");
+  l.className = "label";
+  l.textContent = label;
+  var v = document.createElement("td");
+  v.textContent = value;
+  tr.appendChild(l); tr.appendChild(v);
+  tbody.appendChild(tr);
+}
+
+function refreshStatus() {
+  fetch("/api/status", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var tbody = document.getElementById("status-rows");
+      while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+      cellRow(tbody, "Network name (SSID)", d.ap_ssid || "?");
+      cellRow(tbody, "Connected to", d.wan_ssid || "standalone");
+      var msg = document.getElementById("status-msg");
+      if (d.internet === "yes") {
+        msg.textContent = "Internet: connected";
+        msg.className = "msg ok";
+      } else if (d.internet === "reachable") {
+        msg.textContent = "Internet: connected (finish login if needed)";
+        msg.className = "msg warn";
+      } else {
+        msg.textContent = "Internet: not connected";
+        msg.className = "msg";
+      }
+    })
+    .catch(function () {
+      document.getElementById("status-msg").textContent = "status unavailable";
+    });
+}
+
+function buildLinks() {
+  var links = [
+    ["Cloudflare Speed Test", "https://speed.cloudflare.com"],
+    ["DNS Leak Test", "https://www.dnsleaktest.com"],
+    ["1.1.1.1", "https://1.1.1.1"]
+  ];
+  var list = document.getElementById("links-list");
+  links.forEach(function (pair) {
+    var li = document.createElement("li");
+    var a = document.createElement("a");
+    a.href = pair[1];
+    a.textContent = pair[0];
+    li.appendChild(a);
+    list.appendChild(li);
+  });
+}
+
+buildLinks();
+refreshStatus();
+setInterval(refreshStatus, 10000);
+</script>
 </body>
 </html>"""
 
@@ -752,20 +835,41 @@ class StatusHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
+        elif path == "/api/status":
+            # Public minimal status — NO auth. Returns only non-sensitive
+            # data: AP SSID, WAN SSID, internet status. No client list,
+            # no WAN IP, no known networks, no scan results.
+            wan_ssid = _state_field("wan_ssid") or ""
+            ap_ssid = ""
+            ap_ssid_file = "/etc/rpi-project/travel-router/ap-ssid"
+            if os.path.isfile(ap_ssid_file):
+                try:
+                    with open(ap_ssid_file, "r") as fh:
+                        ap_ssid = fh.read().strip()
+                except OSError:
+                    pass
+            if not ap_ssid:
+                ap_ssid = _state_field("ap_ssid") or ""
+            internet = "unknown"
+            try:
+                full = get_status()
+                internet = full.get("internet", "unknown")
+            except Exception:
+                pass
+            self._send(200, json.dumps({
+                "ap_ssid": ap_ssid,
+                "wan_ssid": wan_ssid,
+                "internet": internet,
+            }), "application/json")
         elif path == "/status":
-            # Client bucket (admin split, Todo 1): X-Pin is the credential —
-            # a session neither unlocks nor blocks ("PIN suffices"; the admin
-            # page polls /status during an AP restart with the PIN, not a
-            # session). Absent pin -> 401, wrong pin -> 403 via _pin_gate
-            # (throttled, connection closed).
-            if not _require_pin_header(self):
+            # Full status (incl. client list) is ADMIN-ONLY — session required.
+            # The public minimal status is GET /api/status (S01, no auth).
+            if not _require_session(self):
                 return
             self._send(200, json.dumps(get_status()), "application/json")
         elif path == "/api/wan/known":
-            # Client bucket: X-Pin header, throttled. travel-wan known rows
-            # are NAME/TIMESTAMP/AUTOCONNECT metadata, never a PSK, so the
-            # setup PIN suffices as the read credential.
-            if not _require_pin_header(self):
+            # Known networks reveal travel history — ADMIN-ONLY (S03).
+            if not _require_session(self):
                 return
             rc, out, err = self._run_tool(["known"], API_QUICK_TIMEOUT)
             if rc is None:
@@ -902,7 +1006,11 @@ class StatusHandler(BaseHTTPRequestHandler):
             # so the HTML itself carries no device data.
             self._serve_page(ADMIN_PAGE, "admin")
         elif path == "/" or path == "/index.html":
-            self._send(200, _WARNING_HTML, "text/html")
+            # Public minimal status page (S01) — no auth. Shows AP SSID,
+            # WAN SSID, internet status, and helpful links. No client list,
+            # no WAN IP, no known networks.
+            self._send(200, _STATUS_HTML, "text/html",
+                       extra_headers=[("Cache-Control", "no-store")])
         else:
             self._send(404, b"404 not found", "text/plain")
 
@@ -1056,41 +1164,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                        "application/json")
             return
         if path == "/api/wan/scan" or path == "/api/wan/status":
-            # Client bucket (admin split, Todo 1): the PIN read twins —
-            # credential is body.pin (never a session). The throttle fires
-            # before the body is read, and EVERY deny closes the connection:
-            # with HTTP/1.1 keep-alive an unread body would be parsed as the
-            # next (smuggled) request on the same socket. Header must be
-            # emitted between send_response and end_headers (send_header
-            # buffers in call order); close_connection=True is
-            # defense-in-depth. A body that fails policy (no length, bad
-            # CSRF header, unparseable) degrades to 401 with no pin compared
-            # and no throttle count (mirrors the login body-error degrade).
-            ip_key = self.client_address[0]
-            now = time.time()
-            with _PIN_THROTTLE_LOCK:
-                entry = _PIN_FAILS.get(ip_key)
-                blocked_until = entry[1] if entry else 0.0
-                if now < blocked_until:
-                    entry[0] += 1
-                    pin_fails = entry[0]
-                else:
-                    pin_fails = None
-            if pin_fails is not None:
-                _auth_audit(self, _audit_kind(path, "POST"), 429)
-                self._send(429, json.dumps({"error": "rate_limited"}),
-                           "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
-                return
-            body, err_code = self._read_json_body()
-            if err_code is not None:
-                self._send(401, json.dumps({"error": "auth"}),
-                           "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
-                return
-            if not _pin_gate(self, body.get("pin")):
+            # Scan results + full status are ADMIN-ONLY (S03) — session required.
+            if not _require_session(self):
                 return
             if path == "/api/wan/status":
                 self._send(200, json.dumps(get_status()), "application/json",
@@ -1152,28 +1227,21 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send(err_code, json.dumps({"error": _code_msg(err_code)}),
                        "application/json")
             return
-        # Bucket-split credential gate (admin plan Todo 1; supersedes the
-        # H01/Todo-6 two-factor gate). Client writes: a correct body.pin
-        # ALONE authorizes — a session is neither required nor rejected, so
-        # a guest on the travel AP can connect/scan/forget with just the
-        # PIN. Admin writes (psks-manage, apconfig) still demand the session
-        # FIRST (401 when absent/invalid), then body.pin (403 on wrong/
-        # missing; pin_unset on an un-provisioned router is only revealed
-        # to a session holder — a no-session request stays a bare 401, so a
-        # guest cannot probe the PIN's existence).
-        if admin_write:
-            session_authed = getattr(self, "_session_authed", None)
-            if session_authed is None:
-                session_authed = _session_ok(self.headers.get("X-Session"))
-                self._session_authed = session_authed
-            if not session_authed:
-                _auth_audit(self, _audit_kind(path, "POST"), 401)
-                self._send(401, json.dumps({"error": "auth"}),
-                           "application/json",
-                           extra_headers=[("Connection", "close")])
-                self.close_connection = True
-                return
-        if not self._pin_ok(body):
+        # All write verbs are ADMIN-ONLY (S03) — session required.
+        # Client verbs: /api/wan/{connect,psks,disconnect,forget,recheck}
+        # Admin verbs: /api/wan/{psks-manage,apconfig}, /api/admin/*
+        session_authed = getattr(self, "_session_authed", None)
+        if session_authed is None:
+            session_authed = _session_ok(self.headers.get("X-Session"))
+            self._session_authed = session_authed
+        if not session_authed:
+            _auth_audit(self, _audit_kind(path, "POST"), 401)
+            self._send(401, json.dumps({"error": "auth"}),
+                       "application/json",
+                       extra_headers=[("Connection", "close")])
+            self.close_connection = True
+            return
+        if admin_write and not self._pin_ok(body):
             with _PIN_THROTTLE_LOCK:
                 entry = _PIN_FAILS.setdefault(ip_key, [0, 0.0])
                 entry[0] += 1

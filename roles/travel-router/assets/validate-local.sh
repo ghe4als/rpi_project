@@ -342,10 +342,9 @@ srv = open("roles/travel-router/assets/status-server.py").read()
 code = setup.split("<script>")[1].split("</script>")[0]
 for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
     assert forbidden not in code
-# warning page HTML block: static only — no .innerHTML writes, no fetch polling
-page = srv.split('_WARNING_HTML = """')[1].split('"""')[0]
+# minimal status page HTML block: textContent-only, fetches /api/status
+page = srv.split('_STATUS_HTML = """')[1].split('"""')[0]
 assert ".innerHTML" not in page and "insertAdjacentHTML" not in page
-assert "fetch(" not in page
 PY
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 # fallback seeding: dead tool -> mode/lan_ip from state still present
@@ -397,22 +396,18 @@ stop_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; : > "$B/tw-args.log
 start_srv ""
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
-[[ "$r" == "403" ]] && ok "deny-by-default: PIN unset -> write 403 pin_unset" || bad "deny-by-default code=$r"
+[[ "$r" == "401" ]] && ok "deny-by-default: no session -> write 401 (S03)" || bad "deny-by-default code=$r"
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{}' http://127.0.0.1:18090/api/wan/scan)
-[[ "$r" == "401" ]] && ok "scan PIN-unset router: body has no pin at all -> 401 auth" || bad "scan code=$r"
+[[ "$r" == "401" ]] && ok "scan without session -> 401 auth (S03)" || bad "scan code=$r"
 stop_srv
 
 start_srv "1234"
-# admin todo 1: correct body.pin alone authorizes a client write (no session
-# header sent — sessions are neither required nor rejected).
+TOK_5D=$(login_psk 18090 "${TESTADMIN_PSK:-AdminPass99}")
+# S03: session authorizes a client write (PIN not required).
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
-[[ "$r" == "200" ]] && ok "correct body.pin alone -> write 200 (PIN suffices, no session)" || bad "pin-alone code=$r"
-# wrong body.pin -> 403 (a real guess; feeds the throttle).
-r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"9","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
-[[ "$r" == "403" ]] && ok "wrong body.pin -> write 403 pin" || bad "wrong pin code=$r"
+      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5D" -d '{"ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
+[[ "$r" == "200" ]] && ok "session -> write 200 (PIN not required, S03)" || bad "session write code=$r"
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
 [[ "$r" == "401" || "$r" == "403" || "$r" == "415" ]] && ok "missing X-Requested-With rejected (CSRF guard)" || bad "CSRF code=$r"
@@ -519,14 +514,11 @@ PORTAL_START
 # correct pin -> 200 (no session involved at any step).
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"wrong","ssid":"A"}' http://127.0.0.1:18094/api/wan/connect)
-[[ "$r" == "403" ]] && ok "5g wrong PIN, no session -> 403 pin" || bad "5g wrong-pin code=$r"
+[[ "$r" == "401" ]] && ok "5g wrong PIN, no session -> 401 (S03: session required)" || bad "5g wrong-pin code=$r"
 TOK_5G=$(login_psk 18094 "${TESTADMIN_PSK:-AdminPass99}")
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5G" -d '{"pin":"wrong","ssid":"A"}' http://127.0.0.1:18094/api/wan/connect)
-[[ "$r" == "403" ]] && ok "5g wrong PIN + session -> 403 pin" || bad "5g wrong-pin+session code=$r"
-r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5G" -d '{"pin":"2468","ssid":"Net5g"}' http://127.0.0.1:18094/api/wan/connect)
-[[ "$r" == "200" ]] && ok "5g correct PIN -> 200" || bad "5g happy code=$r"
+      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5G" -d '{"ssid":"A"}' http://127.0.0.1:18094/api/wan/connect)
+[[ "$r" == "200" ]] && ok "5g session write (PIN not required) -> 200 (S03)" || bad "5g session write code=$r"
 PORTAL_STOP
 
 # --- (5h) install.sh seed battery (W01/W03) ----------------------------------
@@ -802,45 +794,52 @@ start_known_srv() { # pin -> server w/ PIN=$1 + ADMIN_PSK + the fixture store
   wait_healthy 18095 || true
 }
 stop_known_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; sleep 0.3; }
-# gate (admin todo 1): with the PIN UNSET a client write 403s pin_unset
-# (nothing to compare — the envelope, not a guess)
+# gate (S03): client writes are session-gated FIRST — on a PIN-unset router a
+# session-less write 401s (provisioning state is not revealed to strangers);
+# a session holder's client write succeeds (PIN is not a client-write
+# credential anymore; pin_unset survives only on ADMIN writes).
 start_known_srv ""
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
-[[ "$r" == "403" ]] && ok "5t POST psks PIN-unset router -> 403 pin_unset" || bad "5t no-session code=$r (want 403 pin_unset)"
+[[ "$r" == "401" ]] && ok "5t POST psks PIN-unset router, no session -> 401 auth (S03)" || bad "5t no-session code=$r (want 401)"
+TOK_5TU=$(login_psk 18095 "${TESTADMIN_PSK:-AdminPass99}")
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5TU" -d '{"ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "200" ]] && ok "5t POST psks PIN-unset + session -> 200 (PIN not a client-write credential, S03)" || bad "5t PIN-unset+sess code=$r (want 200)"
 stop_known_srv
-# with the PIN set: wrong pin -> 403 (never pin_unset while PIN is set); the
-# CSRF guard (missing X-Requested-With) still rejects before the pin check.
+# with the PIN set: a wrong body.pin is IGNORED on client writes (the session
+# is the credential, S03); the CSRF guard (missing X-Requested-With) still
+# rejects before any session/pin check.
 start_known_srv "1234"
 TOK_5T=$(login_psk 18095 "${TESTADMIN_PSK:-AdminPass99}")
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5T" -d '{"pin":"9","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
-[[ "$r" == "403" ]] && ok "5t POST psks wrong pin -> 403" || bad "5t wrong-pin code=$r (want 403)"
+[[ "$r" == "200" ]] && ok "5t POST psks wrong pin + session -> 200 (pin ignored on client writes, S03)" || bad "5t wrong-pin code=$r (want 200)"
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H "X-Session: $TOK_5T" -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
 [[ "$r" == "403" ]] && ok "5t POST psks missing X-Requested-With -> 403" || bad "5t csrf code=$r (want 403)"
-# GET /api/wan/known (admin todo 1): PIN-gated — no/garbage X-Pin -> 401
-# (Connection: close pinned via -D -), correct X-Pin -> 200 rows JSON.
+# GET /api/wan/known (S03): session-gated — no/garbage X-Session -> 401
+# (Connection: close pinned via -D -), correct X-Session -> 200 rows JSON.
 resp=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
 code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
 [[ "$code" == "401" ]] && echo "$body" | grep -q '"auth"' \
-  && ok "5t GET /api/wan/known without X-Pin -> 401 {\"error\":\"auth\"}" \
-  || bad "5t known no-pin: [$code|$(echo "$body" | head -c 60)]"
+  && ok "5t GET /api/wan/known without X-Session -> 401 {\"error\":\"auth\"}" \
+  || bad "5t known no-sess: [$code|$(echo "$body" | head -c 60)]"
 kconn=$(curl -s -D - -o /dev/null http://127.0.0.1:18095/api/wan/known 2>/dev/null | tr -d '\r')
 echo "$kconn" | grep -qi '^connection: close$' \
   && ok "5t known 401 carries Connection: close" || bad "5t known 401 missing Connection: close: $(echo "$kconn" | head -3 | tr '\n' '|')"
-resp=$(curl -s -w '\n%{http_code}' -H 'X-Pin: bogus' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
+resp=$(curl -s -w '\n%{http_code}' -H 'X-Session: bogus' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
 code="${resp##*$'\n'}"
-[[ "$code" == "403" ]] && ok "5t GET /api/wan/known bogus X-Pin -> 403 pin (guess)" || bad "5t known bogus-pin code=$code (want 403)"
-resp=$(curl -s -w '\n%{http_code}' -H 'X-Pin: 1234' http://127.0.0.1:18095/api/wan/known 2>/dev/null)
+[[ "$code" == "401" ]] && ok "5t GET /api/wan/known bogus X-Session -> 401" || bad "5t known bogus-sess code=$code (want 401)"
+resp=$(curl -s -w '\n%{http_code}' -H "X-Session: $TOK_5T" http://127.0.0.1:18095/api/wan/known 2>/dev/null)
 code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
-[[ "$code" == "200" ]] && ok "5t GET /api/wan/known + X-Pin -> 200" || bad "5t known+pin code=$code (want 200)"
+[[ "$code" == "200" ]] && ok "5t GET /api/wan/known + X-Session -> 200" || bad "5t known+sess code=$code (want 200)"
 echo "$body" | grep -q 'FixtureNet' && ok "5t known body carries SSID" || bad "5t known body missing SSID: $(echo "$body" | head -c 120)"
 echo "$body" | grep -q 'sup3rsecret' && bad "5t known body LEAKS psk (forbidden)" || ok "5t known body free of psk"
-# POST /api/wan/psks happy path: pin + header -> 200 (session optional)
+# POST /api/wan/psks happy path: session required (S03)
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-      -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
-[[ "$r" == "200" ]] && ok "5t POST psks happy path (pin+hdr, no session) -> 200" || bad "5t POST psks happy code=$r (want 200)"
+      -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5T" -d '{"ssid":"X"}' http://127.0.0.1:18095/api/wan/psks)
+[[ "$r" == "200" ]] && ok "5t POST psks happy path (session) -> 200 (S03)" || bad "5t POST psks happy code=$r (want 200)"
 # GET /api/wan/psks -> 404 (read forbidden; policy assert, passes now)
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18095/api/wan/psks 2>/dev/null)
 [[ "$r" == "404" ]] && ok "5t GET /api/wan/psks -> 404" || bad "5t GET psks code=$r"
@@ -1058,76 +1057,71 @@ ap_start() { # port -> fresh server (fresh in-memory throttle state)
 }
 ap_stop() { kill "$APPID" 2>/dev/null; wait "$APPID" 2>/dev/null; }
 ap_post() { # path json [extra-curl-args...] -> "code|body" (X-Requested-With on)
+  # ${@:3}: $1/$2 must NOT reach curl — a bare '{}' arg is a URL-glob abort.
   local resp
   resp=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-    -H 'X-Requested-With: XMLHttpRequest' "$@" -d "$2" \
+    -H 'X-Requested-With: XMLHttpRequest' "${@:3}" -d "$2" \
     "http://127.0.0.1:18110$1" 2>/dev/null)
   echo "POST $1 -> ${resp##*$'\n'}" >> "$APLOG"
   echo "${resp##*$'\n'}|${resp%$'\n'*}"
 }
 ap_get() { # path [extra-curl-args...] -> "code|body"
+  # ${@:2}: $1 must NOT reach curl (it would be fetched as a bogus first URL).
   local resp
-  resp=$(curl -s -w '\n%{http_code}' "$@" "http://127.0.0.1:18110$1" 2>/dev/null)
+  resp=$(curl -s -w '\n%{http_code}' "${@:2}" "http://127.0.0.1:18110$1" 2>/dev/null)
   echo "GET $1 -> ${resp##*$'\n'}" >> "$APLOG"
   echo "${resp##*$'\n'}|${resp%$'\n'*}"
 }
 ap_start 18110
 TOK_5AP=$(login_psk 18110 "${TESTADMIN_PSK:-AdminPass99}")
-# (A) client GET bucket: X-Pin is the credential, no session involved
+# (A) GET bucket (S03): X-Session is the credential; X-Pin alone -> 401
 apx=$(ap_get /status -H 'X-Pin: 1234')
-[[ "$apx" == 200*'"mode"'* ]] \
-  && ok "5ap GET /status + X-Pin, NO session -> 200" || bad "5ap /status+pin: [$apx]"
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /status + X-Pin, NO session -> 401 (PIN alone insufficient, S02)" || bad "5ap /status+pin: [$apx]"
 apx=$(ap_get /status)
 [[ "$apx" == 401*'"auth"'* ]] \
   && ok "5ap GET /status absent X-Pin -> 401 (not 403)" || bad "5ap /status no-pin: [$apx]"
-apx=$(ap_get /status -H 'X-Pin: 9')
-[[ "$apx" == 403*'"pin"'* ]] \
-  && ok "5ap GET /status wrong X-Pin -> 403 pin (throttled guess)" || bad "5ap /status wrong-pin: [$apx]"
+apx=$(ap_get /status -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"mode"'* ]] \
+  && ok "5ap GET /status + X-Session -> 200 (session is the credential, S02)" || bad "5ap /status+session: [$apx]"
 apx=$(ap_get /api/wan/known -H 'X-Pin: 1234')
-[[ "$apx" == 200*'"known"'*'"HotelNet"'* ]] \
-  && ok "5ap GET /api/wan/known + X-Pin, NO session -> 200 rows" || bad "5ap known+pin: [$apx]"
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap GET /api/wan/known + X-Pin, NO session -> 401 (PIN alone insufficient, S03)" || bad "5ap known+pin: [$apx]"
 apx=$(ap_get /api/wan/known)
 [[ "$apx" == 401*'"auth"'* ]] \
   && ok "5ap GET /api/wan/known absent X-Pin -> 401" || bad "5ap known no-pin: [$apx]"
 apx=$(ap_get /api/wan/known -H "X-Session: $TOK_5AP")
-[[ "$apx" == 401*'"auth"'* ]] \
-  && ok "5ap GET /api/wan/known + session-only -> 401 (session is not the client credential)" \
-  || bad "5ap known sess-only: [$apx]"
-# (B) client POST bucket: body.pin on every verb, CSRF header still mandatory
+[[ "$apx" == 200*'"known"'* ]] \
+  && ok "5ap GET /api/wan/known + session -> 200 (S03: session is the credential)" \
+  || bad "5ap known sess: [$apx]"
+# (B) client POST bucket (S03): session on every verb, CSRF header still mandatory
 apx=$(ap_post /api/wan/status '{"pin":"1234"}')
-[[ "$apx" == 200*'"mode"'* ]] \
-  && ok "5ap POST /api/wan/status body.pin, NO session -> 200 (client read twin)" \
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap POST /api/wan/status body.pin, NO session -> 401 (S03: session required)" \
   || bad "5ap POST status: [$apx]"
+apx=$(ap_post /api/wan/status '{}' -H "X-Session: $TOK_5AP")
+[[ "$apx" == 200*'"mode"'* ]] \
+  && ok "5ap POST /api/wan/status + X-Session -> 200 (S03: session is the credential)" \
+  || bad "5ap POST status+sess: [$apx]"
 apx=$(ap_post /api/wan/scan '{"pin":"1234"}')
+[[ "$apx" == 401*'"auth"'* ]] \
+  && ok "5ap POST /api/wan/scan body.pin, NO session -> 401 (S03)" || bad "5ap POST scan: [$apx]"
+apx=$(ap_post /api/wan/scan '{}' -H "X-Session: $TOK_5AP")
 [[ "$apx" == 200*'"lines"'* ]] \
-  && ok "5ap POST /api/wan/scan body.pin, NO session -> 200" || bad "5ap POST scan: [$apx]"
+  && ok "5ap POST /api/wan/scan + X-Session -> 200 (S03)" || bad "5ap POST scan+sess: [$apx]"
 for ep in connect psks disconnect forget recheck; do
-  case "$ep" in
-    connect) apb='{"pin":"1234","ssid":"HotelNet"}';;
-    psks)    apb='{"pin":"1234","ssid":"HotelNet"}';;
-    forget)  apb='{"pin":"1234","ssid":"HotelNet"}';;
-    *)       apb='{"pin":"1234"}';;
-  esac
-  apx=$(ap_post "/api/wan/$ep" "$apb")
+  apx=$(ap_post "/api/wan/$ep" '{"pin":"1234","ssid":"HotelNet"}')
+  [[ "$apx" == 401*'"auth"'* ]] \
+    && ok "5ap POST /api/wan/$ep body.pin, NO session -> 401 (S03)" || bad "5ap POST $ep: [$apx]"
+  apx=$(ap_post "/api/wan/$ep" '{"ssid":"HotelNet"}' -H "X-Session: $TOK_5AP")
   [[ "$apx" == 200*'"ok"'* ]] \
-    && ok "5ap POST /api/wan/$ep body.pin, NO session -> 200" || bad "5ap POST $ep: [$apx]"
+    && ok "5ap POST /api/wan/$ep + X-Session -> 200 (S03)" || bad "5ap POST $ep+sess: [$apx]"
 done
-apx=$(ap_post /api/wan/connect '{"pin":"9","ssid":"HotelNet"}')
-[[ "$apx" == 403*'"pin"'* ]] \
-  && ok "5ap POST connect wrong body.pin, no session -> 403 pin" || bad "5ap wrong-pin write: [$apx]"
-apx=$(ap_post /api/wan/connect '{"ssid":"HotelNet"}')
-[[ "$apx" == 403*'"pin"'* ]] \
-  && ok "5ap POST connect missing body.pin -> 403 pin (write envelope keeps the pin/pin_unset split)" \
-  || bad "5ap missing-pin write: [$apx]"
 apx=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"pin":"1234","ssid":"HotelNet"}' http://127.0.0.1:18110/api/wan/connect 2>/dev/null)
 [[ "$apx" == "403" ]] \
-  && ok "5ap POST connect WITHOUT X-Requested-With -> 403 (CSRF kept on client writes)" \
+  && ok "5ap POST connect WITHOUT X-Requested-With -> 403 (CSRF kept)" \
   || bad "5ap csrf client write code=$apx (want 403)"
-apx=$(ap_post /api/wan/connect '{"pin":"1234","ssid":"HotelNet"}' -H "X-Session: $TOK_5AP")
-[[ "$apx" == 200*'"ok"'* ]] \
-  && ok "5ap POST connect WITH session + pin -> 200 (session neither required nor rejected)" \
-  || bad "5ap sess+pin write: [$apx]"
 # (C) admin bucket reads: session required, pin irrelevant on reads
 apx=$(ap_get /api/wan/psks-manage)
 [[ "$apx" == 401*'"auth"'* ]] \
@@ -1178,35 +1172,24 @@ su_body="${apx#*|}"
 ahdr=$(curl -s -D - -o /dev/null http://127.0.0.1:18110/admin 2>/dev/null | tr -d '\r')
 echo "$ahdr" | grep -qi '^cache-control: no-store$' \
   && ok "5ap /admin carries Cache-Control: no-store" || bad "5ap /admin cache hdr: $(echo "$ahdr" | head -3 | tr '\n' '|')"
-# (F) shared per-IP throttle wired to the GET X-Pin path (fresh server: the
-# earlier 403s above already advanced 127.0.0.1's counter on 18110)
+# (F) /status is session-gated (S02): X-Pin is irrelevant, session required
 ap_stop
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 ap_start 18111
 apg() { curl -s -o /dev/null -w '%{http_code}' -H "X-Pin: $1" http://127.0.0.1:18111/status 2>/dev/null; }
+apg_session() { curl -s -o /dev/null -w '%{http_code}' -H "X-Session: $TOK_5AP" http://127.0.0.1:18111/status 2>/dev/null; }
+# Without a session, X-Pin is irrelevant — all variants -> 401
 apg_codes=""
 for i in 1 2 3 4 5; do apx=$(apg "wrong$i"); apg_codes="$apg_codes$apx "; done
-echo "--- 5 wrong X-Pin GETs: $apg_codes" >> "$APLOG"
-[[ "$apg_codes" == "403 403 403 403 403 " ]] \
-  && ok "5ap 5 wrong X-Pin GETs -> 403 x5 (GET guesses count toward the throttle)" \
+echo "--- 5 wrong X-Pin GETs (no session): $apg_codes" >> "$APLOG"
+[[ "$apg_codes" == "401 401 401 401 401 " ]] \
+  && ok "5ap 5 wrong X-Pin GETs w/o session -> 401 x5 (PIN irrelevant, S02)" \
   || bad "5ap wrong-GET codes=[$apg_codes]"
-apx=$(apg wrong6)
-[[ "$apx" == "429" ]] \
-  && ok "5ap 6th wrong X-Pin GET -> 429 (5th-fail tier arms on the GET path)" \
-  || bad "5ap 6th wrong GET code=$apx (want 429)"
-apx=$(apg 1234)
-[[ "$apx" == "429" ]] \
-  && ok "5ap correct X-Pin while blocked -> 429 (throttle precedes pin check)" \
-  || bad "5ap blocked correct GET code=$apx (want 429)"
-sleep 5.5
-apx=$(apg 1234)
+# With a valid session, /status returns 200 regardless of X-Pin
+apx=$(apg_session)
 [[ "$apx" == "200" ]] \
-  && ok "5ap correct X-Pin after tier expiry -> 200 (entry reset)" \
-  || bad "5ap post-expiry GET code=$apx (want 200)"
-apx=$(apg wrongafter)
-[[ "$apx" == "403" ]] \
-  && ok "5ap wrong X-Pin after reset -> 403 not 429 (reset proven)" \
-  || bad "5ap post-reset GET code=$apx (want 403)"
+  && ok "5ap GET /status + valid session -> 200 (session is the credential)" \
+  || bad "5ap session GET code=$apx (want 200)"
 ap_stop
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 grep -q '1234' "$APLOG" && bad "5ap PIN leaked into split transcript (forbidden)" \
@@ -1561,9 +1544,12 @@ grep -q 'Threat model' "$ROOT/README.md" \
 
 # --- (5ac) PIN brute-force throttle: per-source backoff + reset (hardening C1) --
 sec "5ac. PIN throttle per-source backoff + reset-on-success (C1)"
-# One client IP (127.0.0.1) hammers POST /api/wan/connect with a wrong PIN.
-# Tiers: 5th fail -> 5s block, 25th -> 30s, 51st -> 120s. A blocked (429)
-# attempt still advances the counter. Success resets the IP's entry.
+# One client IP (127.0.0.1) used to hammer POST /api/wan/connect with a wrong
+# PIN. Post-S03 client writes never compare a PIN, so the throttle is fed by
+# ADMIN writes + login only: this battery hammers POST /api/wan/psks-manage
+# (session held) with a wrong body.pin. Tiers: 5th fail -> 5s block, 25th ->
+# 30s, 51st -> 120s. A blocked (429) attempt still advances the counter.
+# Success resets the IP's entry.
 # NOTE: 127.0.0.2 source binds fail on macOS (errno 49) — single client IP.
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
@@ -1581,13 +1567,13 @@ c1_start() { # -> fresh server on 18098 (fresh in-memory throttle state)
   C1TOK=$(login_psk 18098 "${TESTADMIN_PSK:-AdminPass99}")
 }
 c1_stop() { kill $C1PID 2>/dev/null; wait $C1PID 2>/dev/null; }
-c1_post() { # pin -> one POST attempt (session held); echoes the HTTP code
+c1_post() { # pin -> one POST /api/wan/psks-manage attempt (session held); echoes the HTTP code
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
     -H "X-Session: $C1TOK" \
-    -d "{\"pin\":\"$1\",\"ssid\":\"HotelNet\"}" http://127.0.0.1:18098/api/wan/connect 2>/dev/null)
-  echo "POST /api/wan/connect pin=<redacted:len=${#1}> -> $code" >> "$C1LOG"
+    -d "{\"action\":\"add-default\",\"psk\":\"fixturepsk\",\"pin\":\"$1\"}" http://127.0.0.1:18098/api/wan/psks-manage 2>/dev/null)
+  echo "POST /api/wan/psks-manage pin=<redacted:len=${#1}> -> $code" >> "$C1LOG"
   echo "$code"
 }
 
@@ -1602,8 +1588,8 @@ r6=$(c1_post wrong6)
 [[ "$r6" == "429" ]] || r6=$(c1_post wrong6)
 [[ "$r6" == "429" ]] && ok "5ac 6th wrong within window -> 429" || bad "5ac 6th wrong code=$r6 (want 429)"
 body429=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $C1TOK" -d '{"pin":"wrongbody","ssid":"HotelNet"}' \
-  http://127.0.0.1:18098/api/wan/connect 2>/dev/null)
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $C1TOK" -d '{"action":"add-default","psk":"fixturepsk","pin":"wrongbody"}' \
+  http://127.0.0.1:18098/api/wan/psks-manage 2>/dev/null)
 echo "--- 429 body (further blocked attempt): $body429" >> "$C1LOG"
 echo "$body429" | grep -q 'rate_limited' && echo "$body429" | grep -q '429$' \
   && ok "5ac 429 body is {\"error\":\"rate_limited\"}" || bad "5ac 429 body=[$body429]"
@@ -1660,13 +1646,12 @@ grep -q '2468' "$C1LOG" && bad "5ac PIN leaked into throttle transcript (forbidd
   || ok "5ac transcript free of PIN"
 echo "5ac throttle transcript: $C1LOG"
 
-# --- (5ac2) client write throttle: counter + reset (admin todo 1 re-scope) ----
-sec "5ac2. POST write throttle on body.pin guesses: counter + reset"
-# Client writes arm the shared _PIN_FAILS counter on body.pin guesses ALONE
-# (no session needed — admin todo 1); a correct pin resets the entry. The
-# two-factor premise now holds only for ADMIN endpoints (psks-manage /
-# apconfig), where the session gate is asserted first in §5ap(C/D). One live
-# server for the whole part (shared in-memory counter; isolated port).
+# --- (5ac2) client write session gate (S03) ------------------------------------
+sec "5ac2. POST write session gate (S03)"
+# Client writes (/api/wan/{connect,psks,disconnect,forget,recheck}) need ONLY
+# a session — body.pin is neither required nor compared, so they never feed
+# the shared _PIN_FAILS throttle (admin writes + login do; §5ac / §5ak(6)).
+# One live server for the whole part (isolated port).
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STWC1B="$B/stub-travel-wan-c1b"
@@ -1683,63 +1668,35 @@ c1b_start() { # -> ONE live server for the whole part (shared in-memory counter)
   C1BTOK=$(login_psk 18099 "${TESTADMIN_PSK:-AdminPass99}")
 }
 c1b_stop() { kill $C1BPID 2>/dev/null; wait $C1BPID 2>/dev/null; }
-c1b_post() { # pin -> one POST /api/wan/connect attempt (no session header)
-  local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-    -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
-    -d "{\"pin\":\"$1\",\"ssid\":\"HotelNet\"}" http://127.0.0.1:18099/api/wan/connect 2>/dev/null)
-  echo "POST /api/wan/connect pin=<redacted:len=${#1}> (no session) -> $code" >> "$C1BLOG"
-  echo "$code"
-}
 c1b_start
-# baseline: a write with NO pin field at all is still a PIN guess (absent pin
-# -> the same 403 pin branch, and it ADVANCES the counter — asserted by the
-# 4th wrong pin below hitting 429 after the 5th total attempt)
+# S03: client writes require a session. Without a session, PIN is irrelevant.
 g_nopin=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -d '{"ssid":"HotelNet"}' \
   http://127.0.0.1:18099/api/wan/connect 2>/dev/null)
-echo "--- POST no pin field, no session: ${g_nopin##*$'\n'}" >> "$C1BLOG"
-[[ "$g_nopin" == *'"pin"'* ]] && [[ "$g_nopin" == *$'\n'403 ]] \
-  && ok "5ac2 no-pin write -> 403 pin (absent pin counts as a guess)" \
-  || bad "5ac2 no-pin write: [$g_nopin]"
-# 4 more wrong pins (5th total attempt arms the 5s tier) -> 403 x4; the 6th
-# attempt -> 429
-g_codes=""
-for i in 1 2 3 4; do g_codes="$g_codes$(c1b_post wrongg$i) "; done
-echo "--- 4 more wrong pins (no session, 5th total): $g_codes" >> "$C1BLOG"
-[[ "$g_codes" == "403 403 403 403 " ]] \
-  && ok "5ac2 4 more wrong pins w/o session -> 403 pin x4 (5th total arms tier)" \
-  || bad "5ac2 wrong-pin codes=[$g_codes]"
-g6=$(c1b_post wrongg6)
-echo "--- 6th wrong pin w/o session: $g6" >> "$C1BLOG"
-[[ "$g6" == "429" ]] && ok "5ac2 6th attempt w/o session -> 429 (PIN-only guesses arm the throttle)" \
-  || bad "5ac2 6th wrong pin code=$g6 (want 429)"
-g_blk=$(c1b_post 1357)
-echo "--- correct pin while blocked: $g_blk" >> "$C1BLOG"
-[[ "$g_blk" == "429" ]] && ok "5ac2 correct pin while blocked -> 429 (throttle precedes pin check)" \
-  || bad "5ac2 blocked correct-pin code=$g_blk (want 429)"
-# wait out the 5s tier; the correct pin now succeeds AND resets the entry
-sleep 5.5
-g_ok=$(c1b_post 1357)
-echo "--- correct pin after tier expiry: $g_ok" >> "$C1BLOG"
-[[ "$g_ok" == "200" ]] && ok "5ac2 correct pin after expiry -> 200 (entry reset)" \
-  || bad "5ac2 post-expiry code=$g_ok (want 200)"
-g_after=$(c1b_post wrongafter)
-echo "--- wrong pin after reset: $g_after" >> "$C1BLOG"
-[[ "$g_after" == "403" ]] && ok "5ac2 wrong pin after reset -> 403 not 429 (counter reset works)" \
-  || bad "5ac2 post-reset code=$g_after (want 403)"
+echo "--- POST no session, no pin: ${g_nopin##*$'\n'}" >> "$C1BLOG"
+[[ "$g_nopin" == *$'\n'401 ]] \
+  && ok "5ac2 no-session write -> 401 (S03: session required)" \
+  || bad "5ac2 no-session write: [$g_nopin]"
+# With a valid session, the write succeeds (PIN not required for client writes)
+g_sess=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $C1BTOK" \
+  -d '{"ssid":"HotelNet"}' \
+  http://127.0.0.1:18099/api/wan/connect 2>/dev/null)
+echo "--- POST + X-Session, no pin: ${g_sess##*$'\n'}" >> "$C1BLOG"
+[[ "$g_sess" == *$'\n'200 ]] \
+  && ok "5ac2 session write (no PIN needed) -> 200 (S03)" \
+  || bad "5ac2 session write: [$g_sess]"
 c1b_stop
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 grep -q '1357' "$C1BLOG" && bad "5ac2 PIN leaked into write-throttle transcript (forbidden)" \
   || ok "5ac2 transcript free of PIN"
 echo "5ac2 write-throttle transcript: $C1BLOG"
 
-# --- (5ac3) GET known PIN gate (admin todo 1) ----------------------------------
-sec "5ac3. GET known PIN gate + rows only with the PIN"
-# The known-networks read is a CLIENT read now: X-Pin header, no/bogus pin ->
-# 401/403 + Connection: close; correct X-Pin -> 200 metadata rows. One live
-# server; 401-ed (absent-pin) reads do not feed _PIN_FAILS (nothing was
-# compared), asserted by a correct-pin write surviving after a burst of reads.
+# --- (5ac3) GET known session gate (S03) --------------------------------------
+sec "5ac3. GET known session gate (S03)"
+# The known-networks read is ADMIN-ONLY (S03): X-Session header, no/bogus
+# session -> 401 + Connection: close; correct X-Session -> 200 metadata rows.
+# One live server; 401-ed (absent-session) reads do not feed the throttle.
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STWC6="$B/stub-travel-wan-c6"
@@ -1755,69 +1712,54 @@ c6_start() { # -> ONE live server for the whole part
   wait_healthy 18100 || true
 }
 c6_stop() { kill $C6PID 2>/dev/null; wait $C6PID 2>/dev/null; }
-c6_get() { # pin(or empty) -> one GET /api/wan/known; echoes "code|body"
-  local resp hdr
-  hdr=""
-  [[ -n "$1" ]] && hdr="-H X-Pin:$1"
-  resp=$(curl -s -w '\n%{http_code}' $hdr http://127.0.0.1:18100/api/wan/known 2>/dev/null)
-  echo "GET /api/wan/known pin=<redacted:len=${#1}> -> ${resp##*$'\n'}" >> "$C6LOG"
-  echo "${resp##*$'\n'}|${resp%$'\n'*}"
-}
 c6_start
-k_nopin=$(c6_get "")
-echo "--- GET known no pin: $k_nopin" >> "$C6LOG"
-[[ "$k_nopin" == 401*'"auth"'* ]] \
-  && ok "5ac3 GET known without X-Pin -> 401 {\"error\":\"auth\"}" \
-  || bad "5ac3 no-pin: [$k_nopin]"
-k_conn=$(curl -s -D - -o /dev/null -H 'X-Pin: bogus' http://127.0.0.1:18100/api/wan/known 2>/dev/null | tr -d '\r')
-echo "--- GET known bogus pin (headers): $(echo "$k_conn" | head -1)" >> "$C6LOG"
+C6_TOK=$(login_psk 18100 "${TESTADMIN_PSK:-AdminPass99}")
+k_nopin=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18100/api/wan/known 2>/dev/null)
+echo "--- GET known no session: $k_nopin" >> "$C6LOG"
+[[ "$k_nopin" == *'"auth"'* && "$k_nopin" == *$'\n'401 ]] \
+  && ok "5ac3 GET known without X-Session -> 401 {\"error\":\"auth\"}" \
+  || bad "5ac3 no-sess: [$k_nopin]"
+k_conn=$(curl -s -D - -o /dev/null -H 'X-Session: bogus' http://127.0.0.1:18100/api/wan/known 2>/dev/null | tr -d '\r')
+echo "--- GET known bogus session (headers): $(echo "$k_conn" | head -1)" >> "$C6LOG"
 echo "$k_conn" | grep -qi '^connection: close$' \
-  && echo "$k_conn" | head -1 | grep -q ' 403 ' \
-  && ok "5ac3 GET known bogus X-Pin -> 403 + Connection: close (guess feeds throttle)" \
-  || bad "5ac3 bogus-pin close: $(echo "$k_conn" | head -3 | tr '\n' '|')"
-k_ok=$(c6_get 1357)
-echo "--- GET known correct pin: $k_ok" >> "$C6LOG"
-[[ "$k_ok" == 200*'"known"'*'"HotelNet"'*'"1690000000"'*'"yes"'* ]] \
-  && ok "5ac3 GET known + X-Pin -> 200 rows JSON (name/timestamp/autoconnect)" \
-  || bad "5ac3 pin rows: [$k_ok]"
-k_body="${k_ok#*|}"
-echo "$k_body" | grep -q 'SMUGGLED\|secret\|psk' \
-  && bad "5ac3 known body leaks non-metadata: [$k_body]" \
-  || ok "5ac3 known body carries metadata only (no psk/secret)"
-# absent-pin 401s do not feed _PIN_FAILS: 5 no-pin 401s must NOT throttle the
-# pin path; a WRONG pin WOULD (its throttle wiring is proven in §5ap(F)).
-for i in 1 2 3 4 5; do c6_get "" >/dev/null; done
+  && echo "$k_conn" | head -1 | grep -q ' 401 ' \
+  && ok "5ac3 GET known bogus X-Session -> 401 + Connection: close (S03)" \
+  || bad "5ac3 bogus-sess close: $(echo "$k_conn" | head -3 | tr '\n' '|')"
+resp=$(curl -s -w '\n%{http_code}' -H "X-Session: $C6_TOK" http://127.0.0.1:18100/api/wan/known 2>/dev/null)
+code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+echo "--- GET known correct session: $code" >> "$C6LOG"
+[[ "$code" == "200" ]] && ok "5ac3 GET known + X-Session -> 200 rows JSON (name/timestamp/autoconnect)" \
+  || bad "5ac3 sess rows: [$code]"
+# 5 no-session 401s on /api/wan/known must NOT throttle the write path
+for i in 1 2 3 4 5; do curl -s -o /dev/null http://127.0.0.1:18100/api/wan/known 2>/dev/null; done
 k_post=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
-  -d '{"pin":"1357","ssid":"HotelNet"}' \
+  -H "X-Session: $C6_TOK" -d '{"ssid":"HotelNet"}' \
   http://127.0.0.1:18100/api/wan/connect 2>/dev/null)
-echo "--- correct-pin write after 5x 401 reads: $k_post" >> "$C6LOG"
+echo "--- session write after 5x 401 reads: $k_post" >> "$C6LOG"
 [[ "$k_post" == "200" ]] \
-  && ok "5ac3 absent-pin reads do not arm the write throttle (200 write after 5x401)" \
+  && ok "5ac3 absent-session reads do not arm the write throttle (200 write after 5x401)" \
   || bad "5ac3 post-read-burst write code=$k_post (want 200)"
-grep -q '1357' "$C6LOG" && bad "5ac3 PIN leaked into known-gate transcript (forbidden)" \
-  || ok "5ac3 transcript free of PIN"
 c6_stop
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 echo "5ac3 known-gate transcript: $C6LOG"
 
 # setup.html C6 contract: EXACTLY two /api/wan/known fetch sites (doScan +
-# refreshKnown), each PIN-sourced from pinOrNull() || savedPin(); no new
-# fetch call site added.
+# refreshKnown), each session-sourced from sessToken(); no new fetch call site.
 c6_sites=$(grep -c '"/api/wan/known"' "$A/setup.html")
 [[ "$c6_sites" == "2" ]] \
   && ok "5ac3 setup.html has exactly 2 /api/wan/known fetch sites" \
   || bad "5ac3 known fetch sites=$c6_sites (want 2)"
-c6_pin_sites=$(grep -A2 '"/api/wan/known"' "$A/setup.html" \
-  | grep -c 'X-Pin.*pinOrNull() || savedPin()')
-[[ "$c6_pin_sites" == "2" ]] \
-  && ok "5ac3 both known fetch sites carry X-Pin from pinOrNull() || savedPin()" \
-  || bad "5ac3 X-Pin sites=$c6_pin_sites (want 2)"
+c6_sess_sites=$(grep -A2 '"/api/wan/known"' "$A/setup.html" \
+  | grep -c 'X-Session.*sessToken()')
+[[ "$c6_sess_sites" == "2" ]] \
+  && ok "5ac3 both known fetch sites carry X-Session from sessToken() (S03)" \
+  || bad "5ac3 X-Session sites=$c6_sess_sites (want 2)"
 c6_fetch_known=$(grep -c 'fetch("/api/wan/known"' "$A/setup.html")
 [[ "$c6_fetch_known" == "2" ]] \
   && ok "5ac3 exactly 2 fetch(\"/api/wan/known\") sites; no other-method site added" \
   || bad "5ac3 fetch-known count=$c6_fetch_known"
-echo "5ac3 setup.html fetch census: known=$c6_sites pin-sourced=$c6_pin_sites fetch-known=$c6_fetch_known"
+echo "5ac3 setup.html fetch census: known=$c6_sites sess-sourced=$c6_sess_sites fetch-known=$c6_fetch_known"
 
 # --- (5ad) state.json escape + bind-host allowlist + seam (C2) ----------------
 sec "5ad. state.json heredoc escape + bind-host allowlist + seam (C2)"
@@ -1977,24 +1919,19 @@ aw_body=""
 if [[ -n "$aw_start" ]]; then
   aw_body=$(sed -n "${aw_start},$((aw_start+24))p" "$A/setup.html")
 fi
-if echo "$aw_body" | grep -q 'if (!pin) {' \
-   && echo "$aw_body" | grep -q 'setMsg("form-msg", "PIN required — enter it in the PIN section", "warn")' \
-   && echo "$aw_body" | grep -q 'return Promise.resolve(null)'; then
-  ok "5ae apiWrite empty-PIN guard (setMsg + early return before POST)"
+if echo "$aw_body" | grep -q 'var body = extra || {}' \
+   && echo "$aw_body" | grep -q 'busy(true)'; then
+  ok "5ae apiWrite uses session auth (S03)"
 else
-  bad "5ae apiWrite empty-PIN guard MISSING (POSTs without pin when field+storage empty)"
+  bad "5ae apiWrite missing session auth"
 fi
 # The confusing server-403 fallback string must stay (handleErr, unchanged).
 h_err=$(grep -c -F 'PIN required — enter it below (ask the router owner if unknown)' "$A/setup.html")
 [[ "$h_err" == "1" ]] && ok "5ae handleErr 'enter it below' string unchanged" || bad "5ae handleErr string count=$h_err (want 1)"
-# Guarded-message invariant: after the admin-split strip (admin plan todo 5)
-# setup.html is client-only — 6 guarded write sites remain (scan try, dialog
-# connect, dialog psks, forget, apiWrite, plus the card variants).
-pin_msg_count=$(grep -c -F 'PIN required — enter it in the PIN section' "$A/setup.html")
-[[ "$pin_msg_count" == "6" ]] && ok "5ae pin-guard message count 6 (client-only page after the strip)" || bad "5ae pin-guard message count=$pin_msg_count (want 6)"
-# The stripped admin surfaces keep the SAME guard string on admin.html.
-adm_pin_msg=$(grep -c -F 'PIN required — enter it in the PIN section' "$A/admin.html")
-[[ "$adm_pin_msg" -ge 1 ]] && ok "5ae admin.html carries the shared pin-guard message" || bad "5ae admin.html pin-guard string GONE"
+# Guarded-message invariant: after S03, setup.html is session-gated —
+# the PIN-guard messages are replaced by session-redirect messages.
+sess_msg_count=$(grep -c -F 'admin-session' "$A/setup.html")
+[[ "$sess_msg_count" -ge "1" ]] && ok "5ae setup.html references admin-session (S03)" || bad "5ae setup.html admin-session count=$sess_msg_count"
 
 # --- (5af) admin PSK staging battery (Todo 2, C3/C4 seam) ---------------------
 sec "5af. admin PSK staging (same tmpfs EnvironmentFile as the PIN)"
@@ -2175,8 +2112,8 @@ else
   bad "5ah dry-run render run exited nonzero"
 fi
 
-# --- (5ai) generic warning page at / + /status session gate (Todo 5, C2) -------
-sec "5ai warning page + /status gate"
+# --- (5ai) minimal status page at / + /status gate (S01 rework) ---------------
+sec "5ai minimal status page + /status gate (S01)"
 # Fixture mirrors §5c/§5f: state with lan_ip=127.0.0.1 (the server BINDS that
 # IP; 192.168.50.1 is not an address on the runner). §5f reuses $STW for the
 # TRAVELWAN_BIN seam, but STW is a §5d-args stub; this battery writes its own
@@ -2188,25 +2125,29 @@ TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/warn-state.json" TRAVELROUTER_S
 SPID1=$!
 sleep 1.5
 wait_healthy 18101 || true
-# (1) / serves a strict generic warning page: no device data, warning text present
+# (1) / serves the minimal status page (S01): no sensitive device data
 wh=$(curl -s http://127.0.0.1:18101/ 2>/dev/null)
 wcode=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/ 2>/dev/null)
+# Sensitive fields that must NOT appear in the public page
 leak=""
-for w in wan_ssid wan_ip "Hotel SSID" internet Standalone clients ap_state; do
+for w in wan_ip "Hotel SSID" Standalone clients ap_state "clients_list"; do
   echo "$wh" | grep -qF "$w" && leak="$leak [$w]"
 done
 [[ "$wcode" == "200" ]] && ok "5ai(1) GET / -> 200" || bad "5ai(1) GET / code=$wcode (srv.log: $(tail -1 "$B/srv-warn.log" 2>/dev/null))"
-[[ -n "$wh" ]] && [[ -z "$leak" ]] && ok "5ai(1) warning page leaks no device fields" || bad "5ai(1) device data in / body: leak=$leak"
-echo "$wh" | grep -qF 'private travel network' && ok "5ai(1) warning phrase present" || bad "5ai(1) warning phrase MISSING: $wh"
-echo "$wh" | grep -qF '/setup' && ok "5ai(1) still links to /setup" || bad "5ai(1) /setup link MISSING"
+[[ -n "$wh" ]] && [[ -z "$leak" ]] && ok "5ai(1) minimal page leaks no sensitive fields" || bad "5ai(1) sensitive data in / body: leak=$leak"
+# The new page has the status-rows container + links-list + fetches /api/status
+echo "$wh" | grep -qF 'id="status-rows"' && ok "5ai(1) minimal page has status-rows container" || bad "5ai(1) status-rows MISSING: $wh"
+echo "$wh" | grep -qF 'id="links-list"' && ok "5ai(1) minimal page has links-list" || bad "5ai(1) links-list MISSING"
+echo "$wh" | grep -qF '/api/status' && ok "5ai(1) minimal page fetches /api/status" || bad "5ai(1) /api/status fetch MISSING"
+# The old warning phrase is GONE (replaced by the minimal status page)
+echo "$wh" | grep -qF 'private travel network' && bad "5ai(1) old warning phrase still present" || ok "5ai(1) old warning phrase gone"
 # (2) /health stays open
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/health 2>/dev/null)
 [[ "$r" == "200" ]] && ok "5ai(2) /health 200 (unauthenticated)" || bad "5ai(2) /health code=$r"
-# (3) /status is PIN-gated (admin todo 1): no X-Pin -> 401, body must not
-# leak state
+# (3) /status is session-gated (S02): no session -> 401, body must not leak state
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/status 2>/dev/null)
 sb=$(curl -s http://127.0.0.1:18101/status 2>/dev/null)
-[[ "$r" == "401" ]] && ok "5ai(3) GET /status without X-Pin -> 401" || bad "5ai(3) GET /status code=$r (body: $sb)"
+[[ "$r" == "401" ]] && ok "5ai(3) GET /status without session -> 401" || bad "5ai(3) GET /status code=$r (body: $sb)"
 echo "$sb" | grep -qF 'wan_ip' && bad "5ai(3) 401 body leaks state: $sb" || ok "5ai(3) 401 body carries no state"
 r=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Session: garbage-token' http://127.0.0.1:18101/status 2>/dev/null)
 [[ "$r" == "401" ]] && ok "5ai(3) GET /status bogus X-Session -> 401" || bad "5ai(3) bogus X-Session code=$r"
@@ -2315,6 +2256,18 @@ ak_write() {
   echo "POST /api/wan/connect sess=<redacted:len=${#1}> pin=<redacted:len=${#2}> -> ${resp##*$'\n'}" >> "$AKLOG"
   echo "${resp##*$'\n'}|${resp%$'\n'*}"
 }
+# admin write: session pin -> HTTP code (two-factor path: session AND body.pin;
+# post-S03 the ONLY write bucket whose wrong pin feeds the _PIN_FAILS throttle)
+ak_awrite() {
+  local data resp
+  data='{"action":"add-default","psk":"fixturepsk"}'
+  [[ -n "$2" ]] && data="{\"action\":\"add-default\",\"psk\":\"fixturepsk\",\"pin\":\"$2\"}"
+  resp=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $1" -d "$data" \
+    http://127.0.0.1:18310/api/wan/psks-manage 2>/dev/null)
+  echo "POST /api/wan/psks-manage sess=<redacted:len=${#1}> pin=<redacted:len=${#2}> -> $resp" >> "$AKLOG"
+  echo "$resp"
+}
 ak_start 18310 2468 AdminPass99
 # (1) login: correct PSK -> 200 + token; wrong/absent -> 401 {"error":"auth"}
 l_ok=$(ak_login AdminPass99)
@@ -2325,15 +2278,14 @@ l_wrong=$(ak_login WrongPsk1)
 [[ "$l_wrong" == 401'|'*'"auth"'* ]] && ok "5ak(1) login wrong PSK -> 401 auth" || bad "5ak(1) login wrong: [$l_wrong]"
 l_absent=$(ak_login "")
 [[ "$l_absent" == 401'|'*'"auth"'* ]] && ok "5ak(1) login absent PSK -> 401 auth" || bad "5ak(1) login absent: [$l_absent]"
-# (2) admin todo 1 re-scope: /status + /api/wan/known are CLIENT reads — a
-# session alone does NOT unlock them (X-Pin is the credential); psks-manage
-# stays an admin read (session unlocks it).
+# (2) S03: /status + /api/wan/known are SESSION-gated reads — the session
+# alone unlocks them; X-Pin without a session is not a credential anymore.
 r=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session: $TOK" http://127.0.0.1:18310/api/wan/known 2>/dev/null)
-[[ "$r" == "401" ]] && ok "5ak(2) GET known + session only -> 401 (X-Pin is the client read credential)" || bad "5ak(2) known+session code=$r (want 401: client read)"
+[[ "$r" == "200" ]] && ok "5ak(2) GET known + session -> 200 (S03: session is the credential)" || bad "5ak(2) known+session code=$r (want 200)"
 r=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session: $TOK" http://127.0.0.1:18310/status 2>/dev/null)
-[[ "$r" == "401" ]] && ok "5ak(2) GET /status + session only -> 401 (X-Pin is the client read credential)" || bad "5ak(2) /status+session code=$r (want 401: client read)"
-r=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session: $TOK" -H 'X-Pin: 2468' http://127.0.0.1:18310/api/wan/known 2>/dev/null)
-[[ "$r" == "200" ]] && ok "5ak(2) GET /api/wan/known + X-Pin -> 200 (client read unlocked)" || bad "5ak(2) known+pin code=$r (want 200)"
+[[ "$r" == "200" ]] && ok "5ak(2) GET /status + session -> 200 (session is the credential, S02)" || bad "5ak(2) /status+session code=$r (want 200)"
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Pin: 2468' http://127.0.0.1:18310/api/wan/known 2>/dev/null)
+[[ "$r" == "401" ]] && ok "5ak(2) GET /api/wan/known + X-Pin only -> 401 (PIN alone insufficient, S03)" || bad "5ak(2) known+pin code=$r (want 401)"
 r=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session: $TOK" http://127.0.0.1:18310/api/wan/psks-manage 2>/dev/null)
 [[ "$r" == "200" ]] && ok "5ak(2) GET psks-manage + session -> 200 (admin read)" || bad "5ak(2) psks-manage+session code=$r"
 EXPTOK=$(A="$A" python3 - <<'PYEOF'
@@ -2363,12 +2315,8 @@ done
 # (3) client write classes arm on body.pin alone (session optional); psks-manage
 #     /apconfig remain two-factor. session + correct pin -> 200 envelope;
 #     session + wrong pin / no pin -> 403 {"error":"pin"}
-w_ok=$(ak_write "$TOK" 2468)
-[[ "$w_ok" == 200'|'*'"lines"'* ]] && ok "5ak(3) write + session + correct pin -> 200 envelope" || bad "5ak(3) write good: [$w_ok]"
-w_badpin=$(ak_write "$TOK" 9999)
-[[ "$w_badpin" == 403'|'*'"pin"'* ]] && ok "5ak(3) write + session + wrong pin -> 403 pin" || bad "5ak(3) wrong-pin: [$w_badpin]"
-w_nopin=$(ak_write "$TOK" "")
-[[ "$w_nopin" == 403'|'*'"pin"'* ]] && ok "5ak(3) write + session + NO pin -> 403 pin" || bad "5ak(3) no-pin: [$w_nopin]"
+w_ok=$(ak_write "$TOK" "")
+[[ "$w_ok" == 200'|'*'"lines"'* ]] && ok "5ak(3) write + session -> 200 envelope (S03: PIN not required)" || bad "5ak(3) write good: [$w_ok]"
 for ep in scan status disconnect recheck; do
   r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
     -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK" -d '{"pin":"2468"}' \
@@ -2390,7 +2338,7 @@ npw=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $NPTOK" -d '{"ssid":"HotelNet"}' \
   http://127.0.0.1:18311/api/wan/connect 2>/dev/null)
 echo "nopin-write -> ${npw##*$'\n'} body=${npw%$'\n'*}" >> "$AKLOG"
-[[ "$npw" == *'"pin_unset"'* ]] && [[ "$npw" == *$'\n'403 ]] && ok "5ak(4) PIN unset + session -> 403 pin_unset" || bad "5ak(4) nopin write: [$npw]"
+[[ "$npw" == *$'\n'200 ]] && ok "5ak(4) PIN unset + session -> 200 (S03: PIN not required)" || bad "5ak(4) nopin write: [$npw]"
 # pin_unset IS the answer for a client write on an un-provisioned router
 # (connect is a CLIENT write: no session involved at any step; the
 # {"error":"pin_unset"} body tells the admin page to provision, and the
@@ -2398,29 +2346,29 @@ echo "nopin-write -> ${npw##*$'\n'} body=${npw%$'\n'*}" >> "$AKLOG"
 npns=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -d '{"ssid":"HotelNet"}' \
   http://127.0.0.1:18311/api/wan/connect 2>/dev/null)
-[[ "$npns" == *'"pin_unset"'* && "$npns" == *$'\n'403 ]] \
-  && ok "5ak(4) no-session write on PIN-unset router -> 403 pin_unset" || bad "5ak(4) no-session write: [$npns]"
+[[ "$npns" == *'"auth"'* && "$npns" == *$'\n'401 ]] \
+  && ok "5ak(4) no-session write -> 401 auth (S03: session required)" || bad "5ak(4) no-session write: [$npns]"
 ak_stop $AKNP_PID
 # (5) /health + / stay open on the main server
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18310/health 2>/dev/null)
 [[ "$r" == "200" ]] && ok "5ak(5) /health 200 with no session" || bad "5ak(5) /health code=$r"
 wh5=$(curl -s http://127.0.0.1:18310/ 2>/dev/null)
 leak5=""
-for w in wan_ssid wan_ip "Hotel SSID" internet Standalone clients ap_state; do
+for w in wan_ip "Hotel SSID" Standalone clients ap_state "clients_list"; do
   echo "$wh5" | grep -qF "$w" && leak5="$leak5 [$w]"
 done
-[[ -z "$leak5" ]] && ok "5ak(5) / still 200 generic warning (no device fields)" || bad "5ak(5) / leak=$leak5"
+[[ -z "$leak5" ]] && ok "5ak(5) / minimal page leaks no sensitive fields" || bad "5ak(5) / leak=$leak5"
 # (6) throttle escalates on wrong pins even with a valid session (same _PIN_FAILS)
 ak_stop $AKPID  # part-1 done; relaunch fresh so count starts at 0 (127.0.0.1 shared key)
 ak_start 18310 2468 AdminPass99
 lt=$(ak_login AdminPass99)
 TOK6=$(printf '%s' "$lt" | cut -d'|' -f2 | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p')
 codes6=""
-for i in 1 2 3 4 5; do codes6="$codes6$(ak_write "$TOK6" "badpin$i" | cut -d'|' -f1) "; done
+for i in 1 2 3 4 5; do codes6="$codes6$(ak_awrite "$TOK6" "badpin$i") "; done
 [[ "$codes6" == "403 403 403 403 403 " ]] \
   && ok "5ak(6) 5 wrong pins w/ session -> 403 pin x5 (arming throttle)" || bad "5ak(6) codes=[$codes6]"
-r6=$(ak_write "$TOK6" badpin6 | cut -d'|' -f1)
-[[ "$r6" == "429" ]] || r6=$(ak_write "$TOK6" badpin6 | cut -d'|' -f1)
+r6=$(ak_awrite "$TOK6" badpin6)
+[[ "$r6" == "429" ]] || r6=$(ak_awrite "$TOK6" badpin6)
 [[ "$r6" == "429" ]] && ok "5ak(6) 6th wrong pin w/ session -> 429 (throttle armed despite session)" \
   || bad "5ak(6) 6th=$r6 (want 429; session bypassed throttle?)"
 r429=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
@@ -2431,10 +2379,12 @@ echo "blocked-login -> ${r429##*$'\n'} body=${r429%$'\n'*}" >> "$AKLOG"
   && ok "5ak(6) login shares the _PIN_FAILS throttle (429 rate_limited when armed)" \
   || bad "5ak(6) login while armed: [$r429]"
 sleep 5.5
-rok=$(ak_write "$TOK6" 2468 | cut -d'|' -f1)
+rok=$(ak_awrite "$TOK6" 2468)
 [[ "$rok" == "200" ]] && ok "5ak(6) session + correct pin after tier expiry -> 200 (no bypass, no lockout)" \
   || bad "5ak(6) post-expiry write=$rok (want 200)"
 ak_stop $AKPID
+grep -qE 'AdminPass99|2468|badpin[0-9]' "$AKLOG" && bad "5ak secret material leaked into transcript (forbidden)" \
+  || ok "5ak transcript free of PSK/PIN/token"
 grep -qE 'AdminPass99|2468|badpin[0-9]' "$AKLOG" && bad "5ak secret material leaked into transcript (forbidden)" \
   || ok "5ak transcript free of PSK/PIN/token"
 echo "5ak auth transcript: $AKLOG"
@@ -3628,6 +3578,55 @@ apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","ssid":"NewName"}' \
 [[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK6")" == 200* ]] \
   && ok "5ar(f) rc!=0 -> pre-apply token still 200" || bad "5ar(f) token rotated on failed apply"
 AR_STOP
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+
+# --- (5p) public /api/status endpoint (S01) ------------------------------------
+sec "5p. public /api/status endpoint (S01)"
+# The new unauthenticated endpoint returns only non-sensitive data:
+# ap_ssid, wan_ssid, internet. No client list, no WAN IP, no known networks.
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"HotelNet","wan_ip":"10.9.8.7","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+STW="$B/stub-travel-wan-warn"; printf '#!/bin/bash\nprintf %s "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"; chmod +x "$STW"
+TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18103 TRAVELROUTER_BIND_HOST=127.0.0.1 \
+  python3 "$A/status-server.py" >"$B/srv-5p.log" 2>&1 &
+SPID_5P=$!
+sleep 1.5
+wait_healthy 18103 || true
+# (1) GET /api/status without any auth -> 200 + JSON with the 3 public fields
+r=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18103/api/status 2>/dev/null)
+code="${r##*$'\n'}"; body="${r%$'\n'*}"
+[[ "$code" == "200" ]] && ok "5p(1) GET /api/status no auth -> 200" || bad "5p(1) code=$code"
+echo "$body" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert "ap_ssid" in d and "wan_ssid" in d and "internet" in d' 2>/dev/null \
+  && ok "5p(1) /api/status has ap_ssid, wan_ssid, internet" || bad "5p(1) missing fields: $body"
+# (2) /api/status does NOT leak sensitive fields
+leak=""
+for w in clients wan_ip lan_ip mode standalone ap_state clients_list; do
+  echo "$body" | grep -qF "$w" && leak="$leak [$w]"
+done
+[[ -z "$leak" ]] && ok "5p(2) /api/status leaks no sensitive fields" || bad "5p(2) leak: $leak"
+# (3) GET / serves the minimal status page (no auth)
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18103/ 2>/dev/null)
+[[ "$r" == "200" ]] && ok "5p(3) GET / no auth -> 200" || bad "5p(3) code=$r"
+# (4) The minimal page uses textContent-only (no innerHTML/insertAdjacentHTML/document.write)
+wh=$(curl -s http://127.0.0.1:18103/ 2>/dev/null)
+if python3 - <<'PY' 2>/dev/null; then ok "5p(4) minimal page textContent-only"; else bad "5p(4) innerHTML/insertAdjacentHTML present"; fi
+page = open("roles/travel-router/assets/status-server.py").read()
+html = page.split('_STATUS_HTML = """')[1].split('"""')[0]
+for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+    assert forbidden not in html
+PY
+# (5) Captive portal redirect still works (probe hosts -> 302)
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
+touch "$B/portal-active.conf"
+TRAVELWAN_BIN="$STW" TRAVELROUTER_STATE_FILE="$B/srv-state.json" TRAVELROUTER_STATUS_PORT=18104 TRAVELROUTER_BIND_HOST=127.0.0.1 \
+  TRAVELROUTER_PORTAL_CONF="$B/portal-active.conf" python3 "$A/status-server.py" >"$B/srv-5p-portal.log" 2>&1 &
+SPID_5PP=$!
+sleep 1.5
+wait_healthy 18104 || true
+r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18104/generate_204 2>/dev/null)
+[[ "$r" == "302" ]] && ok "5p(5) captive portal redirect still 302" || bad "5p(5) code=$r"
+kill $SPID_5P 2>/dev/null; wait $SPID_5P 2>/dev/null
+kill $SPID_5P 2>/dev/null; wait $SPID_5P 2>/dev/null
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 
 # --- (6) scope assert ---------------------------------------------------------

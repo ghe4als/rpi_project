@@ -198,24 +198,19 @@ function api(path, body) {
                "X-Requested-With": "XMLHttpRequest" },
     body: JSON.stringify(body || {})
   };
+  var t = sessToken();
+  if (t) { opts.headers["X-Session"] = t; }
   return fetch(path, opts);
 }
 
-function pinOrNull() {
-  var pin = document.getElementById("pin").value.trim();
-  if (pin) { try { localStorage.setItem("setup-pin", pin); } catch (e) {} }
-  return pin;
+function sessToken() {
+  try { return localStorage.getItem("admin-session") || ""; } catch (e) { return ""; }
 }
 
-function savedPin() {
-  try { return localStorage.getItem("setup-pin") || ""; } catch (e) { return ""; }
-}
-
-// --- PIN-only credential model (admin split, admin plan todo 5) ------------
-// /setup is the CLIENT page: it carries zero device data; every fetch sends
-// the setup PIN (X-Pin header on GET /status + /api/wan/known, body.pin on
-// the POST verbs) and nothing else. Session tokens belong to the /admin
-// page — none are read, stored, or sent here.
+// --- Session credential model (S03) -----------------------------------------
+// /setup is now ADMIN-ONLY: every fetch sends the X-Session token (from
+// localStorage "admin-session", set by /admin login). No PIN is required
+// for client writes after S03.
 var GATE_IDS = ["status-section", "pin-section", "networks-section",
                 "known-section", "manual-section"];
 
@@ -272,11 +267,9 @@ function refreshStatus() {
   // /status is PIN-gated (X-Pin): a 401 just means "no PIN yet" — the
   // periodic refresh only polls once a PIN is saved, so an absent-PIN
   // request is never issued and never feeds the fail counter.
-  var pin = pinOrNull() || savedPin();
-  if (!pin) { return; }
-  fetch("/status", { cache: "no-store", headers: { "X-Pin": pin } })
+  fetch("/status", { cache: "no-store", headers: { "X-Session": sessToken() } })
     .then(function (r) {
-      if (r.status === 401 || r.status === 403) { return null; }
+      if (r.status === 401) { return null; }
       return r.json();
     }).then(function (d) {
       if (!d) { return; }
@@ -447,7 +440,7 @@ function renderScanCard(line, knownSet) {
   // Try saved passwords: POST /api/wan/psks {pin, ssid} — render envelope
   // `lines` as progress text; disable while busy.
   tryBtn.addEventListener("click", function () {
-    var pin = pinOrNull() || savedPin();
+    var pin = sessToken();
     if (!pin) {
       setCardMsg(card, "PIN required — enter it in the PIN section", "warn");
       return;
@@ -476,7 +469,7 @@ function renderScanCard(line, knownSet) {
   });
 
   function doConnect(cardEl, rawSsid, pskVal) {
-    var pin = pinOrNull() || savedPin();
+    var pin = sessToken();
     if (!pin) {
       setCardMsg(cardEl, "PIN required — enter it in the PIN section", "warn");
       return;
@@ -514,19 +507,14 @@ function doScan() {
   // (C6: the known endpoint is PIN-gated — degrade to empty + message on 403)
   // With no PIN yet the fetch is skipped entirely: an empty X-Pin would
   // count as a wrong-PIN attempt and feed this IP's fail counter.
-  var knownP = (pinOrNull() || savedPin()) ? fetch("/api/wan/known", { cache: "no-store",
-    headers: { "X-Pin": pinOrNull() || savedPin() } })
+  var knownP = fetch("/api/wan/known", { cache: "no-store",
+    headers: { "X-Session": sessToken() } })
     .then(function (r) {
-      if (r.status === 403) {
-        setMsg("known-msg", "known networks require PIN", "warn");
-        return { known: [] };
-      }
       if (r.status === 401) { return { known: [] }; }
       return r.json();
     })
     .then(function (d) { return d ? (d.known || []) : null; })
-    .catch(function () { return []; })
-    : Promise.resolve([]);   // no PIN: no request, no fail-counter increment
+    .catch(function () { return []; });
   knownP.then(function (known) { if (known) { renderKnown(known); } });
   // Scan is POST but the server never reads the request body. Send NO body:
   // a JSON "{}" body left unread in the keep-alive buffer poisons the next
@@ -679,7 +667,7 @@ function renderKnown(known) {
     });
 
     fBtn.addEventListener("click", function () {
-      var pin = pinOrNull() || savedPin();
+      var pin = sessToken();
       if (!pin) { setCardMsg(card, "PIN required — enter it in the PIN section", "warn"); return; }
       setCardBusy(card, true);
       setCardMsg(card, "forgetting…", "");
@@ -709,12 +697,12 @@ function refreshKnown() {
   // With no PIN yet, skip the fetch entirely: an empty X-Pin would count as
   // a wrong-PIN attempt and feed this IP's fail counter (the ~4s refresh
   // cadence would rack up fails and throttle the later real connect).
-  if (!(pinOrNull() || savedPin())) {
+  if (!(sessToken())) {
     setMsg("known-msg", "known networks require PIN", "warn");
     return;
   }
   fetch("/api/wan/known", { cache: "no-store",
-    headers: { "X-Pin": pinOrNull() || savedPin() } })
+    headers: { "X-Session": sessToken() } })
     .then(function (r) {
       if (r.status === 403) {
         setMsg("known-msg", "known networks require PIN", "warn");
@@ -747,7 +735,7 @@ document.getElementById("d-cancel").addEventListener("click", function () {
   document.getElementById("net-dialog").close();
 });
 document.getElementById("d-connect").addEventListener("click", function () {
-  var pin = pinOrNull() || savedPin();
+  var pin = sessToken();
   if (!pin) { dMsg("PIN required — enter it in the PIN section", "warn"); return; }
   var psk = document.getElementById("d-psk").value;
   busy(true); dMsg("connecting…", "");
@@ -766,7 +754,7 @@ document.getElementById("d-connect").addEventListener("click", function () {
   }).catch(function (e) { dMsg(String(e.message || e), "warn"); });
 });
 document.getElementById("d-try").addEventListener("click", function () {
-  var pin = pinOrNull() || savedPin();
+  var pin = sessToken();
   if (!pin) { dMsg("PIN required — enter it in the PIN section", "warn"); return; }
   dMsg("trying saved passwords…", "");
   api("/api/wan/psks", { pin: pin, ssid: DIALOG_SSID }).then(function (r) {
@@ -788,10 +776,7 @@ document.getElementById("d-try").addEventListener("click", function () {
 });
 
 function apiWrite(path, extra) {
-  var pin = pinOrNull() || savedPin();
-  if (!pin) { setMsg("form-msg", "PIN required — enter it in the PIN section", "warn"); return Promise.resolve(null); }
   var body = extra || {};
-  if (pin) { body.pin = pin; }
   busy(true);
   setMsg("form-msg", "working…");
   return api(path, body).then(function (r) {
