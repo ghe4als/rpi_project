@@ -86,7 +86,8 @@ SESSION_TTL_SECONDS = 43200  # 12h: one hotel-setup window, then re-login
 _ASSET_DIR = os.path.dirname(os.path.abspath(__file__))
 ADMIN_PAGE = os.path.join(_ASSET_DIR, "admin.html")
 # Captive-portal hijack drop-in (wan-select owns + toggles it; H03). When it
-# exists, OS connectivity-probe Hosts arriving here are 302'd to /setup.
+# exists, OS connectivity-probe Hosts arriving here are 302'd to / (the
+# public minimal status page; S05).
 PORTAL_CONF = os.environ.get(
     "TRAVELROUTER_PORTAL_CONF", "/etc/dnsmasq.d/travel-router-portal.conf")
 # Internet kill-switch flag (security plan todo 4). PRESENT = cut client->WAN
@@ -811,15 +812,16 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _portal_redirect(self):
-        """302 a connectivity-probe request to /setup. Target is the numeric
-        LAN IP (captive webviews cannot rely on mDNS); the port is included
-        whenever it is not 80, using the actually-bound port."""
+        """302 a connectivity-probe request to / (public minimal status page,
+        S05). Target is the numeric LAN IP (captive webviews cannot rely on
+        mDNS); the port is included whenever it is not 80, using the
+        actually-bound port."""
         host = _state_field("lan_ip") or DEFAULT_HOST
         port = self.server.server_address[1]
         if port != 80:
             host = "%s:%d" % (host, port)
         self.send_response(302)
-        self.send_header("Location", "http://%s/setup" % host)
+        self.send_header("Location", "http://%s/" % host)
         self.send_header("Content-Length", "0")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
