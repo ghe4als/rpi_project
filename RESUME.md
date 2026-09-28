@@ -37,28 +37,24 @@ Key decisions/findings this session:
   rows ticked (owner okay to close still pending from 2026-09-26, superseded
   in practice by the newer S-wave — ask).
 - New S-wave tasks live in `tasks/S01..S06-*.md` + `tasks/ISSUES.md`:
-  S01 ✅ S02 ✅ S03 ✅ (c6f45fe) — **S04 ✅ (6af72e6, this session)**.
-  S05 next (captive portal redirect -> /; blocked only on nothing now),
-  then S06 (PIN fate + cleanup; setup PIN still used as admin write factor).
+  S01 ✅ S02 ✅ S03 ✅ (c6f45fe) — S04 ✅ (6af72e6) —
+  **S05 ✅ (76862a7, this session: portal 302s to /, R1 + 5ai(4) asserts
+  flipped, 5p(5) was code-only so untouched)**.
+  S06 next (PIN fate + cleanup; setup PIN still used as admin write factor).
 - Suite gate: monotonic; **586 passed, 0 failed**, 3 consecutive runs.
-- Working tree: CLEAN (S04 committed). RESUME.md itself is the only expected
+- Working tree: CLEAN (S05 committed). RESUME.md itself is the only expected
   local modification after this write.
-- Live Pi (rpi-8e21bb) does NOT carry S04/S01-S03 yet (last flash predates
+- Live Pi (rpi-8e21bb) does NOT carry S01-S05 yet (last flash predates
   them; the AP-rename fixes were hot-pushed earlier). Next natural re-flash
   picks up everything.
 
 ## Next session steps
 
-1. **S05 — captive portal redirect -> `/`** (tasks/S05-captive-portal-redirect.md):
-   change `_portal_redirect` Location literal `/setup` -> `/`, update the
-   R1 (18091) + 5ai(4) (18102) + 5p(5) asserts that pin the Location, run the
-   suite (expect 586 -> 586, asserts edited in place, not added), commit.
-2. **S06 — PIN fate + cleanup** (tasks/S06-pin-fate-cleanup.md): owner decision
+1. **S06 — PIN fate + cleanup** (tasks/S06-pin-fate-cleanup.md): owner decision
    required on PIN retention — read the task file first, ask the owner.
-3. After S06: re-run F3-style hardware smoke or decide the S-wave is
-   software-only (all asserts client/server-local; no hardware step planned).
-4. Close out tasks/ISSUES.md rows S1-S4 (S1/S2/S3 done in c6f45fe, S4 done in
-   6af72e6) and the C1 stale-comment row if desired.
+3. After S06: close out tasks/ISSUES.md rows S1-S4 (S1/S2/S3 done in c6f45fe,
+   S4 done in 6af72e6, S5's redirect retarget in 76862a7) and the C1
+   stale-comment row if desired.
 
 ## Standing rules (do not relearn)
 
