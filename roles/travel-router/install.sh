@@ -143,13 +143,13 @@ fi
 printf '%s' "$upin" | grep -qE '^[A-Za-z0-9]+$' || fail "SETUP_PIN has illegal characters" \
   "TRAVELROUTER_SETUP_PIN must be A-Za-z0-9 only (phone-keyboard-friendly)"
 
-# ADMIN_PSK is REQUIRED: it gates the setup page + every change alongside the
+# ADMIN_PSK is REQUIRED: it gates the admin page + every change alongside the
 # PIN. Same render-breaker battery as the SSID (it is sed-rendered nowhere, but
 # the same chars also break the systemd EnvironmentFile printf staging below).
 apsk="${TRAVELROUTER_ADMIN_PSK:-}"
 if [[ -z "$apsk" ]]; then
   fail "ADMIN_PSK (TRAVELROUTER_ADMIN_PSK) is empty" \
-    "set TRAVELROUTER_ADMIN_PSK in role.env (>=8 printable-ASCII chars; it gates the setup page + all changes alongside the PIN)"
+    "set TRAVELROUTER_ADMIN_PSK in role.env (>=8 printable-ASCII chars; it gates the admin page + all changes alongside the PIN)"
 fi
 if [[ "${#apsk}" -lt 8 ]]; then
   fail "ADMIN_PSK too short (${#apsk} < 8)" "TRAVELROUTER_ADMIN_PSK must be at least 8 printable-ASCII characters"
@@ -310,7 +310,6 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0755 "$ASSETS/status-server.py"   /usr/local/lib/travel-router/status-server.py
   install -m 0755 "$ASSETS/staged-env-refresh.sh" /usr/local/lib/travel-router/staged-env-refresh.sh
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
-  install -m 0644 "$ASSETS/setup.html"         /usr/local/lib/travel-router/setup.html
   install -m 0644 "$ASSETS/admin.html"         /usr/local/lib/travel-router/admin.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
   install -m 0644 "$ASSETS/portal-dnsmasq.conf.tmpl" /usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl
@@ -329,7 +328,6 @@ else
   cp "$ASSETS/status-server.py"  "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   cp "$ASSETS/staged-env-refresh.sh" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/staged-env-refresh.sh"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
-  cp "$ASSETS/setup.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/setup.html"
   cp "$ASSETS/admin.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/admin.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
   cp "$ASSETS/portal-dnsmasq.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/portal-dnsmasq.conf.tmpl"

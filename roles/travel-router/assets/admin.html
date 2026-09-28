@@ -5,22 +5,22 @@
   Mobile-first, zero external requests (the device may be offline by
   design), vanilla JS.
 
-  Credential model (admin split todos 1/4): this page trades the admin PSK
-  for an X-Session token (POST /api/auth/login {"psk"}), stored in
-  localStorage "admin-session". Admin reads need the session only
-  (ap-info, psks-manage GET); admin writes additionally carry the setup PIN
-  in the JSON body. /status is a CLIENT endpoint — sessions do NOT unlock
-  it — so every /status fetch (clients list, AP-restart poll) attaches
-  X-Pin from the PIN field. A 401 {"error":"auth"} on any admin call
-  (missing/expired token, or a PSK/salt rotation) drops back to the login
-  panel instead of leaving a dead screen.
+  Credential model (S04 merge): this page trades the admin PSK for an
+  X-Session token (POST /api/auth/login {"psk"}), stored in localStorage
+  "admin-session". The session unlocks EVERY read (/status, ap-info,
+  psks-manage GET, /api/wan/known, security-feature GETs) and every CLIENT
+  write (/api/wan/{scan,connect,psks,disconnect,forget} — merged from
+  setup.html; session-only since S03). ADMIN writes additionally carry the
+  setup PIN in the JSON body (two-factor). A 401 {"error":"auth"} on any
+  gated call (missing/expired token, or a PSK/salt rotation) drops back to
+  the login panel instead of leaving a dead screen.
 
   AP-settings preview: "Random name" / "Random password" POST
   /api/admin/apconfig/preview (session + pin) and FILL the SSID/PSK fields
   with the returned values, so they can be written down BEFORE save.
   Save -> POST /api/wan/apconfig {pin, ssid?, psk?, hidden?}; the radio
   drops mid-restart, so the response is never treated as proof — the page
-  polls GET /status (X-Pin) every 2s up to 30s and reveals the final SSID
+  polls GET /status (session) every 2s up to 30s and reveals the final SSID
   (localStorage "admin-last-ssid").
 
   Security features (security plan todos 3-10, wired by todo 11): blocked
@@ -85,7 +85,22 @@
   .netcard .cardmsg.ok { color: #5dd879; }
   .dim { color: #6b7682; font-style: italic; }
   .notedown { font-size: 0.85rem; color: #ffb84d; word-break: break-all;
-              margin: 0.4rem 0; }
+               margin: 0.4rem 0; }
+
+  /* S04 merge (from setup.html): signal bars + scan table + badge variants */
+  .sig { display: inline-flex; gap: 2px; margin-left: 0.25rem; vertical-align: middle; }
+  .sig i { display: inline-block; width: 4px; height: 12px; background: #3a434e;
+           border-radius: 1px; }
+  .sig i.on { background: #5dd879; }
+  .badge.open { background: #3a434e; color: #e8eaed; }
+  .badge.ent  { background: #7a3e3e; color: #ffd6d6; }
+  .badge.known{ background: #2d7ff9; }
+  #scan-table-wrap { max-height: 21rem; overflow-y: auto; }
+  #scan-table { width: 100%; }
+  #scan-table td { padding: 4px 6px 4px 0; border-bottom: 1px solid #222a33;
+                   font-size: 0.9rem; }
+  #scan-table .net-ssid { font-weight: 600; word-break: break-all; }
+  #scan-table button { font-size: 0.85rem; padding: 0.35rem 0.7rem; margin: 0; }
 
   dialog { border: 1px solid #3a434e; border-radius: 10px; background: #1a2027;
            color: #e8eaed; padding: 1rem; max-width: 26rem; width: 92%; }
@@ -114,6 +129,33 @@
     <label for="pin">Setup PIN</label>
     <input id="pin" inputmode="numeric" autocomplete="off">
     <p class="msg" id="pin-msg"></p>
+  </section>
+
+  <section id="networks-section">
+    <h2>WiFi networks</h2>
+    <button id="scan-btn" type="button">Scan</button>
+    <div id="scan-table-wrap"><div id="scan-list"></div></div>
+    <p class="msg" id="scan-msg"></p>
+  </section>
+
+  <section id="known-section">
+    <h2>Known networks</h2>
+    <div id="known-list"></div>
+    <p class="msg" id="known-msg"></p>
+  </section>
+
+  <section id="manual-section">
+    <h2>Connect manually</h2>
+    <label for="mc-ssid">Network name (SSID)</label>
+    <input id="mc-ssid" autocomplete="off" maxlength="32">
+    <label for="mc-psk">Password (leave empty for open networks)</label>
+    <input id="mc-psk" type="password" autocomplete="off">
+    <p>
+      <button id="mc-connect" type="button">Connect</button>
+      <button id="mc-disconnect" type="button" class="secondary">Disconnect</button>
+      <button id="mc-forget" type="button" class="secondary">Forget</button>
+    </p>
+    <p class="msg" id="mc-msg"></p>
   </section>
 
   <section id="clients-section">
@@ -236,6 +278,19 @@
   <p class="dmsg" id="ap-confirm-msg"></p>
 </dialog>
 
+<dialog id="net-dialog">
+  <h2 id="d-title">Connect</h2>
+  <div class="drow"><span class="label">Network:</span> <span id="d-ssid"></span></div>
+  <label for="d-psk">Password (leave empty for open networks)</label>
+  <input id="d-psk" type="password" autocomplete="off">
+  <p>
+    <button id="d-connect" type="button">Connect</button>
+    <button id="d-try" type="button" class="secondary">Try saved passwords</button>
+    <button id="d-cancel" type="button" class="secondary">Cancel</button>
+  </p>
+  <p class="dmsg" id="d-msg"></p>
+</dialog>
+
 <script>
 "use strict";
 // DOM built with createElement/textContent only (see file-header rule).
@@ -284,7 +339,8 @@ function currentPin() {
 // ("admin-session"); any gated 401 {"error":"auth"} drops back to the login
 // panel through the shared handleAuth path (graceful even across a
 // post-rename salt rotation — security plan todo 10/11).
-var GATE_IDS = ["pin-section", "pskmanage-section", "ap-section",
+var GATE_IDS = ["pin-section", "networks-section", "known-section",
+                "manual-section", "pskmanage-section", "ap-section",
                 "clients-section", "blocked-section", "killswitch-section",
                 "dns-section", "audit-section", "sessions-section",
                 "sshlockdown-section", "stealth-section"];
@@ -348,10 +404,8 @@ function handleErr(prefix) {
   };
 }
 
-// /status is a CLIENT endpoint: X-Pin is the credential — a session neither
-// unlocks nor blocks it. Without a PIN saved yet the fetch is skipped
-// entirely: an empty X-Pin counts as a wrong-PIN attempt and feeds the
-// per-IP fail counter.
+// /status is session-gated (S02) — the login token unlocks it. A 401
+// degrades to null; sessionFetch has already dropped the UI to login.
 function statusFetch() {
   // /status is ADMIN-ONLY (session-gated, S02) — the admin page already has
   // a session token from login. The public minimal status is GET /api/status.
@@ -363,7 +417,7 @@ function statusFetch() {
     .catch(function () { return null; });
 }
 
-// --- Connected clients (from GET /status clients_list, X-Pin) --------------
+// --- Connected clients (from GET /status clients_list, session-gated) ------
 // A blocked MAC (from GET /api/admin/blocked) renders a "blocked" badge and
 // no Block button on its client row — the row action is Unblock (below).
 function renderClients(list) {
@@ -903,7 +957,7 @@ document.getElementById("ap-confirm-save").addEventListener("click", function ()
 
 // The radio drops mid-restart: the response is NOT proof. Capture the
 // (possibly generated) final SSID BEFORE the restart, store it under
-// "admin-last-ssid", then poll GET /status (X-Pin) every 2s up to 30s and
+// "admin-last-ssid", then poll GET /status (session) every 2s up to 30s and
 // reveal the rejoin message when the AP answers again.
 function doApSave(body) {
   busy(true);
@@ -954,7 +1008,8 @@ function doApSave(body) {
 
 function busy(on) {
   ["ap-save", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
-   "login-btn", "dns-add", "rotate-sessions-btn"].forEach(function (id) {
+   "login-btn", "dns-add", "rotate-sessions-btn",
+   "scan-btn", "mc-connect", "mc-disconnect", "mc-forget"].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) { el.disabled = on; }
   });
@@ -1040,6 +1095,364 @@ document.getElementById("pm-add").addEventListener("click", function () {
   });
 });
 
+// --- WiFi networks (scan + connect), known networks, manual connect ---------
+// Merged from setup.html (S04). Client verbs are session-gated (S03): api()
+// and sessionFetch carry X-Session; NO PIN rides on these calls. The RAW
+// (unescaped) SSID rides in element.dataset for API calls and is NEVER
+// re-derived from rendered label text.
+
+// --- escape-aware SSID splitter ------------------------------------------
+// Contract pinned by a python replica in validate-local.sh §5r. Single pass
+// over the raw scan row: backslash escapes the next char (any char); an
+// unescaped ':' emits a field separator. Returns the first 3 fields
+// [ssid, signal, security]. A trailing lone backslash (no next char) is
+// emitted literally. Empty ssid => hidden network; empty security => open.
+function splitRow(row) {
+  var out = []; var cur = ""; var i = 0;
+  while (i < row.length) {
+    var ch = row.charAt(i);
+    if (ch === "\\" && i + 1 < row.length) {
+      cur += row.charAt(i + 1); i += 2; continue;
+    }
+    if (ch === ":") { out.push(cur); cur = ""; }
+    else { cur += ch; }
+    i += 1;
+  }
+  out.push(cur);
+  return out.slice(0, 3);
+}
+
+// --- signal bar (0..100 -> 4 segments) -----------------------------------
+function signalBars(sig) {
+  var n = Math.max(0, Math.min(4, Math.round((Number(sig) || 0) / 25)));
+  var wrap = document.createElement("span");
+  wrap.className = "sig";
+  wrap.setAttribute("aria-label", String(sig));
+  for (var k = 0; k < 4; k++) {
+    var b = document.createElement("i");
+    if (k < n) { b.className = "on"; }
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
+// security label for a parsed security token string
+function securityLabel(sec) {
+  if (!sec) { return "Open"; }
+  if (sec.indexOf("802.1X") !== -1) { return "Enterprise (unsupported)"; }
+  return sec;
+}
+
+// card-level message helper
+function setCardMsg(card, text, cls) {
+  var m = card.querySelector(".cardmsg");
+  if (!m) { return; }
+  m.textContent = text;
+  m.className = "cardmsg" + (cls ? " " + cls : "");
+}
+
+// enable/disable all buttons inside a card
+function setCardBusy(card, on) {
+  var btns = card.querySelectorAll("button");
+  for (var i = 0; i < btns.length; i++) { btns[i].disabled = on; }
+}
+
+var KNOWN_NAMES = {};   // ssid -> true, refreshed alongside scan
+
+function doScan() {
+  busy(true);
+  setMsg("scan-msg", "scanning…");
+  // refresh known alongside scan so rows can show the "known" badge
+  var knownP = sessionFetch("/api/wan/known", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401) { return { known: [] }; }
+      return r.json();
+    })
+    .then(function (d) { return d ? (d.known || []) : null; })
+    .catch(function () { return []; });
+  knownP.then(function (known) { if (known) { renderKnown(known); } });
+  // Scan is POST but the server never reads the request body. Send NO body:
+  // a JSON "{}" body left unread could poison the keep-alive buffer. Same
+  // X-Requested-With header as api(); the session rides via sessionFetch.
+  sessionFetch("/api/wan/scan", {
+    method: "POST", cache: "no-store",
+    headers: { "X-Requested-With": "XMLHttpRequest" }
+  }).then(function (r) {
+    if (!r.ok) { return handleErr("scan failed")(r); }
+    return r.json();
+  }).then(function (d) {
+    var knownSet = {};
+    // build the name set from the freshly fetched known list
+    return knownP.then(function (known) {
+      (known || []).forEach(function (k) {
+        if (k && k.name) { knownSet[k.name] = true; }
+      });
+      var list = document.getElementById("scan-list");
+      while (list.firstChild) { list.removeChild(list.firstChild); }
+      var rows = (d.lines || []).slice();
+      // sort by signal (field 2) descending — keep stable for ties
+      rows.sort(function (a, b) {
+        var sa = Number(splitRow(a)[1]) || 0;
+        var sb = Number(splitRow(b)[1]) || 0;
+        return sb - sa;
+      });
+      // scrollable TABLE, top-10 by signal. Hidden + enterprise networks
+      // stay out of the table and surface as dim notes below it.
+      var table = document.createElement("table");
+      table.id = "scan-table";
+      var tbody = document.createElement("tbody");
+      var hiddenN = 0, entN = 0, shown = 0;
+      rows.forEach(function (line) {
+        var fields = splitRow(line);
+        if (fields.length < 3) { return; }
+        var ssid = fields[0], sig = fields[1], sec = fields[2];
+        var hidden = (ssid === "");
+        var enterprise = (sec.indexOf("802.1X") !== -1);
+        if (hidden) { hiddenN += 1; return; }
+        if (enterprise) { entN += 1; return; }
+        if (shown >= 10) { return; }
+        shown += 1;
+        var tr = document.createElement("tr");
+        var tdSig = document.createElement("td");
+        var sigSpan = document.createElement("span");
+        sigSpan.textContent = (sig || "?");
+        tdSig.appendChild(sigSpan);
+        tdSig.appendChild(signalBars(sig));
+        tr.appendChild(tdSig);
+        var tdSsid = document.createElement("td");
+        tdSsid.className = "net-ssid";
+        tdSsid.textContent = ssid;  // RAW SSID (dataset below carries it too)
+        tr.appendChild(tdSsid);
+        var tdSec = document.createElement("td");
+        tdSec.appendChild(badge(securityLabel(sec), !sec ? "open" : ""));
+        if (Object.prototype.hasOwnProperty.call(knownSet, ssid)) {
+          tdSec.appendChild(badge("known", "known"));
+        }
+        tr.appendChild(tdSec);
+        var tdBtn = document.createElement("td");
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Connect";
+        btn.dataset.ssid = ssid;  // RAW SSID for the dialog — never re-derived
+        btn.addEventListener("click", function () {
+          openNetDialog(btn.dataset.ssid);
+        });
+        tdBtn.appendChild(btn);
+        tr.appendChild(tdBtn);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      list.appendChild(table);
+      var notes = [];
+      if (hiddenN) { notes.push(hiddenN + " hidden network" + (hiddenN === 1 ? "" : "s") + " present — connect manually"); }
+      if (entN) { notes.push("enterprise (802.1X) network" + (entN === 1 ? "" : "s") + " cannot be joined from this page"); }
+      var listWrap = document.getElementById("scan-list");
+      notes.forEach(function (txt) {
+        var note = document.createElement("div");
+        note.className = "dim";
+        note.textContent = txt;
+        listWrap.appendChild(note);
+      });
+      if (!shown) {
+        setMsg("scan-msg", "no networks found");
+      } else {
+        setMsg("scan-msg", shown + " network" + (shown === 1 ? "" : "s") + " (top " + shown + ")");
+      }
+    });
+  }).catch(function (e) {
+    setMsg("scan-msg", String(e.message || e), "warn");
+  }).then(function () { busy(false); },
+          function () { busy(false); });
+}
+
+// --- Known networks section ----------------------------------------------
+function renderKnown(known) {
+  KNOWN_NAMES = {};
+  var list = document.getElementById("known-list");
+  while (list.firstChild) { list.removeChild(list.firstChild); }
+  if (!known || !known.length) {
+    setMsg("known-msg", "no known networks yet");
+    return;
+  }
+  setMsg("known-msg", "");
+  known.forEach(function (k) {
+    if (!k || !k.name) { return; }
+    KNOWN_NAMES[k.name] = true;
+    var card = document.createElement("div");
+    card.className = "netcard";
+    card.dataset.ssid = k.name;  // RAW SSID for API calls
+
+    var name = document.createElement("div");
+    name.className = "ssid";
+    name.textContent = k.name;
+    card.appendChild(name);
+
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    if (k.timestamp) {
+      var ts = document.createElement("span");
+      ts.textContent = "last: " + k.timestamp;
+      meta.appendChild(ts);
+    }
+    if (k.autoconnect === "yes") { meta.appendChild(badge("autoconnect", "auto")); }
+    card.appendChild(meta);
+
+    var btns = document.createElement("div");
+    btns.className = "cardbtns";
+    var cBtn = document.createElement("button");
+    cBtn.type = "button";
+    cBtn.textContent = "Connect";
+    var fBtn = document.createElement("button");
+    fBtn.type = "button";
+    fBtn.className = "secondary";
+    fBtn.textContent = "Forget";
+    btns.appendChild(cBtn);
+    btns.appendChild(fBtn);
+    card.appendChild(btns);
+
+    var cMsg = document.createElement("div");
+    cMsg.className = "cardmsg";
+    card.appendChild(cMsg);
+
+    cBtn.addEventListener("click", function () {
+      // Known-row Connect opens the same connect dialog (PSK entry + Try
+      // saved passwords) instead of a blind connect.
+      openNetDialog(k.name);
+    });
+
+    fBtn.addEventListener("click", function () {
+      setCardBusy(card, true);
+      setCardMsg(card, "forgetting…", "");
+      api("/api/wan/forget", { ssid: k.name }).then(function (r) {
+        return r.json();
+      }).then(function (d) {
+        if (!d.ok) {
+          var log = (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")");
+          setCardMsg(card, log, "warn");
+        } else {
+          setCardMsg(card, "forgotten", "ok");
+          refreshKnown();
+        }
+      }).catch(function (e) {
+        setCardMsg(card, String(e.message || e), "warn");
+      }).then(function () { setCardBusy(card, false); },
+              function () { setCardBusy(card, false); });
+    });
+
+    list.appendChild(card);
+  });
+}
+
+function refreshKnown() {
+  sessionFetch("/api/wan/known", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401) { return null; }  // sessionFetch dropped to login
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { renderKnown(d.known || []); }
+      else { KNOWN_NAMES = {}; }
+    })
+    .catch(function () { setMsg("known-msg", "known networks unavailable", "warn"); });
+}
+
+// --- connect dialog (PSK entry + Try saved passwords) ----------------------
+// Native <dialog>; the RAW SSID rides in a closure variable (never
+// re-derived from rendered text).
+var DIALOG_SSID = "";
+function openNetDialog(rawSsid) {
+  DIALOG_SSID = rawSsid;
+  document.getElementById("d-ssid").textContent = rawSsid || "(hidden network)";
+  document.getElementById("d-psk").value = "";
+  dMsg("d-msg", "");
+  document.getElementById("net-dialog").showModal();
+  document.getElementById("d-psk").focus();
+}
+function netDlgBusy(on) {
+  ["d-connect", "d-try"].forEach(function (id) {
+    document.getElementById(id).disabled = on;
+  });
+}
+document.getElementById("d-cancel").addEventListener("click", function () {
+  document.getElementById("net-dialog").close();
+});
+document.getElementById("d-connect").addEventListener("click", function () {
+  var psk = document.getElementById("d-psk").value;
+  var body = { ssid: DIALOG_SSID };
+  if (psk) { body.psk = psk; }
+  netDlgBusy(true); dMsg("d-msg", "connecting…", "");
+  api("/api/wan/connect", body).then(function (r) {
+    return r.json();
+  }).then(function (d) {
+    if (!d.ok) {
+      dMsg("d-msg", (d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")"), "warn");
+    } else {
+      dMsg("d-msg", "connected", "ok");
+      refreshStatus();
+      refreshKnown();
+      setTimeout(function () { document.getElementById("net-dialog").close(); }, 900);
+    }
+  }).catch(function (e) { dMsg("d-msg", String(e.message || e), "warn"); })
+    .then(function () { netDlgBusy(false); },
+          function () { netDlgBusy(false); });
+});
+document.getElementById("d-try").addEventListener("click", function () {
+  dMsg("d-msg", "trying saved passwords…", "");
+  netDlgBusy(true);
+  api("/api/wan/psks", { ssid: DIALOG_SSID }).then(function (r) {
+    return r.json();
+  }).then(function (d) {
+    var lines = d.lines || [];
+    if (lines.length) {
+      dMsg("d-msg", lines.join("  |  "), d.ok ? "ok" : "");
+    } else {
+      // try-psks progress lives in the envelope's `log` field (travel-wan
+      // logs to stderr); stdout is empty — show it instead of "failed (rc=N)".
+      var log = (d.log && d.log.join(" ")) || (d.ok ? "done" : "failed (rc=" + d.rc + ")");
+      dMsg("d-msg", log, d.ok ? "ok" : "warn");
+    }
+    if (d.ok) { refreshStatus(); }
+  }).catch(function (e) { dMsg("d-msg", String(e.message || e), "warn"); })
+    .then(function () { netDlgBusy(false); },
+          function () { netDlgBusy(false); });
+});
+
+// --- Connect manually (mc-*) ------------------------------------------------
+function mcWrite(path, extra) {
+  var body = extra || {};
+  busy(true);
+  setMsg("mc-msg", "working…");
+  return api(path, body).then(function (r) {
+    return r.json().then(function (d) {
+      if (!d.ok) { throw new Error((d.log && d.log.join(" ")) || "failed (rc=" + d.rc + ")"); }
+      setMsg("mc-msg", "done", "ok");
+      refreshStatus();
+      refreshKnown();
+      return d;
+    });
+  }).catch(function (e) {
+    setMsg("mc-msg", String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+}
+
+document.getElementById("scan-btn").addEventListener("click", doScan);
+document.getElementById("mc-connect").addEventListener("click", function () {
+  var ssid = document.getElementById("mc-ssid").value.trim();
+  if (!ssid) { setMsg("mc-msg", "enter a network name", "warn"); return; }
+  var psk = document.getElementById("mc-psk").value;
+  var body = { ssid: ssid };
+  if (psk) { body.psk = psk; }
+  mcWrite("/api/wan/connect", body);
+});
+document.getElementById("mc-disconnect").addEventListener("click", function () {
+  mcWrite("/api/wan/disconnect", {});
+});
+document.getElementById("mc-forget").addEventListener("click", function () {
+  var ssid = document.getElementById("mc-ssid").value.trim();
+  if (!ssid) { setMsg("mc-msg", "enter the network name to forget", "warn"); return; }
+  mcWrite("/api/wan/forget", { ssid: ssid });
+});
+
 // --- Login wiring ------------------------------------------------------------
 function doLogin() {
   var psk = document.getElementById("admin-psk").value;
@@ -1060,6 +1473,7 @@ function doLogin() {
         refreshApInfo();
         refreshPskManage();
         refreshStatus();
+        refreshKnown();
         refreshAllFeatures();
       } else if (r.status === 429) {
         setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
@@ -1133,6 +1547,7 @@ function refreshAllFeatures() {
     refreshApInfo();
     refreshPskManage();
     refreshStatus();
+    refreshKnown();
     refreshAllFeatures();
   }).catch(function () {
     showLogin(true);

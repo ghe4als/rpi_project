@@ -2,14 +2,14 @@
 """LAN status + PIN-gated setup API for the travel-router.
 
 Stdlib only (http.server + json). Serves:
-  GET /            -> static generic warning page (links to /setup)
-  GET /status      -> PIN-gated JSON status (X-Pin header; shells out to
+  GET /            -> public minimal status page (S01; /api/status only)
+  GET /status      -> session-gated JSON status (S02; shells out to
                       `travel-wan status --json`, reachability cached
                       in-process with a 30s TTL so an offline WAN does not
                       stall every page load)
   GET /health      -> 200 {"status":"ok"}
-  GET /setup       -> client setup page shell (PIN-only client surface)
-  GET /admin       -> admin page shell (data flows only via admin-gated APIs)
+  GET /admin       -> admin page shell (data flows only via session-gated APIs;
+                      S04 merged the setup page into it — /setup is gone)
   GET /api/wan/known -> PIN-gated known-networks JSON (X-Pin header; travel-wan
                       known rows: NAME/TIMESTAMP/AUTOCONNECT metadata, never
                       a PSK)
@@ -84,7 +84,6 @@ SETUP_PIN = os.environ.get("TRAVELROUTER_SETUP_PIN", "")
 ADMIN_PSK = os.environ.get("TRAVELROUTER_ADMIN_PSK", "")
 SESSION_TTL_SECONDS = 43200  # 12h: one hotel-setup window, then re-login
 _ASSET_DIR = os.path.dirname(os.path.abspath(__file__))
-SETUP_PAGE = os.path.join(_ASSET_DIR, "setup.html")
 ADMIN_PAGE = os.path.join(_ASSET_DIR, "admin.html")
 # Captive-portal hijack drop-in (wan-select owns + toggles it; H03). When it
 # exists, OS connectivity-probe Hosts arriving here are 302'd to /setup.
@@ -665,11 +664,9 @@ def _require_pin_header(handler):
     return _pin_gate(handler, handler.headers.get("X-Pin"))
 
 
-# C2 (auth plan Todo 5): the LAN-facing root page is a STRICT generic warning.
-# It must stay static and data-free: no device fields (wan_ssid/wan_ip/
-# clients/ap_state), no /status polling — anyone on the travel AP sees it.
-# The /setup link is the only way onward; the setup page itself carries the
-# management UI (gated client-side from auth Todo 7).
+# C2 (auth plan Todo 5) → S01: the LAN-facing root page is the PUBLIC minimal
+# status page. No auth; only the /api/status fields (ap_ssid/wan_ssid/
+# internet). No client list, no WAN IP, no known networks.
 _STATUS_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -709,7 +706,7 @@ _STATUS_HTML = """<!DOCTYPE html>
 </main>
 <script>
 "use strict";
-// DOM built with createElement/textContent only (same rule as setup.html/admin.html).
+// DOM built with createElement/textContent only (same rule as admin.html).
 
 function cellRow(tbody, label, value) {
   var tr = document.createElement("tr");
@@ -794,7 +791,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         self._send(404, b"404 not found", "text/plain")
 
     def _serve_page(self, page_path, page_name):
-        """Serve a static shell page (setup.html / admin.html) with
+        """Serve a static shell page (admin.html) with
         Cache-Control: no-store. The page must never be cached: WAN state and
         credential behavior change between captive-portal phases."""
         try:
@@ -998,12 +995,11 @@ class StatusHandler(BaseHTTPRequestHandler):
                 macs = [m for m in out]
             self._send(200, json.dumps({"blocked": macs}),
                        "application/json")
-        elif path == "/setup" or path == "/setup/":
-            self._serve_page(SETUP_PAGE, "setup")
         elif path == "/admin" or path == "/admin/":
-            # Admin page shell (admin plan Todo 2): unauthenticated to LOAD,
-            # mirroring /setup — every data path is a session/PIN-gated API,
-            # so the HTML itself carries no device data.
+# Admin page shell (admin plan Todo 2): unauthenticated to LOAD.
+# Every data path is a session/PIN-gated API, so the HTML itself carries no
+# device data. S04: /setup was merged into this page; the setup.html route is
+# gone (404 below).
             self._serve_page(ADMIN_PAGE, "admin")
         elif path == "/" or path == "/index.html":
             # Public minimal status page (S01) — no auth. Shows AP SSID,

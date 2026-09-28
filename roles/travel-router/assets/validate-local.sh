@@ -81,8 +81,8 @@ done
   && ok "wan-select.sh staged 0755" || bad "wan-select.sh staged mode != 0755"
 [[ -f "$pfx/usr/local/lib/travel-router/nftables.conf.tmpl" ]] \
   && ok "nftables.conf.tmpl deployed" || bad "nftables.conf.tmpl NOT deployed"
-[[ -f "$pfx/usr/local/lib/travel-router/setup.html" ]] \
-  && ok "setup.html deployed (H02)" || bad "setup.html NOT deployed"
+[[ -f "$pfx/usr/local/lib/travel-router/admin.html" ]] \
+  && ok "admin.html deployed (S04 merge)" || bad "admin.html NOT deployed"
 # ap-apply locates its render template at /etc/rpi-project/travel-router/
 # (its self_dir fallback is /usr/local/bin, where the template never lives).
 # Not staged -> every apconfig apply dies with "hostapd template not found".
@@ -325,7 +325,8 @@ sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/status 2>/de
 sj=$(curl -s http://127.0.0.1:18080/status 2>/dev/null)
 sp=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18080/status 2>/dev/null)
 su=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/setup 2>/dev/null)
-suc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/setup 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
+suad=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin 2>/dev/null)
+suadc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/admin 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
   [[ "$sc" == "200" ]] && ok "status /health 200" || bad "/health=$sc (srv.log: $(tail -1 "$B/srv.log" 2>/dev/null))"
   # admin todo 1: /status is PIN-gated -> 401 with an auth-only body
   # (no X-Pin sent; absent pin is 401, never 403).
@@ -333,13 +334,14 @@ suc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/setup 2>/dev/null | grep -i
 echo "$sj" | grep -qF '"auth"' && ! echo "$sj" | grep -qF '"mode"' \
   && ok "/status 401 body carries no device state" || bad "/status body: $sj"
 [[ "$sp" == "404" || "$sp" == "405" ]] && ok "POST -> 404/405" || bad "POST code=$sp"
-[[ "$su" == "200" ]] && ok "GET /setup -> 200 (H02)" || bad "/setup code=$su"
-[[ "$suc" == "no-store" ]] && ok "/setup served Cache-Control: no-store" || bad "/setup cache-control=$suc"
+[[ "$su" == "404" ]] && ok "GET /setup -> 404 (S04: merged into /admin, route removed)" || bad "/setup code=$su (want 404)"
+[[ "$suad" == "200" ]] && ok "GET /admin -> 200 (merged page shell)" || bad "/admin code=$suad"
+[[ "$suadc" == "no-store" ]] && ok "/admin served Cache-Control: no-store" || bad "/admin cache-control=$suadc"
 # XSS regression (H02): no HTML-injection path in either served page
-if python3 - <<'PY' 2>/dev/null; then ok "textContent-only rendering (setup.html + status HTML)"; else bad "innerHTML/insertAdjacentHTML present in UI code"; fi
-setup = open("roles/travel-router/assets/setup.html").read()
+if python3 - <<'PY' 2>/dev/null; then ok "textContent-only rendering (admin.html + status HTML)"; else bad "innerHTML/insertAdjacentHTML present in UI code"; fi
+admin = open("roles/travel-router/assets/admin.html").read()
 srv = open("roles/travel-router/assets/status-server.py").read()
-code = setup.split("<script>")[1].split("</script>")[0]
+code = admin.split("<script>")[1].split("</script>")[0]
 for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
     assert forbidden not in code
 # minimal status page HTML block: textContent-only, fetches /api/status
@@ -453,6 +455,8 @@ PORTAL_START() {
 PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
 PORTAL_START
 # R1: probe Host + active drop-in -> 302 to /setup on the same bound port
+# (target /setup until S05 retargets the redirect to /; the route is gone but
+# the redirect string literal is what S04 leaves — see tasks/S05)
 r=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captive.apple.com' http://127.0.0.1:18091/generate_204 2>/dev/null)
 loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: captive.apple.com' http://127.0.0.1:18091/generate_204 2>/dev/null)
 [[ "$r" == "302" ]] && ok "R1 probe-Host GET -> 302" || bad "R1 code=$r (srv.log: $(tail -1 "$B/srv-h04.log" 2>/dev/null))"
@@ -724,13 +728,14 @@ or=$(grep -c $'^s\tOpenNet\t' "$DEDUP"); [[ "$or" == "0" ]] \
 
 # --- (5r) scan-parse fixture battery (M8-e) ------------------------------------
 sec "5r. scan row splitter contract (M8-e)"
-# (1) structural: setup.html must declare the escape-aware SSID splitter.
-grep -q 'escape-aware SSID splitter' "$A/setup.html" \
-  && ok "5r setup.html escape-aware SSID splitter marker" \
-  || bad "5r setup.html splitter marker MISSING (T7 adds it)"
+# (1) structural: admin.html (S04 merge) must declare the escape-aware SSID
+# splitter.
+grep -q 'escape-aware SSID splitter' "$A/admin.html" \
+  && ok "5r admin.html escape-aware SSID splitter marker" \
+  || bad "5r admin.html splitter marker MISSING (S04 merge)"
 # (2) behavioral: python replica pins the splitter contract.
 # DRIFT RISK: this replica must be updated in lockstep with the JS splitter
-# in setup.html (and the travel-wan scan row format) — if one changes, both
+# in admin.html (and the travel-wan scan row format) — if one changes, both
 # must change. Escaped chars pass through; unescaped colon splits.
 if python3 - <<'PY'
 def split_row(row):
@@ -1159,16 +1164,16 @@ apx=$(ap_post /api/wan/apconfig '{"pin":"1234","ssid":"NewName","psk":"newpsk9x"
 apx=$(ap_get /admin)
 adm_code="${apx%%|*}"; adm_body="${apx#*|}"
 [[ "$adm_code" == "200" ]] \
-  && ok "5ap GET /admin -> 200 (page loads unauthenticated, mirrors /setup)" \
+  && ok "5ap GET /admin -> 200 (page loads unauthenticated; S04 owns all setup UI)" \
   || bad "5ap /admin code=$adm_code"
 [[ "$adm_body" == *'id="admin-page"'* ]] \
   && ok "5ap /admin body carries the admin-page marker" || bad "5ap /admin marker missing"
 apx=$(ap_get /admin/)
 [[ "$apx" == 200* ]] && ok "5ap GET /admin/ (trailing slash) -> 200" || bad "5ap /admin/ code=${apx%%|*}"
 apx=$(ap_get /setup)
-su_body="${apx#*|}"
-[[ "$adm_body" != "$su_body" ]] \
-  && ok "5ap /admin serves content DISTINCT from /setup" || bad "5ap /admin == /setup body?!"
+su_code="${apx%%|*}"
+[[ "$su_code" == "404" ]] \
+  && ok "5ap GET /setup -> 404 (S04: route removed, merged into /admin)" || bad "5ap /setup code=$su_code (want 404)"
 ahdr=$(curl -s -D - -o /dev/null http://127.0.0.1:18110/admin 2>/dev/null | tr -d '\r')
 echo "$ahdr" | grep -qi '^cache-control: no-store$' \
   && ok "5ap /admin carries Cache-Control: no-store" || bad "5ap /admin cache hdr: $(echo "$ahdr" | head -3 | tr '\n' '|')"
@@ -1212,28 +1217,39 @@ scan_end=$(awk -v s="$scan_start" 'NR>s && /^[a-zA-Z_]+\(\)/ {print NR; exit}' "
 if sed -n "${scan_start},${scan_end}p" "$A/travel-wan.sh" | grep -q 'AP_SSID_FILE'; then
   ok "5x scan references AP_SSID_FILE (self-SSID guard seam)"
 else bad "5x scan self-SSID guard MISSING (AP_SSID_FILE not referenced in cmd_scan)"; fi
-# (c) setup.html UI contracts
-grep -q '<dialog' "$A/setup.html" && ok "5x native dialog present" || bad "5x <dialog MISSING (setup-v2 M7)"
-grep -q 'escape-aware SSID splitter' "$A/setup.html" \
+# (c) UI contracts — S04: the setup.html battery re-points to admin.html,
+# which now carries the scan/known/manual-connect UI.
+grep -q '<dialog' "$A/admin.html" && ok "5x native dialog present" || bad "5x <dialog MISSING (setup-v2 M7)"
+grep -q 'escape-aware SSID splitter' "$A/admin.html" \
   && ok "5x escape-aware splitter marker stays" || bad "5x splitter marker LOST"
 if python3 - <<'PY'
-code = open("roles/travel-router/assets/setup.html").read().split("<script>")[1].split("</script>")[0]
+code = open("roles/travel-router/assets/admin.html").read().split("<script>")[1].split("</script>")[0]
 for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
     assert forbidden not in code, forbidden
 PY
 then ok "5x XSS forbidden list stays clean"; else bad "5x XSS forbidden list violated"; fi
-anchor=$(grep -n -F 'api("/api/wan/psks"' "$A/setup.html" | head -1 | cut -d: -f1)
+anchor=$(grep -n -F 'api("/api/wan/psks"' "$A/admin.html" | head -1 | cut -d: -f1)
 found=0
 if [[ -n "$anchor" ]]; then
-  seg=$(sed -n "$((anchor)),$((anchor+15))p" "$A/setup.html")
+  seg=$(sed -n "$((anchor)),$((anchor+15))p" "$A/admin.html")
   echo "$seg" | grep -q 'd.log' && found=1
 fi
 [[ "$found" == "1" ]] && ok "5x psks handler renders d.log fallback (scoped)" \
   || bad "5x psks handler d.log fallback MISSING (rc=1 diagnostics opaque)"
-# admin todo 1: psks-manage moved to the ADMIN page (setup.html is
-# client-only PIN surface — it must NOT reference admin verbs).
+# admin todo 1: psks-manage lives on the ADMIN page (S04: setup.html is gone).
 grep -q 'psks-manage' "$A/admin.html" && ok "5x psks-manage referenced (admin page)" || bad "5x psks-manage MISSING from admin.html"
-grep -q 'psks-manage' "$A/setup.html" && bad "5x psks-manage still referenced in setup.html (client page must be admin-free)" || ok "5x setup.html free of psks-manage"
+[[ -f "$A/setup.html" ]] && bad "5x setup.html still exists (S04: merged into /admin)" || ok "5x setup.html removed (S04)"
+# S04 structural: the merged admin page carries the setup-page sections.
+grep -qF 'WiFi networks' "$A/admin.html" \
+  && ok "5x S04 admin.html WiFi networks section present" || bad "5x S04 WiFi networks section MISSING"
+grep -qF 'Known networks' "$A/admin.html" \
+  && ok "5x S04 admin.html Known networks section present" || bad "5x S04 Known networks section MISSING"
+grep -qF 'Connect manually' "$A/admin.html" \
+  && ok "5x S04 admin.html Connect manually section present" || bad "5x S04 Connect manually section MISSING"
+grep -qF 'net-dialog' "$A/admin.html" \
+  && ok "5x S04 admin.html connect dialog present" || bad "5x S04 connect dialog MISSING"
+grep -qF 'Try saved passwords' "$A/admin.html" \
+  && ok "5x S04 admin.html Try saved passwords present" || bad "5x S04 Try saved passwords MISSING"
 
 # --- (5y) setup-v2 psk leak sweep (M8-h extension) -----------------------------
 sec "5y. setup-v2 psk leak sweep"
@@ -1744,22 +1760,22 @@ c6_stop
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 echo "5ac3 known-gate transcript: $C6LOG"
 
-# setup.html C6 contract: EXACTLY two /api/wan/known fetch sites (doScan +
-# refreshKnown), each session-sourced from sessToken(); no new fetch call site.
-c6_sites=$(grep -c '"/api/wan/known"' "$A/setup.html")
+# admin.html S04-merge C6 contract: the known-networks fetch sites (doScan
+# fetch + refreshKnown), each routed via sessionFetch (the session attach site
+# is pinned once in §5al — sess_hdr_sites==1); no new raw-fetch call site.
+c6_sites=$(grep -c '"/api/wan/known"' "$A/admin.html")
 [[ "$c6_sites" == "2" ]] \
-  && ok "5ac3 setup.html has exactly 2 /api/wan/known fetch sites" \
+  && ok "5ac3 admin.html has exactly 2 /api/wan/known fetch sites" \
   || bad "5ac3 known fetch sites=$c6_sites (want 2)"
-c6_sess_sites=$(grep -A2 '"/api/wan/known"' "$A/setup.html" \
-  | grep -c 'X-Session.*sessToken()')
+c6_sess_sites=$(grep -c 'sessionFetch("/api/wan/known"' "$A/admin.html")
 [[ "$c6_sess_sites" == "2" ]] \
-  && ok "5ac3 both known fetch sites carry X-Session from sessToken() (S03)" \
-  || bad "5ac3 X-Session sites=$c6_sess_sites (want 2)"
-c6_fetch_known=$(grep -c 'fetch("/api/wan/known"' "$A/setup.html")
-[[ "$c6_fetch_known" == "2" ]] \
-  && ok "5ac3 exactly 2 fetch(\"/api/wan/known\") sites; no other-method site added" \
-  || bad "5ac3 fetch-known count=$c6_fetch_known"
-echo "5ac3 setup.html fetch census: known=$c6_sites sess-sourced=$c6_sess_sites fetch-known=$c6_fetch_known"
+  && ok "5ac3 both known fetch sites ride sessionFetch (S03/S04)" \
+  || bad "5ac3 sessionFetch sites=$c6_sess_sites (want 2)"
+c6_fetch_known=$(grep -c 'fetch("/api/wan/known"' "$A/admin.html")
+[[ "$c6_fetch_known" == "0" ]] \
+  && ok "5ac3 0 raw fetch(\"/api/wan/known\") sites (S04 merge routes them via sessionFetch)" \
+  || bad "5ac3 fetch-known count=$c6_fetch_known (want 0)"
+echo "5ac3 admin.html known-fetch census: known=$c6_sites sess-sourced=$c6_sess_sites raw-fetch=$c6_fetch_known"
 
 # --- (5ad) state.json escape + bind-host allowlist + seam (C2) ----------------
 sec "5ad. state.json heredoc escape + bind-host allowlist + seam (C2)"
@@ -1914,24 +1930,26 @@ sec "5ae. C1 client pin guard (apiWrite)"
 # psksManage/tryBtn/fBtn/ap-save. Extract the function body by anchor (stable
 # against line drift) and assert the guard idiom: setMsg + early return before
 # the POST.
-aw_start=$(grep -n -F 'function apiWrite(' "$A/setup.html" | head -1 | cut -d: -f1)
+aw_start=$(grep -n -F 'function mcWrite(' "$A/admin.html" | head -1 | cut -d: -f1)
 aw_body=""
 if [[ -n "$aw_start" ]]; then
-  aw_body=$(sed -n "${aw_start},$((aw_start+24))p" "$A/setup.html")
+  aw_body=$(sed -n "${aw_start},$((aw_start+24))p" "$A/admin.html")
 fi
 if echo "$aw_body" | grep -q 'var body = extra || {}' \
    && echo "$aw_body" | grep -q 'busy(true)'; then
-  ok "5ae apiWrite uses session auth (S03)"
+  ok "5ae mcWrite uses session auth (S03/S04)"
 else
-  bad "5ae apiWrite missing session auth"
+  bad "5ae mcWrite missing session auth"
 fi
-# The confusing server-403 fallback string must stay (handleErr, unchanged).
-h_err=$(grep -c -F 'PIN required — enter it below (ask the router owner if unknown)' "$A/setup.html")
-[[ "$h_err" == "1" ]] && ok "5ae handleErr 'enter it below' string unchanged" || bad "5ae handleErr string count=$h_err (want 1)"
-# Guarded-message invariant: after S03, setup.html is session-gated —
-# the PIN-guard messages are replaced by session-redirect messages.
-sess_msg_count=$(grep -c -F 'admin-session' "$A/setup.html")
-[[ "$sess_msg_count" -ge "1" ]] && ok "5ae setup.html references admin-session (S03)" || bad "5ae setup.html admin-session count=$sess_msg_count"
+# The confusing server-403 fallback string must stay (handleErr, unchanged):
+# after the S04 merge the page carries 11 occurrences (one per PIN-gated
+# write); the unique pin is handleErr's throw form — exactly one.
+h_err=$(grep -c -F 'throw new Error("PIN required — enter it in the PIN section' "$A/admin.html")
+[[ "$h_err" == "1" ]] && ok "5ae handleErr PIN-required throw unchanged (unique)" || bad "5ae handleErr throw count=$h_err (want 1)"
+# Guarded-message invariant: after S04, admin.html is the session-gated merge
+# surface — it references the admin-session localStorage key.
+sess_msg_count=$(grep -c -F 'admin-session' "$A/admin.html")
+[[ "$sess_msg_count" -ge "1" ]] && ok "5ae admin.html references admin-session (S03)" || bad "5ae admin.html admin-session count=$sess_msg_count"
 
 # --- (5af) admin PSK staging battery (Todo 2, C3/C4 seam) ---------------------
 sec "5af. admin PSK staging (same tmpfs EnvironmentFile as the PIN)"
@@ -2391,19 +2409,16 @@ echo "5ak auth transcript: $AKLOG"
 
 # --- (5al) admin.html login gate + session header + clients UI -----------------
 # Admin plan todos 5-7: the login/session/clients machinery MOVED from
-# setup.html to admin.html (setup is client-only PIN). Re-pointed censuses;
-# the "Recently connected" /api/wan/log UI was replaced by the audit table
+# setup.html to admin.html; S04 removed setup.html entirely (merged). The
+# "Recently connected" /api/wan/log UI was replaced by the audit table
 # (security plan todo 8) — re-pointed at the /api/admin/audit fetch.
 sec "5al. admin.html login gate + X-Session + clients + audit sections"
 # (1) static contract asserts (grep-style, mirroring the §5x batteries)
 grep -qF '/api/auth/login' "$A/admin.html" \
   && ok "5al(1) admin.html POSTs to /api/auth/login" || bad "5al(1) login endpoint fetch MISSING"
-grep -qF '/api/auth/login' "$A/setup.html" \
-  && bad "5al(1) setup.html still references the admin login (strip leaked)" \
-  || ok "5al(1) setup.html free of the admin login flow"
 sess_sites=$(grep -c -F 'X-Session' "$A/admin.html")
-[[ "$sess_sites" == "5" ]] && ok "5al(1) X-Session present at exactly $sess_sites sites (impl + doc comments)" \
-  || bad "5al(1) X-Session sites=$sess_sites (want 5)"
+[[ "$sess_sites" == "6" ]] && ok "5al(1) X-Session present at exactly $sess_sites sites (impl + doc comments; S04 merge)" \
+  || bad "5al(1) X-Session sites=$sess_sites (want 6)"
 sess_hdr_sites=$(grep -c -F '"X-Session"' "$A/admin.html")
 [[ "$sess_hdr_sites" == "1" ]] && ok "5al(1) sessionFetch attaches X-Session at its single impl site" \
   || bad "5al(1) explicit X-Session header sites=$sess_hdr_sites (want 1; a dropped attach site is invisible to sessionFetch)"
@@ -2422,9 +2437,9 @@ sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/admin.
 [[ "$sink_hits" == "0" ]] && ok "5al(1) no innerHTML/insertAdjacentHTML/document.write" \
   || bad "5al(1) forbidden DOM sink count=$sink_hits"
 grep -qF 'PIN required — enter it in the PIN section' "$A/admin.html" \
-  && ok "5al(1) apiWrite PIN-guard string still present" || bad "5al(1) PIN-guard string GONE"
+  && ok "5al(1) mcWrite PIN-guard string still present" || bad "5al(1) PIN-guard string GONE"
 # server must expose the session-gated log read this UI consumes
-if awk '/elif path == "\/api\/wan\/psks-manage"/{f=1} f && /elif path == "\/api\/wan\/log"/{g=1} f && /elif path == "\/setup"/{exit} END{exit !(f&&g)}' "$A/status-server.py"; then
+if awk '/elif path == "\/api\/wan\/psks-manage"/{f=1} f && /elif path == "\/api\/wan\/log"/{g=1} f && /elif path == "\/admin"/{exit} END{exit !(f&&g)}' "$A/status-server.py"; then
   ok "5al(1) status-server.py has session-gated GET /api/wan/log after psks-manage"
 else
   bad "5al(1) GET /api/wan/log branch MISSING (or misplaced) in do_GET"
@@ -2573,9 +2588,9 @@ fi
 #         name (secrets.choice over A-HJ-NP-Z2-9, 8 chars) and returns it in
 #         the response envelope; hidden:true/false/absent post to the tool's
 #         3rd slot as "2"/"0"/"".
-#   (iv)  setup.html static contract: Random button, hidden checkbox ->
-#         hidden:true post, rejoin warning, localStorage "ap-last-ssid", no
-#         innerHTML sinks, X-Session census unchanged.
+#   (iv)  admin.html static contract (S04: setup.html merged): Random button,
+#         hidden checkbox -> hidden:true post, rejoin warning, localStorage
+#         "admin-last-ssid", no innerHTML sinks, X-Session census.
 sec "5an. random SSID + hide-AP in the apconfig flow"
 
 # --------- (i) RENDER: ap-apply [SSID] [PSK] [HIDDEN] against fixtures -------
@@ -2960,8 +2975,8 @@ sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/admin.
 [[ "$sink_hits" == "0" ]] && ok "5an(iv) no innerHTML/insertAdjacentHTML/document.write" \
   || bad "5an(iv) forbidden DOM sink count=$sink_hits"
 sess_sites=$(grep -c -F 'X-Session' "$A/admin.html")
-[[ "$sess_sites" == "5" ]] && ok "5an(iv) X-Session census unchanged (5 sites)" \
-  || bad "5an(iv) X-Session sites=$sess_sites (want 5 — §5al census broken)"
+[[ "$sess_sites" == "6" ]] && ok "5an(iv) X-Session census updated (6 sites; S04 merge)" \
+  || bad "5an(iv) X-Session sites=$sess_sites (want 6 — §5al census broken)"
 
 # --- (5ao) staged-env refresh: PIN/PSK EnvironmentFile re-derived every boot --
 # The unit's EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env
