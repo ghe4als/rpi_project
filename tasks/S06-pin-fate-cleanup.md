@@ -116,7 +116,7 @@ grep -c 'TRAVELROUTER_SETUP_PIN' .env.example README.md roles/travel-router/inst
 ```
 
 ## Success criteria
-- [ ] PIN fate decided (keep or remove)
+- [x] PIN fate decided (keep or remove) — DECIDED 1d9dd15: KEEP (admin-write second factor). Note: the "no longer needed for any route" premise below is FALSE; see tasks/S06-pin-fate-corrected.md which supersedes from here down.
 - [ ] If keeping: deprecation comments added, all tests pass
 - [ ] If removing: all PIN code/tests/docs removed, suite GREEN
 - [ ] No route uses the PIN (all sensitive routes are session-gated)

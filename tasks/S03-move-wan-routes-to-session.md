@@ -154,12 +154,12 @@ python3 -m py_compile roles/travel-router/assets/status-server.py
 ```
 
 ## Success criteria
-- [ ] `/api/wan/known` without session → 401 (no longer PIN-gated)
-- [ ] `POST /api/wan/scan` without session → 401 (no longer PIN-gated)
-- [ ] `POST /api/wan/connect` without session → 401 (no longer PIN-gated)
-- [ ] All `/api/wan/*` client verbs require session, not PIN
-- [ ] setup.html updated to use session auth (or removed if merging into admin)
-- [ ] Suite GREEN with updated auth asserts
+- [x] `/api/wan/known` without session → 401 (no longer PIN-gated)
+- [x] `POST /api/wan/scan` without session → 401 (no longer PIN-gated)
+- [x] `POST /api/wan/connect` without session → 401 (no longer PIN-gated)
+- [x] All `/api/wan/*` client verbs require session, not PIN
+- [x] setup.html updated to use session auth (or removed if merging into admin)
+- [x] Suite GREEN with updated auth asserts
 
 ## Rollback
 ```bash

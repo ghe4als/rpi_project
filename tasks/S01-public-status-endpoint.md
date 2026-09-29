@@ -111,14 +111,14 @@ python3 -m py_compile roles/travel-router/assets/status-server.py
 ```
 
 ## Success criteria
-- [ ] `GET /api/status` returns 200 with `{ap_ssid, wan_ssid, internet}` (no auth)
-- [ ] `GET /api/status` does NOT return clients, wan_ip, lan_ip, mode, standalone
-- [ ] `GET /` serves a minimal status page (no auth)
-- [ ] The minimal status page shows AP SSID, WAN SSID, internet status, helpful links
-- [ ] The minimal status page uses textContent-only (no innerHTML/insertAdjacentHTML/document.write)
-- [ ] Captive portal redirect still works (probe hosts → 302)
-- [ ] No external network requests from the minimal page
-- [ ] Suite GREEN with new §5p asserts
+- [x] `GET /api/status` returns 200 with `{ap_ssid, wan_ssid, internet}` (no auth)
+- [x] `GET /api/status` does NOT return clients, wan_ip, lan_ip, mode, standalone
+- [x] `GET /` serves a minimal status page (no auth)
+- [x] The minimal status page shows AP SSID, WAN SSID, internet status, helpful links
+- [x] The minimal status page uses textContent-only (no innerHTML/insertAdjacentHTML/document.write)
+- [x] Captive portal redirect still works (probe hosts → 302)
+- [x] No external network requests from the minimal page
+- [x] Suite GREEN with new §5p asserts
 
 ## Rollback
 ```bash

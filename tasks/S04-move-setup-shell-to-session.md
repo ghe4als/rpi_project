@@ -162,13 +162,13 @@ python3 -m py_compile roles/travel-router/assets/status-server.py
 ```
 
 ## Success criteria
-- [ ] `/setup` without session → 401 (or 404 if merged into admin)
-- [ ] `/setup` with X-Session → 200 (if kept as separate page)
-- [ ] `/` → 200 (public minimal status page, no auth)
-- [ ] Admin page has WiFi Networks + Known networks sections (if merged)
-- [ ] setup.html removed (if merged) or session-gated (if kept)
-- [ ] install.sh no longer installs setup.html (if merged)
-- [ ] Suite GREEN with updated asserts
+- [x] `/setup` without session → 404 (merged into admin, S04 6af72e6)
+- [x] /setup with X-Session → N/A (option (b) merge chosen; page DELETED)
+- [x] `/` → 200 (public minimal status page, no auth)
+- [x] Admin page has WiFi Networks + Known networks sections (merged, structurally asserted §5x)
+- [x] setup.html removed (6af72e6)
+- [x] install.sh no longer installs setup.html (real + dry-run)
+- [x] Suite GREEN with updated asserts (586 green x3 at S04 close)
 
 ## Rollback
 ```bash

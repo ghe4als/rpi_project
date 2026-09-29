@@ -115,11 +115,11 @@ grep -rn 'TRAVELROUTER_SETUP_PIN' .env.example | wc -l
 ```
 
 ## Success criteria
-- [ ] `_pin_gate`/`_require_pin_header` gone; `_pin_ok`/`SETUP_PIN`/throttle intact
-- [ ] All 403-pin admin-write asserts still pass (two-factor survives)
-- [ ] No "X-Pin as GET credential" doc text remains in server/admin page
-- [ ] README consistent with the S04 merge (admin page is the setup surface)
-- [ ] Suite GREEN (monotonic count noted in commit message)
+- [x] `_pin_gate`/`_require_pin_header` gone; `_pin_ok`/`SETUP_PIN`/throttle intact
+- [x] All 403-pin admin-write asserts still pass (two-factor survives)
+- [x] No "X-Pin as GET credential" doc text remains in server/admin page
+- [x] README consistent with the S04 merge (admin page is the setup surface)
+- [x] Suite GREEN (monotonic count noted in commit message)
 
 ## Rollback
 `git checkout roles/travel-router/assets/status-server.py

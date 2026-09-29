@@ -115,10 +115,10 @@ python3 -m py_compile roles/travel-router/assets/status-server.py
 ```
 
 ## Success criteria
-- [ ] Captive portal redirect goes to `/` (not `/setup`)
-- [ ] Redirect target is the public minimal status page (200, no auth)
-- [ ] Port-suffixed probe Host still redirects
-- [ ] Suite GREEN with updated redirect asserts
+- [x] Captive portal redirect goes to `/` (not `/setup`)
+- [x] Redirect target is the public minimal status page (200, no auth)
+- [x] Port-suffixed probe Host still redirects
+- [x] Suite GREEN with updated redirect asserts
 
 ## Rollback
 ```bash

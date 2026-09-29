@@ -113,13 +113,13 @@ python3 -m py_compile roles/travel-router/assets/status-server.py
 ```
 
 ## Success criteria
-- [ ] `/status` without session → 401 (no longer PIN-gated)
-- [ ] `/status` with X-Pin but no session → 401 (PIN rejected)
-- [ ] `/status` with X-Session → 200 (session accepted)
-- [ ] `/status` response still contains `clients_list` for session holders
-- [ ] `/api/status` (public) → 200 without auth, no `clients_list`
-- [ ] admin.html uses `sessionFetch` for `/status` (X-Session, not X-Pin)
-- [ ] Suite GREEN with updated auth asserts
+- [x] `/status` without session → 401 (no longer PIN-gated)
+- [x] `/status` with X-Pin but no session → 401 (PIN rejected)
+- [x] `/status` with X-Session → 200 (session accepted)
+- [x] `/status` response still contains `clients_list` for session holders
+- [x] `/api/status` (public) → 200 without auth, no `clients_list`
+- [x] admin.html uses `sessionFetch` for `/status` (X-Session, not X-Pin)
+- [x] Suite GREEN with updated auth asserts
 
 ## Rollback
 ```bash
