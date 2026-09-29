@@ -130,12 +130,13 @@ pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
   "trim TRAVELROUTER_AP_PSK to letters, digits and . _ -"
 
-# SETUP_PIN is REQUIRED: it gates the phone setup API (deny-by-default in
-# status-server when unset — H01; this validation makes it always present).
+# SETUP_PIN is REQUIRED: it is the second factor on every admin write
+# (deny-by-default in status-server when unset — H01; this validation
+# makes it always present).
 upin="${TRAVELROUTER_SETUP_PIN:-}"
 if [[ -z "$upin" ]]; then
   fail "SETUP_PIN (TRAVELROUTER_SETUP_PIN) is empty" \
-    "set TRAVELROUTER_SETUP_PIN in role.env (4-12 chars of A-Za-z0-9; it unlocks the phone setup page)"
+    "set TRAVELROUTER_SETUP_PIN in role.env (4-12 chars of A-Za-z0-9; it is the second factor on every admin write)"
 fi
 if [[ "${#upin}" -lt 4 || "${#upin}" -gt 12 ]]; then
   fail "SETUP_PIN length ${#upin} outside 4-12" "TRAVELROUTER_SETUP_PIN must be 4-12 characters"
@@ -186,7 +187,7 @@ real_or_log apt-get install -y --no-install-recommends hostapd dnsmasq nftables 
 # --- (4b) Seed the bootstrap WAN profile (WIFI_SSID as the initial "hotel") --
 # The provisioning WiFi (wired into role.env by the provisioners) becomes the
 # FIRST WAN profile: NM auto-activates it on any MANAGED wifi device (the USB
-# dongle), exactly as if it had been picked on the setup page. The AP
+# dongle), exactly as if it had been picked on the admin page. The AP
 # interface is unmanaged in step (6), so it can never activate there.
 # Idempotent: skip when a profile with id=WIFI_SSID already exists (Bookworm
 # firstrun.sh seeds one). DRY_RUN logs the command with the PSK redacted.
@@ -489,7 +490,7 @@ echo "  AP SSID     : ${TRAVELROUTER_AP_SSID}"
 echo "  AP iface    : ${ap}"
 echo "  LAN IP      : ${lan_ip}"
 echo "  Status page : ${status_url}"
-echo "  Setup       : ${status_url}/setup (PIN required)"
+echo "  Admin page  : ${status_url}/admin (ADMIN_PSK login; PIN on writes)"
 echo "  Fallback    : ssh pi@${lan_ip} 'travel-wan connect <SSID> <PSK>'"
 [[ -n "${WIFI_SSID:-}" ]] && echo "  WAN bootstrap: '${WIFI_SSID}' profile seeded (auto-connects on USB adapter)"
 echo "NOTE: the Pi is only reachable over the ${TRAVELROUTER_AP_SSID}"
