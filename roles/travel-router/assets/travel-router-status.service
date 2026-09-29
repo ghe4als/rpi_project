@@ -1,5 +1,5 @@
 [Unit]
-Description=Travel-router LAN status + setup page
+Description=Travel-router LAN status + admin page
 After=network.target wan-select.service
 
 [Service]
