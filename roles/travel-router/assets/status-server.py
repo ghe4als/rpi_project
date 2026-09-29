@@ -695,7 +695,8 @@ function buildLinks() {
   var links = [
     ["Cloudflare Speed Test", "https://speed.cloudflare.com"],
     ["DNS Leak Test", "https://www.dnsleaktest.com"],
-    ["1.1.1.1", "https://1.1.1.1"]
+    ["1.1.1.1", "https://1.1.1.1"],
+    ["Admin", "/admin"]
   ];
   var list = document.getElementById("links-list");
   links.forEach(function (pair) {
@@ -1136,10 +1137,9 @@ class StatusHandler(BaseHTTPRequestHandler):
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
         # parsed. A blocked attempt is still a PIN guess, so it also advances
         # the fail count (lets a persistent brute-forcer escalate tiers).
-        # Client verbs: /api/wan/{connect,psks,disconnect,forget,recheck} —
-        # body.pin is the ONLY credential ("PIN suffices"). Admin verbs:
-        # /api/wan/{psks-manage,apconfig} — session AND body.pin. The shared
-        # per-IP counter and backoff are identical for both buckets.
+        # S03: EVERY write verb below is session-gated; the admin_write set
+        # ADDITIONALLY requires body.pin (second factor). The shared per-IP
+        # counter/backoff fires a 429 before the body is parsed for both paths.
         admin_write = path in ("/api/wan/psks-manage", "/api/wan/apconfig",
                                "/api/admin/killswitch",
                                "/api/admin/rotate-sessions",
