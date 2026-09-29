@@ -1,5 +1,12 @@
 # S06 — Decide PIN fate + final cleanup
 
+> **SUPERSEDED 2026-09-28** by `tasks/S06-pin-fate-corrected.md`.
+> The premise below ("the PIN is no longer needed for any route") was
+> FALSE: admin writes (`/api/wan/apconfig`, `/api/wan/psks-manage`,
+> `/api/admin/*` POSTs) still require `body.pin` as the second factor
+> (status-server.py `_pin_ok`, :1242). Read the corrected file before
+> executing any S06 work.
+
 ## Goal
 Decide whether the PIN is still needed after the HTTP route restructure, and perform any final cleanup.
 

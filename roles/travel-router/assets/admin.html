@@ -1555,7 +1555,10 @@ function refreshAllFeatures() {
 })();
 
 // Gated poll (5s, security-todo-11 wiring): only with a live session AND a
-// saved PIN (the clients poll needs X-Pin; the feature reads ride X-Session).
+// saved PIN. The session unlocks every /status + feature read (S02/S03 —
+// X-Pin is NOT sent, it's no longer a GET credential); the PIN half of the
+// gate just skips polling until the admin has PIN'd in, so write actions
+// (which DO carry body.pin) don't dead-end on an empty form.
 setInterval(function () {
   if (sessToken() && currentPin()) {
     refreshStatus();

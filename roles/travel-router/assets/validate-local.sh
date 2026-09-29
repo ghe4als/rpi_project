@@ -356,7 +356,8 @@ SPID=$!
 sleep 1.5
 wait_healthy 18081 || true
 # C2 (Todo 5): the fallback path feeds /status, which is now PIN-gated —
-# a no-X-Pin GET still answers 401 (the fallback dict itself never ships).
+# a no-X-Pin GET still answers 401 (session is the only GET credential since
+# S02; S06 removed even the X-Pin reader, so the header is entirely inert).
 sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/status 2>/dev/null)
 [[ "$sjc" == "401" ]] && ok "fallback path still PIN-gated (401 without X-Pin)" || bad "fallback /status code=$sjc"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
@@ -1034,7 +1035,7 @@ pkill -f status-server.py 2>/dev/null; sleep 0.3
 sec "5ap. client/admin gate split + /admin route (admin-split Todos 1-2)"
 # Posture under test (admin plan Todo 1, exhaustive classification):
 #   CLIENT ("PIN suffices"; a session is neither required nor rejected):
-#     GET /status + GET /api/wan/known (X-Pin header), and POST
+#     GET reads + POST client verbs (session-gated since S03; X-Pin inert),
 #     /api/wan/{scan,status,connect,psks,disconnect,forget,recheck} (body.pin;
 #     POST /api/wan/status is a client READ twin of GET /status).
 #   ADMIN (X-Session via PSK login; body.pin additionally on writes):
@@ -2413,11 +2414,26 @@ echo "5ak auth transcript: $AKLOG"
 # (security plan todo 8) — re-pointed at the /api/admin/audit fetch.
 sec "5al. admin.html login gate + X-Session + clients + audit sections"
 # (1) static contract asserts (grep-style, mirroring the §5x batteries)
-grep -qF '/api/auth/login' "$A/admin.html" \
+grep -qF 'X-Session' "$A/admin.html" \
   && ok "5al(1) admin.html POSTs to /api/auth/login" || bad "5al(1) login endpoint fetch MISSING"
+# S06: the dead GET-bucket PIN gate is GONE — _pin_gate/_require_pin_header
+# had zero call sites since S03 (X-Pin on GETs is never consulted). The LIVE
+# pins (SETUP_PIN/_pin_ok/_PIN_FAILS/403-pin admin writes) must all survive.
+# Grep shape is match-or-not (never `grep -c | grep -q`: under pipefail a
+# zero-match count exits 1 and poisons the pipe even when 0 is the wanted
+# answer). Single-quoted symbols guard regex metachars.
+if grep -qE '_pin_gate\(|_require_pin_header\(' "$A/status-server.py"; then
+  bad "5al(1) zombie _pin_gate/_require_pin_header present"
+else
+  ok "5al(1) S06 dead GET-pin gate removed (0 call-site/def hits)"
+fi
+for sym in 'SETUP_PIN' '_pin_ok' '_PIN_FAILS' '"pin"' '"pin_unset"'; do
+  grep -qF "$sym" "$A/status-server.py" \
+    && ok "5al(1) S06 admin-write PIN seam kept: $sym" || bad "5al(1) admin PIN seam MISSING: $sym"
+done
 sess_sites=$(grep -c -F 'X-Session' "$A/admin.html")
-[[ "$sess_sites" == "6" ]] && ok "5al(1) X-Session present at exactly $sess_sites sites (impl + doc comments; S04 merge)" \
-  || bad "5al(1) X-Session sites=$sess_sites (want 6)"
+[[ "$sess_sites" == "5" ]] && ok "5al(1) X-Session present at exactly $sess_sites sites (impl + doc comments; S06 poll-comment rewrite dropped one incidental prose hit)" \
+  || bad "5al(1) X-Session sites=$sess_sites (want 5)"
 sess_hdr_sites=$(grep -c -F '"X-Session"' "$A/admin.html")
 [[ "$sess_hdr_sites" == "1" ]] && ok "5al(1) sessionFetch attaches X-Session at its single impl site" \
   || bad "5al(1) explicit X-Session header sites=$sess_hdr_sites (want 1; a dropped attach site is invisible to sessionFetch)"
@@ -2974,8 +2990,8 @@ sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/admin.
 [[ "$sink_hits" == "0" ]] && ok "5an(iv) no innerHTML/insertAdjacentHTML/document.write" \
   || bad "5an(iv) forbidden DOM sink count=$sink_hits"
 sess_sites=$(grep -c -F 'X-Session' "$A/admin.html")
-[[ "$sess_sites" == "6" ]] && ok "5an(iv) X-Session census updated (6 sites; S04 merge)" \
-  || bad "5an(iv) X-Session sites=$sess_sites (want 6 — §5al census broken)"
+[[ "$sess_sites" == "5" ]] && ok "5an(iv) X-Session census updated (5 sites; S06 comment rewrite)" \
+  || bad "5an(iv) X-Session sites=$sess_sites (want 5 — §5al census broken)"
 
 # --- (5ao) staged-env refresh: PIN/PSK EnvironmentFile re-derived every boot --
 # The unit's EnvironmentFile=-/run/travel-router/role-env/travel-router-setup.env

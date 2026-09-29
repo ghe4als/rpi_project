@@ -229,8 +229,9 @@ Turns a Pi (a Zero W v1.1 works) into a travel router: its onboard WiFi is
 **always** your private travel network (`TRAVELROUTER_AP_SSID`), and whatever
 USB network adapter you plug in auto-becomes the WAN (hotel WiFi dongle,
 wired jack, or nothing — standalone AP mode). LAN is 192.168.50.0/24 with
-DHCP/DNS, a status page and a **phone setup page** at `http://192.168.50.1`
-— no SSH needed to pick the hotel network.
+DHCP/DNS, a status page and an **admin page** at `http://192.168.50.1/admin`
+— no SSH needed to pick the hotel network (log in with
+`TRAVELROUTER_ADMIN_PSK`; writes also need `TRAVELROUTER_SETUP_PIN`).
 
 1. **What to buy** — a micro-USB **OTG adapter is REQUIRED** on the Zero W
    v1.1: its only data port is the micro-USB OTG port (the PWR port is
@@ -245,7 +246,7 @@ DHCP/DNS, a status page and a **phone setup page** at `http://192.168.50.1`
    ```
 TRAVELROUTER_AP_SSID="TravelNet"
 TRAVELROUTER_AP_PSK="at-least-8-chars"   # 8-63 chars, A-Za-z0-9._- only
-TRAVELROUTER_SETUP_PIN="1234"            # required; unlocks the phone setup page
+TRAVELROUTER_SETUP_PIN="1234"            # required; second factor on every admin write (see Security features)
 TRAVELROUTER_ADMIN_PSK="choose-a-passphrase"  # required; >=8 printable ASCII; logs into the admin page (/admin)
 TRAVELROUTER_DEFAULT_PSKS="homepsk1,homepsk2"  # optional: default PSKs tried by "Try saved passwords"
 ROLE="travel-router"
@@ -258,11 +259,13 @@ ROLE="travel-router"
    internet flows through the WAN. On the Zero W the first boot is slow
    (ARMv6 + full apt) — wait for the travel SSID before assuming failure.
 
-**Threat model.** The router's management plane (status/setup pages, SSH) is
+**Threat model.** The router's management plane (admin page, SSH) is
 only reachable from the private travel AP — nftables drops traffic arriving
 from the WAN side to the router (the admin page's stealth self-check, below,
 verifies exactly this against the rendered ruleset). The setup PIN is the
-gate against other guests joining your travel AP. Saved PSKs sit at rest as
+second factor on every admin write in addition to the admin-page session
+(a leaked/observed session token alone cannot rename the AP or change the
+DNS stores). Saved PSKs sit at rest as
 0600 (root-owned) on the Pi, but during `connect`/`try-psks` they are
 transiently visible in process arguments (`/proc/<pid>/cmdline`); the only
 local accounts are `pi` and root, both already privileged, so no privilege
@@ -276,7 +279,8 @@ writes additionally need the setup PIN (the session/CSRF header rules for
 curl are in Troubleshooting). **Every feature flag defaults OFF** — a fresh
 flash blocks nothing, cuts nothing, hides nothing; each toggle persists as
 a flag file under `/etc/rpi-project/travel-router/` and survives reboots.
-None of these features appears on the client `/setup` page.
+(S04 merged the old phone `/setup` page into this one — the admin page is
+the only management surface.)
 
 - **Block list** (default OFF — empty list, nothing blocked). Block a
   device by MAC from the admin page's Connected-clients list (per-client
@@ -354,7 +358,7 @@ never the AP radio).
   30s). You can rehearse a full hotel setup at home before you travel.
 - **No USB adapter**: the Pi boots standalone (AP only); the profile is
   seeded but inert and the install is green.
-- Change or forget the seed later from the phone setup page, or
+- Change or forget the seed later from the admin page (session-gated), or
   `ssh pi@192.168.50.1 travel-wan forget <SSID>` (it is SSID-named, so
   forget works like any hotel profile). Re-provisioning re-seeds it.
 
@@ -364,8 +368,8 @@ Successful connects are remembered: the NM profile (auto-reconnect on
 boot/re-plug) plus a PSK-candidate store at
 `/etc/rpi-project/travel-router/known-psks` (0600, root) — collected
 candidates per SSID (max 4) and `d`-row defaults seeded from
-`TRAVELROUTER_DEFAULT_PSKS`. The phone setup page lists known networks
-and offers "Try saved passwords" per network: it cycles that network's
+`TRAVELROUTER_DEFAULT_PSKS`. The admin page's WiFi-networks section lists
+known networks and offers "Try saved passwords" per network: it cycles that network's
 saved candidates, then the defaults, via a throwaway probe profile and
 connects with the winner — no re-typing. `travel-wan forget <SSID>`
 removes the profile but KEEPS the saved PSKs, so forgetting a hotel
@@ -395,7 +399,7 @@ its values into the store as default (`d`) rows alongside
 file is read **once at install** — the router and phone never modify it.
 Afterwards the store itself is managed at runtime:
 
-- **Phone**: the setup page's "Saved passwords" section lists the store
+- **Phone**: the admin page's "Saved passwords" section lists the store
   rows (type/index/SSID only — passwords never leave the device) and can
   add default passwords or remove rows (PIN-gated).
 - **SSH**: `travel-wan psks-add <SSID> <PSK>`,
@@ -405,7 +409,7 @@ Afterwards the store itself is managed at runtime:
 
 ### Changing the router's own network (AP rename)
 
-The setup page's "AP settings" flow (and `POST /api/wan/apconfig`) changes
+The admin page's "AP settings" flow (and `POST /api/wan/apconfig`) changes
 the travel SSID and/or AP password at runtime. The new config is validated
 by a parse-probe on a throwaway copy (the live radio is never touched), then
 rendered from the template, and the AP service restarts (connected devices
@@ -466,9 +470,12 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
   successfully (best-effort ExecStartPost).
 
 4. **Hotel procedure (phone, no SSH)** — plug in the dongle → join the
-   travel SSID from your phone → the setup page opens automatically (the OS
-   captive-portal popup; if it doesn't, open `http://192.168.50.1/setup`) →
-   enter your **`TRAVELROUTER_SETUP_PIN`** → tap **Scan** → pick the hotel
+   travel SSID from your phone → the **public status page** opens
+   automatically (the OS captive-portal popup; if it doesn't, open
+   `http://192.168.50.1/`) → for management (scan/connect to the hotel
+   network), open `http://192.168.50.1/admin`, log in with
+   **`TRAVELROUTER_ADMIN_PSK`**, enter your **`TRAVELROUTER_SETUP_PIN`**
+   for writes → tap **Scan** → pick the hotel
    network → **Connect** (add the PSK if the hotel uses WPA2). Then:
    - **Hotel with a captive portal** (login page): the Pi is now associated
      but not yet online — finish the **hotel's own login page from the same
@@ -483,10 +490,10 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
      drops back to standalone automatically.
 
 5. **Standalone note** — with no adapter plugged in the Pi is still a fully
-   usable private AP (LAN + DHCP/DNS + status/setup page, no NAT). While
-   standalone, phones joining the travel SSID get the setup page pushed at
-   them automatically (probe hijack); it switches off the moment a WAN
-   exists.
+   usable private AP (LAN + DHCP/DNS + status page, no NAT). While
+   standalone, phones joining the travel SSID get the public status page
+   pushed at them automatically (probe hijack, S05); a WAN existing
+   switches the redirect off.
 
 6. **Recovery / fallback (SSH)** — after role-setup the Pi is reachable ONLY
    via the travel SSID (SSH to 192.168.50.1, creds from `.env`; the
@@ -507,8 +514,9 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
    config survives — fix `.env` and re-provision, or plug USB Ethernet.
 
 7. **Upgrading a previously provisioned Pi** — Pis flashed before this
-   feature have no setup PIN, so the phone setup API stays deny-by-default
-   there: re-provision, or hand-add `TRAVELROUTER_SETUP_PIN` to `role.env`
+   feature have no setup PIN, so every admin WRITE stays deny-by-default
+   there (reads still work with just the admin login): re-provision, or
+   hand-add `TRAVELROUTER_SETUP_PIN` to `role.env`
    and restart `travel-router-status.service`. The same applies to
    `TRAVELROUTER_ADMIN_PSK` (the admin-page login): with no ADMIN_PSK set,
    login is deny-by-default and no session is ever issued — hand-add it to
@@ -546,9 +554,9 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
   `tailscale up --ssh --advertise-routes=$TAILSCALE_SUBNET` by hand.
 - **travel-router API calls via curl return 403/401 with correct credentials**
   — every JSON POST requires the header `X-Requested-With: XMLHttpRequest`
-  (CSRF defense; browsers set it on the setup page automatically, curl does
-  not). Login is `POST /api/auth/login` with `{"psk": "..."}` against
-  `TRAVELROUTER_ADMIN_PSK`; writes additionally need the session token
+  (CSRF defense; browsers set it on the admin/setup pages automatically, curl
+  does not). Login is `POST /api/auth/login` with `{"psk": "..."}` against
+  `TRAVELROUTER_ADMIN_PSK`; admin writes additionally need the session token
   (`X-Session`) and the setup PIN in the body.
 - **Forgot which Pi is which** — `./pi list` shows all tracked Pis;
   `./pi name rpi-XXXXXX "kitchen"` labels one for easy reference.
