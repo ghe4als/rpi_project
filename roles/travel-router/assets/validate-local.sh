@@ -329,8 +329,8 @@ suad=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin 2>/de
 suadc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/admin 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
   [[ "$sc" == "200" ]] && ok "status /health 200" || bad "/health=$sc (srv.log: $(tail -1 "$B/srv.log" 2>/dev/null))"
   # admin todo 1: /status is session-gated -> 401 with an auth-only body (S02)
-  # (no X-Pin sent; absent pin is 401, never 403).
-  [[ "$sjc" == "401" ]] && ok "/status gated: 401 without X-Pin" || bad "/status code=$sjc"
+  # (no session sent; no credentials of any kind -> 401, never 403).
+  [[ "$sjc" == "401" ]] && ok "/status gated: 401 without a session" || bad "/status code=$sjc"
 echo "$sj" | grep -qF '"auth"' && ! echo "$sj" | grep -qF '"mode"' \
   && ok "/status 401 body carries no device state" || bad "/status body: $sj"
 [[ "$sp" == "404" || "$sp" == "405" ]] && ok "POST -> 404/405" || bad "POST code=$sp"
@@ -359,7 +359,7 @@ wait_healthy 18081 || true
 # a no-X-Pin GET still answers 401 (session is the only GET credential since
 # S02; S06 removed even the X-Pin reader, so the header is entirely inert).
 sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/status 2>/dev/null)
-[[ "$sjc" == "401" ]] && ok "fallback path still PIN-gated (401 without X-Pin)" || bad "fallback /status code=$sjc"
+[[ "$sjc" == "401" ]] && ok "fallback path still session-gated (401 without any)" || bad "fallback /status code=$sjc"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 
 # --- (5d) POST API battery (H01: PIN gate + policy + argv contract) -----------
@@ -1036,7 +1036,6 @@ sec "5ap. client/admin gate split + /admin route (admin-split Todos 1-2)"
 # Posture under test (admin plan Todo 1, exhaustive classification):
 #   CLIENT (session-only since S03; the PIN is never consulted):
 #     GET reads + POST client verbs (session-gated since S03; X-Pin inert),
-#     /api/wan/{scan,status,connect,psks,disconnect,forget,recheck} (body.pin;
 #     POST /api/wan/status is a client READ twin of GET /status).
 #   ADMIN (X-Session via PSK login; body.pin additionally on writes):
 #     /api/wan/{psks-manage,apconfig} writes, GET /api/wan/psks-manage,
