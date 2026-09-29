@@ -328,7 +328,7 @@ su=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/setup 2>/dev/
 suad=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/admin 2>/dev/null)
 suadc=$(curl -sD - -o /dev/null http://127.0.0.1:18080/admin 2>/dev/null | grep -i '^cache-control:' | head -1 | tr -d '\r' | awk '{print $2}')
   [[ "$sc" == "200" ]] && ok "status /health 200" || bad "/health=$sc (srv.log: $(tail -1 "$B/srv.log" 2>/dev/null))"
-  # admin todo 1: /status is PIN-gated -> 401 with an auth-only body
+  # admin todo 1: /status is session-gated -> 401 with an auth-only body (S02)
   # (no X-Pin sent; absent pin is 401, never 403).
   [[ "$sjc" == "401" ]] && ok "/status gated: 401 without X-Pin" || bad "/status code=$sjc"
 echo "$sj" | grep -qF '"auth"' && ! echo "$sj" | grep -qF '"mode"' \
@@ -1034,15 +1034,15 @@ pkill -f status-server.py 2>/dev/null; sleep 0.3
 # --- (5ap) client/admin credential split + /admin route (admin plan T1/T2) -----
 sec "5ap. client/admin gate split + /admin route (admin-split Todos 1-2)"
 # Posture under test (admin plan Todo 1, exhaustive classification):
-#   CLIENT ("PIN suffices"; a session is neither required nor rejected):
+#   CLIENT (session-only since S03; the PIN is never consulted):
 #     GET reads + POST client verbs (session-gated since S03; X-Pin inert),
 #     /api/wan/{scan,status,connect,psks,disconnect,forget,recheck} (body.pin;
 #     POST /api/wan/status is a client READ twin of GET /status).
 #   ADMIN (X-Session via PSK login; body.pin additionally on writes):
 #     /api/wan/{psks-manage,apconfig} writes, GET /api/wan/psks-manage,
 #     GET /api/wan/log, and all future /api/admin/*.
-# Absent pin -> 401 (never 403); wrong pin -> 403 feeding the shared per-IP
-# _PIN_FAILS throttle in BOTH buckets. The legacy session-gate asserts
+# No session -> 401 (client and admin alike); a wrong body.pin on an ADMIN
+# write -> 403 feeding the shared per-IP _PIN_FAILS throttle. The legacy
 # (5c/5d/5g/5t/5ac2/5ac3/5ak) still pin the OLD posture and are rewritten to
 # this one in admin plan todo 8 — this section pins the NEW posture only.
 pkill -f status-server.py 2>/dev/null; sleep 0.3
@@ -1164,7 +1164,7 @@ apx=$(ap_post /api/wan/apconfig '{"pin":"1234","ssid":"NewName","psk":"newpsk9x"
 apx=$(ap_get /admin)
 adm_code="${apx%%|*}"; adm_body="${apx#*|}"
 [[ "$adm_code" == "200" ]] \
-  && ok "5ap GET /admin -> 200 (page loads unauthenticated; S04 owns all setup UI)" \
+  && ok "5ap GET /admin -> 200 (page loads unauthenticated; S04 owns the admin UI)" \
   || bad "5ap /admin code=$adm_code"
 [[ "$adm_body" == *'id="admin-page"'* ]] \
   && ok "5ap /admin body carries the admin-page marker" || bad "5ap /admin marker missing"
@@ -2156,6 +2156,14 @@ done
 # The new page has the status-rows container + links-list + fetches /api/status
 echo "$wh" | grep -qF 'id="status-rows"' && ok "5ai(1) minimal page has status-rows container" || bad "5ai(1) status-rows MISSING: $wh"
 echo "$wh" | grep -qF 'id="links-list"' && ok "5ai(1) minimal page has links-list" || bad "5ai(1) links-list MISSING"
+# S06b F7: the Admin entry must reach the client. The rendered <a> is drawn by
+# client-side JS (browser-only), but / serves _STATUS_HTML verbatim, so the served
+# script source carries the array entry — assert on the SERVED body, not just the
+# file, so an entry added to a non-served string cannot pass. -F is mandatory: the
+# pattern contains [ and ] (regex metachars).
+echo "$wh" | grep -qF '["Admin", "/admin"]' \
+  && ok "5ai(1) served / carries the buildLinks Admin entry (rendered anchor is browser-only)" \
+  || bad "5ai(1) served / MISSING the buildLinks /admin entry"
 echo "$wh" | grep -qF '/api/status' && ok "5ai(1) minimal page fetches /api/status" || bad "5ai(1) /api/status fetch MISSING"
 # The old warning phrase is GONE (replaced by the minimal status page)
 echo "$wh" | grep -qF 'private travel network' && bad "5ai(1) old warning phrase still present" || ok "5ai(1) old warning phrase gone"
@@ -2414,8 +2422,8 @@ echo "5ak auth transcript: $AKLOG"
 # (security plan todo 8) — re-pointed at the /api/admin/audit fetch.
 sec "5al. admin.html login gate + X-Session + clients + audit sections"
 # (1) static contract asserts (grep-style, mirroring the §5x batteries)
-grep -qF 'X-Session' "$A/admin.html" \
-  && ok "5al(1) admin.html POSTs to /api/auth/login" || bad "5al(1) login endpoint fetch MISSING"
+grep -qF 'fetch("/api/auth/login"' "$A/admin.html" \
+  && ok "5al(1) admin.html wires the login fetch call site" || bad "5al(1) login endpoint fetch MISSING"
 # S06: the dead GET-bucket PIN gate is GONE — _pin_gate/_require_pin_header
 # had zero call sites since S03 (X-Pin on GETs is never consulted). The LIVE
 # pins (SETUP_PIN/_pin_ok/_PIN_FAILS/403-pin admin writes) must all survive.
