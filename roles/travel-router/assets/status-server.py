@@ -1135,8 +1135,9 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send(404, b"404 not found", "text/plain")
             return
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
-        # parsed. A blocked attempt is still a PIN guess, so it also advances
-        # the fail count (lets a persistent brute-forcer escalate tiers).
+        # parsed. The attempt still advances the fail count so a persistent
+        # brute-forcer keeps escalating backoff tiers (PSK-login guesses are
+        # counted by the same shared counter — see _PIN_FAILS at do_POST login).
         # S03: EVERY write verb below is session-gated; the admin_write set
         # ADDITIONALLY requires body.pin (second factor). The shared per-IP
         # counter/backoff fires a 429 before the body is parsed for both paths.
