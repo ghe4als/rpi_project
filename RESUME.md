@@ -1,45 +1,38 @@
-# RESUME — travel-router S-wave COMPLETE (S01-S06 committed)
+# RESUME — S-waves COMPLETE + S06b cleanup committed (593-green ×3)
 
 <!--
-SESSION 2026-09-28 (continued). S04 committed 6af72e6, S05 76862a7, S06
-1d9dd15 (all this session). The S-wave from tasks/S01-S06 + ISSUES.md is
-DONE. S06's original premise was WRONG (PIN still live as admin-write
-second factor); the corrected plan tasks/S06-pin-fate-corrected.md was
-executed: KEEP the PIN, DELETE the dead GET-bucket gate (_pin_gate/
-_require_pin_header, zero call sites since S03), docs updated. Suite
-592 passed / 0 failed x3 (was 586 at S04 close).
-
-S06 plan-correction note (for future plan-writers): the original
-tasks/S06 file assumed the PIN would be fully obsolete post-S03. It
-was not — admin writes kept body.pin as the second factor (S03 chose
-two-factor). When a task file's premise says a security control is
-"no longer needed", VERIFY against code before executing.
-
-Suite-assert surgery this session (S06): X-Session prose census in
-admin.html went 6 -> 5 (poll-comment rewrite dropped an incidental doc
-hit); dead-code asserts must use match-or-not grep (never
-`grep -c | grep -q` — pipefail poisons the pipe on the wanted 0).
+SESSION 2026-09-29. S06b cleanup plan (.omo/plans/s06b-cleanup.md, approved
+by dual review momus+oracle) EXECUTED + VERIFIED. 7 commits 37bc744..fde41bd:
+install.sh dead-/setup summary + 3 stale PIN strings fixed; status-server.py
+stale Client-PIN comment fixed + Admin link on public /; .env.example comments;
+service Description; README CSRF line; validate-local.sh fetch-assert restore
++ served-body Admin assert + 4 prose rewords; RESUME count. Suite 593/0 x3
+(this engine) + 2 more independent greens = 5 total greens. Orchestrated
+start-work; every todo DoneClaim independently AdversarialVerify-confirmed.
 -->
 
 ## Current state
 
-- ALL plans ticked: security-features plan, finishing plan (await owner
-  close-ok, now genuinely final), and the S01-S06 HTTP route workstream
-  (tracked in tasks/ISSUES.md — all rows resolved there).
+- S06b COMPLETE: plan 7/7 todos ticked, F1-F4 all APPROVE, success criteria
+  7/7 ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
+  .omo/evidence/s06b-cleanup/.
 - Suite gate: monotonic; **593 passed, 0 failed**, 3 consecutive runs.
-- Working tree: CLEAN (S06 + RESUME committed).
-- Live Pi (rpi-8e21bb) does NOT carry S01-S06 yet (last flash predates
-  them; AP-rename fixes were hot-pushed earlier). Next natural re-flash
-  picks up everything.
+- Working tree: CLEAN.
+- Carried follow-ups (comment-only, verified real, outside S06b's scoped
+  lines): status-server.py:1138 "still a PIN guess" stale rationale;
+  validate-local.sh:332-333 "absent pin is 401" mixed framing;
+  validate-local.sh:1039 "(body.pin;" stale fragment. All one-line edits,
+  non-behavioral.
+- Owner decision: F3 stale deployment (live Pi rpi-8e21bb predates the
+  S-wave) — re-provision will pick up everything now.
+- Prior work travel-router-security-finishing PAUSED (its F3 landed as a
+  root-cause-proven stale deployment).
 
 ## Next session steps
 
-1. NO pending code work. Owner decisions optionally open: close the two
-   old plans (security-features + finishing) — everything ticked; and
-   whether to hardware-smoke the S-wave on a re-flash (no hardware step
-   was planned or needed for any S-item; all server/client-local).
-2. ISSUES.md: fully resolved (S1-S5 + C1, C2 kept open as documented
-   tradeoff). Nothing actionable left from the 2026-09-27 review.
+1. Optional S06c: the 3 comment residuals above + T6's one un-grepped
+   acceptance pair (:1037/:1044-45 greps missing) — Quick (~5 min).
+2. Owner: hardware smoke test remains optional (all S06b items server/client-local).
 
 ## Standing rules (do not relearn)
 
@@ -50,11 +43,19 @@ hit); dead-code asserts must use match-or-not grep (never
   copy only.
 - Login API needs `X-Requested-With: XMLHttpRequest` from curl.
 - The suite is client/capture-fragile: every curl wrapper must pass the
-  URL EXACTLY ONCE.
-- Suite gate: monotonic; do not re-derive the 5ar(e) order.
+  URL EXACTLY ONCE. Suite ALSO flakes on macOS loopback ([000] transport
+  failures — validate-local.sh:3122-3126; bounded re-run, max 3 attempts
+  per position; all-[000] = flake, non-transport = real).
+- The suite's DRY_RUN seam is `TRAVELROUTER_DRY_RUN=1` (+ optional
+  `TRAVELROUTER_DRY_RUN_PREFIX`), NOT bare `DRY_RUN=1`.
+- Suite gate: monotonic; do not re-derive the 5ar(e) order. Fixed ports +
+  system-wide pkill make CONCURRENT suite runs kill each other — always
+  run suites sequentially.
 - `hostapd_cli -p` takes the ctrl socket DIRECTORY, NOT the socket file
   (cost one debug round-trip 2026-09-26; §5z stubs exit 3 on it).
 - 2026-09-26 hardware verification of the AP-rename brick fix is DONE
   (f3-manual.md + Pi's apconfig.log). Do not re-run those.
 - PIN (2026-09-28 S06 decision): KEEP as admin-write second factor;
   GET-bucket X-Pin is GONE — do not revive.
+- Suite `$LOG` (validate-local.sh:12) is defined but never written — tee
+  run output into .omo/evidence/<work>/ yourself when evidence matters.
