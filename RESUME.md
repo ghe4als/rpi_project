@@ -26,7 +26,7 @@ hit); dead-code asserts must use match-or-not grep (never
 - ALL plans ticked: security-features plan, finishing plan (await owner
   close-ok, now genuinely final), and the S01-S06 HTTP route workstream
   (tracked in tasks/ISSUES.md — all rows resolved there).
-- Suite gate: monotonic; **592 passed, 0 failed**, 3 consecutive runs.
+- Suite gate: monotonic; **593 passed, 0 failed**, 3 consecutive runs.
 - Working tree: CLEAN (S06 + RESUME committed).
 - Live Pi (rpi-8e21bb) does NOT carry S01-S06 yet (last flash predates
   them; AP-rename fixes were hot-pushed earlier). Next natural re-flash
