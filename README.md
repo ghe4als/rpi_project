@@ -554,7 +554,7 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
   `tailscale up --ssh --advertise-routes=$TAILSCALE_SUBNET` by hand.
 - **travel-router API calls via curl return 403/401 with correct credentials**
   — every JSON POST requires the header `X-Requested-With: XMLHttpRequest`
-  (CSRF defense; browsers set it on the admin/setup pages automatically, curl
+  (CSRF defense; browsers set it on the admin page automatically, curl
   does not). Login is `POST /api/auth/login` with `{"psk": "..."}` against
   `TRAVELROUTER_ADMIN_PSK`; admin writes additionally need the session token
   (`X-Session`) and the setup PIN in the body.
