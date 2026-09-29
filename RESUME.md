@@ -1,14 +1,17 @@
-# RESUME — S-waves COMPLETE + S06b cleanup committed (593-green ×3)
+# RESUME — S-waves COMPLETE + S06b/S06c both committed (593-green ×5)
 
 <!--
 SESSION 2026-09-29. S06b cleanup plan (.omo/plans/s06b-cleanup.md, approved
-by dual review momus+oracle) EXECUTED + VERIFIED. 7 commits 37bc744..fde41bd:
-install.sh dead-/setup summary + 3 stale PIN strings fixed; status-server.py
-stale Client-PIN comment fixed + Admin link on public /; .env.example comments;
-service Description; README CSRF line; validate-local.sh fetch-assert restore
-+ served-body Admin assert + 4 prose rewords; RESUME count. Suite 593/0 x3
-(this engine) + 2 more independent greens = 5 total greens. Orchestrated
-start-work; every todo DoneClaim independently AdversarialVerify-confirmed.
+by dual review momus+oracle) EXECUTED + VERIFIED + S06c doc-truth plan
+(.omo/plans/s06c-doc-truth.md, sha256 450c8fbc...) EXECUTED + VERIFIED.
+Commits 37bc744..56fd3d6: install.sh dead-/setup summary + 3 stale PIN
+strings fixed; status-server.py stale Client-PIN comment fixed + Admin link
+on public /; .env.example comments; service Description; README CSRF line;
+validate-local.sh fetch-assert restore + served-body Admin assert + 4 prose
+rewords; S06b stale PIN-guess rationale + INVENTORY row fix + tasks/PLAN.md
+repoint. Suite 593/0 x3 (S06b) + 2x (S06c gate) + 2x (S06c wave-1 F-wave)
+= 7+ total greens. Orchestrated start-work; every todo DoneClaim
+independently AdversarialVerify-confirmed (confidence 0.93+).
 -->
 
 ## Current state
@@ -30,8 +33,11 @@ start-work; every todo DoneClaim independently AdversarialVerify-confirmed.
 
 ## Next session steps
 
-1. Optional S06c: the 3 comment residuals above + T6's one un-grepped
-   acceptance pair (:1037/:1044-45 greps missing) — Quick (~5 min).
+1. ~~Optional S06c: the 3 comment residuals above + T6's one un-grepped
+   acceptance pair~~ — DONE (c6ec7ea..56fd3d6, S06c plan
+   .omo/plans/s06c-doc-truth.md; F2 disclosed :358 stale "now PIN-gated
+   " comment and validate-local.sh:3122-3131 stale "(body.pin;"
+   fragment as future S06d optional cleanup if more rot surfaces).
 2. Owner: hardware smoke test remains optional (all S06b items server/client-local).
 
 ## Standing rules (do not relearn)
