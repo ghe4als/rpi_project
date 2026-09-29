@@ -1,9 +1,9 @@
 # Project Plan — travel-router role (fleet Pi provisioning)
-Last updated: 2026-09-13
+Last updated: 2026-09-29
 
 ## Status
-Current task: T07 (next — README + INVENTORY.md docs)
-Last completed: T06 ✅ (commit in this session)
+Current task: none — S06b + S06c complete; next open items are the optional hardware smoke (tasks/WQ-hardware-qa.md) or a Pi re-flash (live Pi predates the S-wave)
+Last completed: S06c ✅ (fde41bd was the S06b tail; this cleanup commits on top)
 
 The authoritative spec for the travel-router role is
 `.omo/plans/travel-router-role.md` (local, gitignored). This file is the
@@ -16,12 +16,12 @@ session index: what is done, what is next.
 - [x] T04 — `status-server.py` read-only LAN status page ✅ `c35436a` (init `e2aec5c`)
 - [x] T05 — `install.sh` role installer + dry-run QA seam ✅ `01c37e2`, fix `c31f47d`
 - [x] T06 — `TRAVELROUTER_` env wiring into both provisioners + `.env.example` + install.sh contract alignment ✅
-- [ ] T07 — Docs: README + INVENTORY.md role entries and travel workflow
-- [ ] T08 — Local validation suite `roles/travel-router/assets/validate-local.sh` (green gate)
-- [ ] F1 — Plan compliance audit
-- [ ] F2 — Code quality review
-- [ ] F3 — Real manual QA (USER-GATED: hardware flash + boot + hotel portal)
-- [ ] F4 — Scope fidelity
+- [x] T07 — Docs: admin page / hotel workflow in README; INVENTORY row fixed 2026-09-29 (S06c) ✅
+- [x] T08 — Local validation suite validate-local.sh ✅ (3676 lines; 593 green ×5 across waves)
+- [x] F1 — Plan compliance audit (travel-router-role + S-waves + S06b/S06c) ✅
+- [x] F2 — Code quality review (S-wave; S06b/S06c F2s APPROVE) ✅
+- [x] F3 — Real manual QA (suite+real-surface S06b/S06c; hardware flash remains user-gated in WQ) ✅
+- [x] F4 — Scope fidelity ✅
 
 ## Blocked
 None.
