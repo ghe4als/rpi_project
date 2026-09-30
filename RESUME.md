@@ -33,11 +33,11 @@ independently AdversarialVerify-confirmed (confidence 0.93+).
 
 ## Next session steps
 
-1. ~~Optional S06c: the 3 comment residuals above + T6's one un-grepped
-   acceptance pair~~ — DONE (c6ec7ea..56fd3d6, S06c plan
-   .omo/plans/s06c-doc-truth.md; F2 disclosed :358 stale "now PIN-gated
-   " comment and validate-local.sh:3122-3131 stale "(body.pin;"
-   fragment as future S06d optional cleanup if more rot surfaces).
+1. S06c DONE (c6ec7ea..56fd3d6). Remaining comment-truth residue: 18 stale
+   spots — 16 in validate-local.sh (34 lines) + 2 in README.md — planned as
+   S06d (.omo/plans/s06d-comment-truth.md). NB: the earlier
+   ":3122-3131 (body.pin; fragment" note was a PHANTOM (that fragment was
+   deleted at S06c); the real residue is the 18 spots S06d lists.
 2. Owner: hardware smoke test remains optional (all S06b items server/client-local).
 
 ## Standing rules (do not relearn)
