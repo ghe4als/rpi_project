@@ -1,24 +1,25 @@
-# RESUME — S-waves COMPLETE + S06b/S06c both committed (593-green ×5)
+# RESUME — S-waves COMPLETE + S06b/S06c/S06d committed (593-green ×7)
 
 <!--
-SESSION 2026-09-29. S06b cleanup plan (.omo/plans/s06b-cleanup.md, approved
-by dual review momus+oracle) EXECUTED + VERIFIED + S06c doc-truth plan
-(.omo/plans/s06c-doc-truth.md, sha256 450c8fbc...) EXECUTED + VERIFIED.
-Commits 37bc744..56fd3d6: install.sh dead-/setup summary + 3 stale PIN
-strings fixed; status-server.py stale Client-PIN comment fixed + Admin link
-on public /; .env.example comments; service Description; README CSRF line;
-validate-local.sh fetch-assert restore + served-body Admin assert + 4 prose
-rewords; S06b stale PIN-guess rationale + INVENTORY row fix + tasks/PLAN.md
-repoint. Suite 593/0 x3 (S06b) + 2x (S06c gate) + 2x (S06c wave-1 F-wave)
-= 7+ total greens. Orchestrated start-work; every todo DoneClaim
-independently AdversarialVerify-confirmed (confidence 0.93+).
+SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
+EXECUTED + VERIFIED. S06d commits a178a6d (validate-local.sh 34/34),
+5d6b1e2 (README 3/3), b5aaaa1 (RESUME 5/5): 16 stale credential-model
+comments/labels in validate-local.sh + 2 README lines now describe the S03
+session gate instead of the pre-S03 client-PIN model. Suite 593/0 x2 at the
+S06d gate (7+ greens across the three waves). The S06d plan was dual-reviewed
+(r3: momus APPROVE + oracle OKAY) and every todo DoneClaim independently
+verified. S06d is TERMINAL — no S06e planned.
+COMMENT-TRUTH ARC IS CLOSED: S06b (5 files) -> S06c (3 residuals) -> S06d
+(18 spots). The recurring cause was scope drawn from an eyeballed list rather
+than an exhaustive class sweep; S06d was scoped from a full sweep and its
+independent re-sweep found no 19th site.
 -->
 
 ## Current state
 
-- S06b COMPLETE: plan 7/7 todos ticked, F1-F4 all APPROVE, success criteria
-  7/7 ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
-  .omo/evidence/s06b-cleanup/.
+- S06b, S06c, S06d ALL COMPLETE. S06d plan 5/5 todos + F1-F4 + 5 success
+  criteria ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
+  .omo/evidence/s06d-comment-truth/ (6 run logs).
 - Suite gate: monotonic; **593 passed, 0 failed**, 3 consecutive runs.
 - Working tree: CLEAN.
 - Carried follow-ups (comment-only, verified real, outside S06b's scoped
@@ -33,12 +34,13 @@ independently AdversarialVerify-confirmed (confidence 0.93+).
 
 ## Next session steps
 
-1. S06c DONE (c6ec7ea..56fd3d6). Remaining comment-truth residue: 18 stale
-   spots — 16 in validate-local.sh (34 lines) + 2 in README.md — planned as
-   S06d (.omo/plans/s06d-comment-truth.md). NB: the earlier
-   ":3122-3131 (body.pin; fragment" note was a PHANTOM (that fragment was
-   deleted at S06c); the real residue is the 18 spots S06d lists.
-2. Owner: hardware smoke test remains optional (all S06b items server/client-local).
+1. NO pending code work. The comment-truth arc is closed; no S06e is planned.
+   NB: the earlier ":3122-3131 (body.pin; fragment" note was a PHANTOM (that
+   fragment was deleted at S06c).
+2. Optional (deliberately NOT done — cost/benefit): a banned-phrase assert in
+   the suite would structurally prevent the prose drift from recurring. Not
+   warranted for a one-time 38-line comment fix; revisit only if drift recurs.
+3. Owner: hardware smoke test remains optional (all items server/client-local).
 
 ## Standing rules (do not relearn)
 
@@ -57,6 +59,10 @@ independently AdversarialVerify-confirmed (confidence 0.93+).
 - Suite gate: monotonic; do not re-derive the 5ar(e) order. Fixed ports +
   system-wide pkill make CONCURRENT suite runs kill each other — always
   run suites sequentially.
+- Comment/prose edits to validate-local.sh: use FULL-LINE old_strings. Some
+  phrases occur twice with opposite truth values (`PIN gate` at :365 stale
+  vs :2426 accurate) — a file-wide substring replace corrupts the accurate
+  one.
 - `hostapd_cli -p` takes the ctrl socket DIRECTORY, NOT the socket file
   (cost one debug round-trip 2026-09-26; §5z stubs exit 3 on it).
 - 2026-09-26 hardware verification of the AP-rename brick fix is DONE
