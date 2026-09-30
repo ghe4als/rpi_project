@@ -231,7 +231,7 @@ USB network adapter you plug in auto-becomes the WAN (hotel WiFi dongle,
 wired jack, or nothing — standalone AP mode). LAN is 192.168.50.0/24 with
 DHCP/DNS, a status page and an **admin page** at `http://192.168.50.1/admin`
 — no SSH needed to pick the hotel network (log in with
-`TRAVELROUTER_ADMIN_PSK`; writes also need `TRAVELROUTER_SETUP_PIN`).
+`TRAVELROUTER_ADMIN_PSK`; admin writes also need `TRAVELROUTER_SETUP_PIN`).
 
 1. **What to buy** — a micro-USB **OTG adapter is REQUIRED** on the Zero W
    v1.1: its only data port is the micro-USB OTG port (the PWR port is
@@ -474,8 +474,8 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
    automatically (the OS captive-portal popup; if it doesn't, open
    `http://192.168.50.1/`) → for management (scan/connect to the hotel
    network), open `http://192.168.50.1/admin`, log in with
-   **`TRAVELROUTER_ADMIN_PSK`**, enter your **`TRAVELROUTER_SETUP_PIN`**
-   for writes → tap **Scan** → pick the hotel
+   **`TRAVELROUTER_ADMIN_PSK`** (the setup PIN is only needed for admin
+   changes) → tap **Scan** → pick the hotel
    network → **Connect** (add the PSK if the hotel uses WPA2). Then:
    - **Hotel with a captive portal** (login page): the Pi is now associated
      but not yet online — finish the **hotel's own login page from the same
