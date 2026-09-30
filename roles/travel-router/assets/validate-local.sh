@@ -355,21 +355,21 @@ TRAVELWAN_BIN="/nonexistent-travel-wan" TRAVELROUTER_STATE_FILE="$B/srv-state.js
 SPID=$!
 sleep 1.5
 wait_healthy 18081 || true
-# C2 (Todo 5): the fallback path feeds /status, which is now PIN-gated —
+# C2 (Todo 5): the fallback path feeds /status, which is session-gated —
 # a no-X-Pin GET still answers 401 (session is the only GET credential since
 # S02; S06 removed even the X-Pin reader, so the header is entirely inert).
 sjc=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/status 2>/dev/null)
 [[ "$sjc" == "401" ]] && ok "fallback path still session-gated (401 without any)" || bad "fallback /status code=$sjc"
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 
-# --- (5d) POST API battery (H01: PIN gate + policy + argv contract) -----------
+# --- (5d) POST API battery (H01: session gate + policy + argv contract) -------
 sec "5d. status-server POST API (H01)"
 # argv-logging stub: every invocation appends its argv for connect-shape asserts
 STW="$B/stub-travel-wan-args"
 printf '#!/bin/bash\n{ printf "%%s\\n" "$*"; } >> %s/tw-args.log\nprintf "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"
 chmod +x "$STW"
 SRV_STATE="$B/srv-state.json"   # lan_ip=127.0.0.1 (runner-bindable)
-# Two-factor helper (Todo 6): every write POST needs X-Session + body.pin.
+# Two-factor helper (Todo 6): ADMIN writes need X-Session + body.pin (S03).
 # login_psk PORT PSK logs in and echoes the token on stdout (never logged).
 login_psk() {
   curl -s -X POST -H 'Content-Type: application/json' \
@@ -393,9 +393,9 @@ start_srv() { # pin -> server w/ PIN=$1 + ADMIN_PSK (Todo 6 two-factor needs bot
 }
 stop_srv() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; : > "$B/tw-args.log" 2>/dev/null; }
 
-# deny-by-default (admin todo 1): a client write on a PIN-UNSET router has
-# nothing to compare -> 403 {"error":"pin_unset"} (the envelope split; the
-# wrong-pin-with-PIN-set case is the next server below). No session involved.
+# deny-by-default (S03): a client write with NO session -> 401 auth (the
+# session is the credential; pin_unset survives only on ADMIN writes). The
+# PIN-set server below covers the session-authorised client-write path.
 start_srv ""
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","ssid":"A"}' http://127.0.0.1:18090/api/wan/connect)
@@ -420,14 +420,14 @@ r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain'
 r=$(python3 -c "print('{\"pad\":\"' + 'x'*9000 + '\"}')" | curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' --data-binary @- http://127.0.0.1:18090/api/wan/connect)
 [[ "$r" == "413" ]] && ok "oversized body -> 413" || bad "size code=$r"
-# happy path: a session rides along harmlessly on a client write (neither
-# required nor rejected); correct pin -> 200, list-form argv.
+# happy path: a session authorises a client write (S03: session required;
+# the body pin is ignored) -> 200, list-form argv.
 TOK_5D=$(login_psk 18090 "${TESTADMIN_PSK:-AdminPass99}")
 resp=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
   -H "X-Session: $TOK_5D" -d '{"pin":"1234","ssid":"HotelNet","psk":"secret1"}' http://127.0.0.1:18090/api/wan/connect)
 code="${resp##*$'\n'}"
 body="${resp%$'\n'*}"
-[[ "$code" == "200" ]] && ok "connect happy path (pin + optional session) -> 200" || bad "connect code=$code resp=$resp"
+[[ "$code" == "200" ]] && ok "connect happy path (session required; body pin ignored, S03) -> 200" || bad "connect code=$code resp=$resp"
 grep -qF 'connect HotelNet secret1' "$B/tw-args.log" && ok "stub received list-form argv (connect ssid psk)" || bad "argv: $(cat "$B/tw-args.log" 2>/dev/null | head -1)"
 grep -qF 'secret1' "$body" && bad "PSK echoed in connect response (forbidden)" || ok "no PSK in connect response"
 # SSID policy: leading dash rejected before any subprocess call
@@ -514,8 +514,8 @@ PORTAL_START() {
 }
 PORTAL_STOP() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; }
 PORTAL_START
-# admin todo 1: client writes arm on body.pin alone — wrong pin -> 403 pin;
-# correct pin -> 200 (no session involved at any step).
+# S03: a client write requires a session — a wrong pin with NO session is
+# 401; with a session the body pin is ignored -> 200 (pin is admin-only).
 r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"wrong","ssid":"A"}' http://127.0.0.1:18094/api/wan/connect)
 [[ "$r" == "401" ]] && ok "5g wrong PIN, no session -> 401 (S03: session required)" || bad "5g wrong-pin code=$r"
@@ -1447,10 +1447,10 @@ grep -q 'OK: AP verified beaconing' "$c3/apconfig.log" 2>/dev/null \
 
 # --- (5aa) scan/status POST desync: connection closed, no smuggled request ----
 sec "5aa. scan/status POST closes connection (smuggled keep-alive body not served)"
-# admin todo 1 re-scope: POST /api/wan/scan and /api/wan/status READ their
-# body now (body.pin is the client credential). The deny path still closes
-# the socket: an UNAUTHENTICATED (wrong/absent pin) request leaves the body
-# unparsed on the floor, and under HTTP/1.1 keep-alive those leftover bytes
+# S03: POST /api/wan/scan and /api/wan/status are session-gated, and the
+# session check fires BEFORE the body is read — so an unauthenticated
+# request's body is left unread on the socket. The deny path still closes
+# the connection: the body stays unparsed, and under HTTP/1.1 those bytes
 # would be parsed as the next request on the same socket. The response must
 # carry Connection: close (after the status line) and the server must close
 # the socket so the smuggled request never executes. One socket, one
@@ -1466,15 +1466,15 @@ TRAVELWAN_BIN="$STWT" TRAVELROUTER_STATE_FILE="$B/srv-state.json" \
 TRAVELROUTER_STATUS_PORT=18097 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-c4.log" 2>&1 &
 C4PID=$!
 wait_healthy 18097 || true
-# The body IS read now: a POST whose body fails policy (no length, bad CSRF
-# header) degrades to 401 with no pin compared — the close header still fires
+# S03: scan/status deny on the session BEFORE any body read — a bodyless
+# POST still gets 401 (no session), no pin compared — the close header fires
 # on every deny (the smuggling defense), verified on the wire below.
 b411=$(curl -s -D - -o /dev/null -X POST \
   -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
   http://127.0.0.1:18097/api/wan/scan 2>/dev/null | tr -d '\r')
 echo "$b411" | head -1 | grep -q ' 401 ' \
   && echo "$b411" | grep -qi '^connection: close$' \
-  && ok "5aa bodyless POST /api/wan/scan -> 401 + Connection: close (body policy degrade)" \
+  && ok "5aa bodyless POST /api/wan/scan -> 401 + Connection: close (session gate; body never read)" \
   || bad "5aa bodyless scan POST: $(echo "$b411" | head -3 | tr '\n' '|')"
 
 python3 - "$B/c4-transcript.txt" <<'PYEOF'
@@ -1536,7 +1536,7 @@ if not (ok_hdr and ok_order and ok_close and ok_eof):
 print("DESYNC-OK")
 PYEOF
 rc=$?
-[[ $rc -eq 0 ]] && ok "5aa scan POST: 401 (no pin) closes connection; smuggled GET not served" \
+[[ $rc -eq 0 ]] && ok "5aa scan POST: 401 (no session) closes connection; smuggled GET not served" \
   || bad "5aa desync battery failed rc=$rc (smuggled request may have executed; see $B/c4-transcript.txt)"
 transcript=$(cat "$B/c4-transcript.txt" 2>/dev/null | head -c 400)
 echo "$transcript" | grep -q '^HTTP/1' && ok "5aa transcript captures real socket bytes" \
@@ -2234,9 +2234,9 @@ rc=$?
 # Auth plan Todo 6 (C3/C4 server): POST /api/auth/login trades the admin PSK
 # (constant-time compare, throttled by the SAME _PIN_FAILS counter) for a
 # stateless HMAC-signed X-Session token (survives a process restart — no
-# server-side store). Gated reads accept the token; every write POST needs a
-# valid session AND a correct body.pin (two-factor); SETUP_PIN-unset ->
-# 403 pin_unset (session holders only). /health and / stay open.
+# server-side store). Gated reads accept the token; every write needs a valid
+# session, and ADMIN writes additionally need a correct body.pin;
+# SETUP_PIN-unset -> 403 pin_unset on those admin writes. /health and / stay open.
 sec "5ak. admin-PSK login + stateless session + two-factor writes"
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"FixtureNet","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STWAK="$B/stub-travel-wan-ak"
@@ -2330,16 +2330,16 @@ for ep in status api/wan/known api/wan/psks-manage; do
     if [[ "$ep" == "api/wan/psks-manage" ]]; then
       want="401"   # admin read: no/bad session -> 401
     else
-      want="401"   # client read: absent pin (header never sent) -> 401 auth
+      want="401"   # client read: no valid session token -> 401 auth (S03)
     fi
     [[ "$r" == "$want" ]] && ok "5ak(2) GET /$ep bad/expired/missing session -> $want" || bad "5ak(2) /$ep token=<len=${#t}> code=$r"
     cb=$(curl -s -H "X-Session: garbage-token" "http://127.0.0.1:18310/$ep" 2>/dev/null)
     [[ "$cb" == *'"auth"'* ]] || bad "5ak(2) /$ep 401 body=[$cb]"
   done
 done
-# (3) client write classes arm on body.pin alone (session optional); psks-manage
-#     /apconfig remain two-factor. session + correct pin -> 200 envelope;
-#     session + wrong pin / no pin -> 403 {"error":"pin"}
+# (3) client writes need the session alone (body.pin ignored, S03); psks-manage
+#     /apconfig are admin writes and stay two-factor. session -> 200 envelope
+#     for a client write; an ADMIN write answers 403 {"error":"pin"} on a bad pin.
 w_ok=$(ak_write "$TOK" "")
 [[ "$w_ok" == 200'|'*'"lines"'* ]] && ok "5ak(3) write + session -> 200 envelope (S03: PIN not required)" || bad "5ak(3) write good: [$w_ok]"
 for ep in scan status disconnect recheck; do
@@ -2348,10 +2348,10 @@ for ep in scan status disconnect recheck; do
     "http://127.0.0.1:18310/api/wan/$ep" 2>/dev/null)
   [[ "$r" == "200" ]] && ok "5ak(3) POST /api/wan/$ep + session + pin -> 200" || bad "5ak(3) /$ep code=$r"
 done
-# (4) SETUP_PIN unset (unprovisioned): the write envelope still 403s with
-# {"error":"pin_unset"} — the credential model (session on admin writes)
-# decides WHO may learn the router's provisioning state; the pin_unset
-# distinction itself is unchanged for session holders.
+# (4) SETUP_PIN unset (unprovisioned): login still works; a session holder's
+# CLIENT write -> 200 (pin_unset is an ADMIN-write concern post-S03), and a
+# no-session write -> 401. The session (plus PIN on ADMIN writes) decides
+# WHO may learn the router's provisioning state.
 ak_start_nopin 18311 AdminPass99
 np=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -d '{"psk":"AdminPass99"}' \
@@ -2364,10 +2364,10 @@ npw=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:18311/api/wan/connect 2>/dev/null)
 echo "nopin-write -> ${npw##*$'\n'} body=${npw%$'\n'*}" >> "$AKLOG"
 [[ "$npw" == *$'\n'200 ]] && ok "5ak(4) PIN unset + session -> 200 (S03: PIN not required)" || bad "5ak(4) nopin write: [$npw]"
-# pin_unset IS the answer for a client write on an un-provisioned router
-# (connect is a CLIENT write: no session involved at any step; the
-# {"error":"pin_unset"} body tells the admin page to provision, and the
-# 403-vs-401 split for WRONG pins is covered on PIN-set servers above).
+# Post-S03 a client write on an un-provisioned router is a session question,
+# not a pin one: with a session -> 200 (above), without one -> 401 (below).
+# pin_unset is answered only on ADMIN writes, and the 403-vs-401 split for
+# WRONG pins is covered on the PIN-set servers above.
 npns=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' -d '{"ssid":"HotelNet"}' \
   http://127.0.0.1:18311/api/wan/connect 2>/dev/null)
