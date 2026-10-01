@@ -3666,6 +3666,43 @@ kill $SPID_5P 2>/dev/null; wait $SPID_5P 2>/dev/null
 kill $SPID_5P 2>/dev/null; wait $SPID_5P 2>/dev/null
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 
+# --- (5z) Bookworm instance_id stamp (S07) -------------------------------------
+# S07/T01: Bookworm flashes must carry a Trixie-format instance_id so
+# `pi register` (pi:137/158-161) can bind pending_flashes to the device.
+# Runs the provisioner against a REPO COPY in a tmpdir (never the real repo:
+# it would write inventory.yaml there) with a plain scratch bootfs dir.
+sec "5z. Bookworm instance_id stamp (S07)"
+BW="$TMP/s07-repo"
+rsync -a --exclude .git --exclude .omo "$ROOT/" "$BW/"
+printf 'WIFI_SSID=T\nWIFI_PSK=abcdefgh\nWIFI_COUNTRY=US\nPI_USERNAME=pi\nPI_PASSWORD=pw123456\nTIMEZONE=America/Los_Angeles\nLOCALE=en_US.UTF-8\nKEYMAP=us\nROLE=base\n' > "$BW/.env"
+mkdir -p "$BW/bootfs"
+printf 'console=serial0,115200 console=tty1 root=PARTUUID=00000000-02 rootfstype=ext4\n' > "$BW/bootfs/cmdline.txt"
+mkdir -p "$TMP/s07-stub"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/s07-stub/diskutil"; chmod +x "$TMP/s07-stub/diskutil"
+(cd "$BW" && PATH="$TMP/s07-stub:$PATH" ./provision-bookworm.sh base "$PWD/bootfs" > "$TMP/s07-provision.log" 2>&1); bwrc=$?
+grep -qE '^instance_id stamped: rpios-' "$TMP/s07-provision.log" \
+  && ok "5z-0 provisioner ran in repo copy (rc=$bwrc, id stamped)" || bad "5z-0 provisioner failed in repo copy (rc=$bwrc): $(tail -2 "$TMP/s07-provision.log" | tr '\n' ' ')"
+# 5z-1: stamp format + inert-file shape (dsmode second line, Trixie shape).
+p=$(sed -n '1s/^instance_id: //p' "$BW/bootfs/meta-data")
+if [[ "$p" =~ ^rpios-[0-9]{14}-[0-9]+$ ]]; then ok "5z-1 stamp instance_id format ($p)"; else bad "5z-1 stamp: '$p'"; fi
+[[ "$(sed -n '2p' "$BW/bootfs/meta-data")" == "dsmode: local" ]] && ok "5z-1 dsmode: local second line" || bad "5z-1 dsmode line 2: $(sed -n '2p' "$BW/bootfs/meta-data")"
+# 5z-2: pending entry binding — last pending_flashes instance_id == stamped id.
+pend5z=$(yq -r '.pending_flashes[-1].instance_id' "$BW/inventory.yaml")
+if [[ -n "$pend5z" && "$pend5z" != "null" && "$pend5z" == "$p" ]]; then ok "5z-2 pending entry instance_id == stamp"; else bad "5z-2 pending last='$(yq -r '.pending_flashes[-1].instance_id' "$BW/inventory.yaml" 2>/dev/null)' stamp='$p'"; fi
+# 5z-3: rendered firstrun — persist lines present AND before cmdline cleanup.
+if bash -n "$BW/bootfs/firstrun.sh" 2>"$TMP/s07-n.err"; then ok "5z-3 bash -n rendered firstrun.sh"; else bad "5z-3 firstrun syntax: $(cat "$TMP/s07-n.err")"; fi
+grep -q 'mkdir -p /var/lib/rpi-project' "$BW/bootfs/firstrun.sh" && ok "5z-3 persist mkdir present" || bad "5z-3 persist mkdir missing"
+grep -qF '/var/lib/rpi-project/instance_id' "$BW/bootfs/firstrun.sh" && ok "5z-3 persist cp target present" || bad "5z-3 persist cp missing"
+pline5z=$(grep -n 'mkdir -p /var/lib/rpi-project' "$BW/bootfs/firstrun.sh" | head -1 | cut -d: -f1)
+cline5z=$(grep -n 'cleaning cmdline.txt hook' "$BW/bootfs/firstrun.sh" | head -1 | cut -d: -f1)
+if [[ -n "$pline5z" && -n "$cline5z" && "$pline5z" -lt "$cline5z" ]]; then ok "5z-3 persist line $pline5z < cmdline-cleanup line $cline5z"; else bad "5z-3 line order: persist=$pline5z cleanup=$cline5z"; fi
+# 5z-4: real-repo source regression pins (no scratch run; grep the real files).
+grep -qF 'printf '\''instance_id: %s\ndsmode: local\n'\'' "$INSTANCE_ID" > "$BOOT/meta-data"' "$ROOT/provision-bookworm.sh" \
+  && ok "5z-4 real provisioner stamps instance_id" || bad "5z-4 real provisioner stamp line missing"
+grep -qF 'mkdir -p /var/lib/rpi-project' "$ROOT/provision-bookworm.sh" && ok "5z-4 real firstrun persist mkdir" || bad "5z-4 persist mkdir missing in real provisioner"
+grep -qF '/var/lib/rpi-project/instance_id' "$ROOT/provision-bookworm.sh" && ok "5z-4 persist cp target" || bad "5z-4 persist cp missing in real provisioner"
+rm -rf "$BW" "$TMP/s07-stub"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

@@ -35,6 +35,10 @@ set -a; source "$REPO/.env"; set +a
 : "${WIFI_SSID:?}" "${WIFI_PSK:?}" "${WIFI_COUNTRY:?}" \
   "${PI_USERNAME:?}" "${PI_PASSWORD:?}" "${TIMEZONE:?}" "${LOCALE:?}" "${KEYMAP:?}"
 
+# instance_id: same Trixie format as provision.sh; lets `pi register` bind
+# this flash to its pending_flashes entry at registration time.
+INSTANCE_ID="rpios-$(date +%Y%m%d%H%M%S)-$RANDOM"
+
 ROLE="${ROLE_ARG:-${ROLE:-base}}"
 # ROLES_PATHS: colon-separated list of dirs to search for <role>/install.sh.
 # Defaults to $REPO/roles (backwards-compatible). External sibling repos can
@@ -280,6 +284,13 @@ elif [ -f /boot/role-setup.service ]; then
 fi
 systemctl enable role-setup.service
 
+# Persist the provision-time instance_id to the Pi's own filesystem so the
+# id survives firstrun self-removal / later bootfs wipes (pi register may
+# still hold a pending-flash record keyed to it for a while).
+mkdir -p /var/lib/rpi-project
+cp /boot/firmware/meta-data /var/lib/rpi-project/instance_id 2>/dev/null \
+  || cp /boot/meta-data /var/lib/rpi-project/instance_id 2>/dev/null || true
+
 # CRITICAL: strip the systemd.run hook from cmdline.txt BEFORE the success
 # reboot, exactly as the official rpi-imager firstrun.sh does. Without this,
 # the next boot re-enters kernel-command-line.target with a now-missing
@@ -313,12 +324,20 @@ fi
 # -----------------------------------------------------------------------------
 rm -f "$BOOT/user-data" "$BOOT/network-config" "$BOOT/meta-data"
 
+# instance_id stamp: lets `pi register` bind this flash to a serial later
+# (same mechanism/file as the Trixie path; bootfs meta-data is read as an
+# inert file - Bookworm has no cloud-init and none is needed). Written
+# AFTER the stale-file rm above so cleanup never eats the fresh stamp.
+printf 'instance_id: %s\ndsmode: local\n' "$INSTANCE_ID" > "$BOOT/meta-data"
+echo "instance_id stamped: $INSTANCE_ID"
+
 # Record pending flash to inventory.
 if command -v yq >/dev/null 2>&1; then
   INV="$REPO/inventory.yaml"
   [[ -f "$INV" ]] || printf '%s\n' '{}' > "$INV"
   TS="$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\([+-][0-9][0-9]\)\([0-9][0-9]\)$/\1:\2/')"
   yq -i ".pending_flashes += [{
+    \"instance_id\": \"$INSTANCE_ID\",
     \"flashed_at\": \"$TS\", \"image\": \"bookworm-armhf-lite\", \"role\": \"$ROLE\",
     \"pi_username\": \"$PI_USERNAME\", \"wifi_ssid\": \"$WIFI_SSID\", \"os\": \"bookworm\"
   }]" "$INV"
