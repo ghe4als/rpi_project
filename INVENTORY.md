@@ -147,6 +147,9 @@ If a Pi is ever re-flashed without going through `pi register`, the old flash hi
 
 As of S07 the Bookworm path (`provision-bookworm.sh`) stamps the same `instance_id` as the Trixie path, so Bookworm pending entries bind too (previously they could not).
 
+Pre-S07 Bookworm entries (no `instance_id`) can never bind; to drop them once no current flash is awaiting `pi register`:
+`yq -i '.pending_flashes = (.pending_flashes // [] | map(select(.instance_id != null)))' inventory.yaml`
+
 ## Privacy note
 
 `inventory.yaml` is gitignored because it contains:
