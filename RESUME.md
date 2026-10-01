@@ -29,6 +29,12 @@ independent re-sweep found no 19th site.
 - F3 stale-deployment (security-finishing) CLOSED by the same re-flash: deployed
   /admin + all /api/admin/* reads return 200 (were 404 on the Sep-22 build).
 - Working tree: CLEAN.
+- 2026-10-01 docs split: the travel-router portion of README.md (10 sections,
+  ~300 lines) moved verbatim into `roles/travel-router/README.md` (the role's
+  full manual, + Feature parking lot for future-wave ideas). README keeps the
+  roles table, threat-model paragraph, and a compact quick-start + pointer;
+  suite pinned-strings preserved (Threat model, PSK-in-argv accepted risk, all
+  5 TRAVELROUTER_ vars). Gate: SUITE GREEN 605/0 post-split.
 - Carried follow-ups (comment-only, verified real, outside S06b's scoped
   lines): status-server.py:1138 "still a PIN guess" stale rationale;
   validate-local.sh:332-333 "absent pin is 401" mixed framing;
