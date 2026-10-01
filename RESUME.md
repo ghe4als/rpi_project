@@ -20,7 +20,14 @@ independent re-sweep found no 19th site.
 - S06b, S06c, S06d ALL COMPLETE. S06d plan 5/5 todos + F1-F4 + 5 success
   criteria ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
   .omo/evidence/s06d-comment-truth/ (6 run logs).
-- Suite gate: monotonic; **593 passed, 0 failed**, 3 consecutive runs.
+- Suite gate: monotonic; **593 passed, 0 failed** at the S06d gate (historical);
+  **605 passed, 0 failed** post-S07 (T01/T02 x3 + independent re-run each).
+- S07 LIVE BIND PROVEN on hardware 2026-10-01: fresh Bookworm flash
+  rpios-20261001115252-5789 -> pi register bound it to rpi-8e21bb (first
+  Bookworm flash ever to bind flash history); flashed_at/image/role/os recorded
+  in the device's flashes list. Evidence: .omo/evidence/hw-2026-10-01-reflash/.
+- F3 stale-deployment (security-finishing) CLOSED by the same re-flash: deployed
+  /admin + all /api/admin/* reads return 200 (were 404 on the Sep-22 build).
 - Working tree: CLEAN.
 - Carried follow-ups (comment-only, verified real, outside S06b's scoped
   lines): status-server.py:1138 "still a PIN guess" stale rationale;
