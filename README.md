@@ -531,6 +531,8 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
   `inventory.yaml`.
 - `provision-bookworm.sh` (Bookworm) — writes a `firstrun.sh` + `systemd.run=`
   hook (Bookworm Lite has no cloud-init), otherwise stages the same role tree.
+  It also stamps an `instance_id` (same file/mechanism/format as the Trixie
+  path) so `pi register` binds flash history identically.
 - `role-setup.service.tmpl` — oneshot systemd unit that runs
   `/boot/firmware/role/install.sh` after `network-online.target`. The
   dispatcher sources `role.env` and execs the selected role's `install.sh`.

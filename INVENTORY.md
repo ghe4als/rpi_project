@@ -145,6 +145,8 @@ See `README.md` for the full walkthrough.
 
 If a Pi is ever re-flashed without going through `pi register`, the old flash history stays — only the device record's `last_ip`/`last_seen` update via `pi discover`.
 
+As of S07 the Bookworm path (`provision-bookworm.sh`) stamps the same `instance_id` as the Trixie path, so Bookworm pending entries bind too (previously they could not).
+
 ## Privacy note
 
 `inventory.yaml` is gitignored because it contains:

@@ -3701,6 +3701,20 @@ grep -qF 'printf '\''instance_id: %s\ndsmode: local\n'\'' "$INSTANCE_ID" > "$BOO
   && ok "5z-4 real provisioner stamps instance_id" || bad "5z-4 real provisioner stamp line missing"
 grep -qF 'mkdir -p /var/lib/rpi-project' "$ROOT/provision-bookworm.sh" && ok "5z-4 real firstrun persist mkdir" || bad "5z-4 persist mkdir missing in real provisioner"
 grep -qF '/var/lib/rpi-project/instance_id' "$ROOT/provision-bookworm.sh" && ok "5z-4 persist cp target" || bad "5z-4 persist cp missing in real provisioner"
+# 5z-5: offline bind assert — replica of pi:158-161 yq match expr (nothing
+# extracted from `pi` at runtime) vs scratch inventory: entry[1] has the id.
+yq -n '
+  .pending_flashes = [{"image": "a"}, {"instance_id": "s07-bind-probe-1", "image": "b"}]
+' > "$TMP/s07-bind-inv.yaml"
+bind_expr='
+      .pending_flashes // [] |
+      to_entries | map(select(.value.instance_id == "'"INST"'")) | .[0].key // ""
+    '
+bind_hit=$(yq -r "${bind_expr/INST/s07-bind-probe-1}" "$TMP/s07-bind-inv.yaml")
+bind_miss=$(yq -r "${bind_expr/INST/no-such-id}" "$TMP/s07-bind-inv.yaml")
+[[ "$bind_hit" == "1" && ( -z "$bind_miss" || "$bind_miss" == "null" ) ]] \
+  && ok "5z-5 offline bind: match resolves pending[1]; no-match empty/null" \
+  || bad "5z-5 offline bind: hit='$bind_hit' (want 1) miss='$bind_miss' (want empty/null)"
 rm -rf "$BW" "$TMP/s07-stub"
 
 # --- (6) scope assert ---------------------------------------------------------

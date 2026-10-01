@@ -41,7 +41,7 @@ independent re-sweep found no 19th site.
 2. Optional (deliberately NOT done — cost/benefit): a banned-phrase assert in
    the suite would structurally prevent the prose drift from recurring. Not
    warranted for a one-time 38-line comment fix; revisit only if drift recurs.
-3. Hardware smoke test: DONE (see Current state). Remaining known gap: Bookworm flashes cannot bind flash history — provision-bookworm.sh records pending_flashes without an instance_id and deletes /boot/firmware/meta-data, so pi register never matches (Bookworm Lite has no cloud-init). Affects every Bookworm flash; unfixed.
+3. Hardware smoke test: DONE (see Current state). Remaining known gap: Bookworm flashes cannot bind flash history — provision-bookworm.sh records pending_flashes without an instance_id and deletes /boot/firmware/meta-data, so pi register never matches (Bookworm Lite has no cloud-init). Affects every Bookworm flash; FIXED in S07 (commit bf45e5d): provision-bookworm.sh stamps a Trixie-format instance_id onto bootfs/meta-data, records it in the pending entry, and firstrun persists it to /var/lib/rpi-project/instance_id; suite 604/0 x3. The stranded pre-S07 pending entries remain unbindable by design; live bind proof lands on the next natural re-flash.
 
 ## Standing rules (do not relearn)
 
