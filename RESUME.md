@@ -30,6 +30,7 @@ independent re-sweep found no 19th site.
 - Owner decision: F3 stale deployment (live Pi rpi-8e21bb predates the
   S-wave) — re-provision will pick up everything now.
 - S-wave HARDWARE-VERIFIED 2026-09-30 on rpi-8e21bb (fresh Bookworm travel-router flash): all S-wave HTTP routes live — GET / 200, GET /setup 404 (S04), GET /status 401 (S02), GET /admin 200, /health {"status":"ok"}, public / carries the Admin link (S06b), /api/status = {ap_ssid,wan_ssid,internet}, no device-data leak; PIN env staged 0600; wrong-PSK login 401. Captive-portal 404 on /generate_204 is CORRECT-PER-DESIGN (routed mode removes the portal drop-in; standalone-only feature).
+- S07 COMPLETE (2026-09-30): the Bookworm flash-binding gap is FIXED — provision-bookworm.sh mints a Trixie-format instance_id, stamps bootfs/meta-data (after the stale-file cleanup), records it first in the pending_flashes entry, and firstrun persists it to /var/lib/rpi-project/instance_id. Commits bf45e5d (code + 11 suite asserts) and 02a6bc7 (docs + offline bind assert + RESUME flip). Suite: 605 passed / 0 failed, x3 consecutive, plus one independent post-commit re-run. Live bind proof deferred to the next natural re-flash (current Pi predates the fix; post-switch re-probe env-blocked — Pi unreachable from home LAN).
 - Prior work travel-router-security-finishing PAUSED (its F3 landed as a
   root-cause-proven stale deployment).
 
@@ -41,7 +42,7 @@ independent re-sweep found no 19th site.
 2. Optional (deliberately NOT done — cost/benefit): a banned-phrase assert in
    the suite would structurally prevent the prose drift from recurring. Not
    warranted for a one-time 38-line comment fix; revisit only if drift recurs.
-3. Hardware smoke test: DONE (see Current state). Remaining known gap: Bookworm flashes cannot bind flash history — provision-bookworm.sh records pending_flashes without an instance_id and deletes /boot/firmware/meta-data, so pi register never matches (Bookworm Lite has no cloud-init). Affects every Bookworm flash; FIXED in S07 (commit bf45e5d): provision-bookworm.sh stamps a Trixie-format instance_id onto bootfs/meta-data, records it in the pending entry, and firstrun persists it to /var/lib/rpi-project/instance_id; suite 604/0 x3. The stranded pre-S07 pending entries remain unbindable by design; live bind proof lands on the next natural re-flash.
+3. Hardware smoke test: DONE (see Current state). Remaining known gap: Bookworm flashes cannot bind flash history — provision-bookworm.sh records pending_flashes without an instance_id and deletes /boot/firmware/meta-data, so pi register never matches (Bookworm Lite has no cloud-init). Affects every Bookworm flash; FIXED in S07 (commit bf45e5d): provision-bookworm.sh stamps a Trixie-format instance_id onto bootfs/meta-data, records it in the pending entry, and firstrun persists it to /var/lib/rpi-project/instance_id; suite 604/0 x3 at T01, 605/0 x3 after T02, re-verified 605/0 independently post-commit. The stranded pre-S07 pending entries remain unbindable by design; live bind proof lands on the next natural re-flash.
 
 ## Standing rules (do not relearn)
 

@@ -2,7 +2,7 @@
 Last updated: 2026-09-29
 
 ## Status
-Current task: none — S06b + S06c complete; next open items are the optional hardware smoke (tasks/WQ-hardware-qa.md) or a Pi re-flash (live Pi predates the S-wave)
+Current task: none — S-wave hardware-verified; S07 shipped (Bookworm instance_id bind: bf45e5d + 02a6bc7). Remaining open: live bind proof at the next natural re-flash.
 Last completed: S06c ✅ (fde41bd was the S06b tail; this cleanup commits on top)
 
 The authoritative spec for the travel-router role is
