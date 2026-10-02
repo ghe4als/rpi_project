@@ -2985,9 +2985,12 @@ grep -qF 'admin-last-ssid' "$A/admin.html" \
 grep -qF 'id="ap-hidden"' "$A/admin.html" \
   && ok "5an(iv) admin.html has the Hide network checkbox (id=ap-hidden)" \
   || bad "5an(iv) Hide network checkbox MISSING (id=ap-hidden)"
+grep -qF 'body.hidden = !hiddenChecked' "$A/admin.html" \
+  && ok "5an(iv) AP dialog posts HIDE-semantic hidden (inverted from the broadcast checkbox)" \
+  || bad "5an(iv) hidden polarity BROKEN (expected body.hidden = !hiddenChecked)"
 grep -qF 'body.hidden = hiddenChecked' "$A/admin.html" \
-  && ok "5an(iv) AP dialog posts hidden:false|true from the checkbox" \
-  || bad "5an(iv) hidden checkbox wiring MISSING (body.hidden = hiddenChecked)"
+  && bad "5an(iv) hidden polarity BUG REINTRODUCED (body.hidden = hiddenChecked posts broadcast-checked as hidden-true -> every save hides the AP; 2026-10-01 incident)" \
+  || ok "5an(iv) un-inverted save polarity absent (2026-10-01 incident regression guard)"
 grep -qF 're-add the network manually' "$A/admin.html" \
   && ok "5an(iv) rejoin warning textContent present" \
   || bad "5an(iv) rejoin warning text MISSING"

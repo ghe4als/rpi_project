@@ -911,7 +911,12 @@ document.getElementById("ap-save").addEventListener("click", function () {
   var body = { pin: pin };
   if (ssidVal) { body.ssid = ssidVal; }
   if (pskVal) { body.psk = pskVal; }
-  body.hidden = hiddenChecked;
+  // Checkbox polarity: "ap-hidden" is BROADCAST semantics (checked = beacon
+// on, per the label + refreshApInfo preloading checked=!d.hidden), but the
+// apconfig API contract is HIDE semantics (hidden:true => ignore_broadcast_ssid=2).
+// The save paths therefore INVERT; sending .checked raw would flip the AP to
+// hidden on every save (2026-10-01 incident: randomize save hid the AP).
+body.hidden = !hiddenChecked;
   if (!body.ssid && !body.psk) {
     apMsg("enter a new SSID and/or password", "warn");
     return;
@@ -950,7 +955,7 @@ document.getElementById("ap-confirm-save").addEventListener("click", function ()
   var body = { pin: pin };
   if (ssidVal) { body.ssid = ssidVal; }
   if (pskVal) { body.psk = pskVal; }
-  body.hidden = document.getElementById("ap-hidden").checked;
+  body.hidden = !document.getElementById("ap-hidden").checked;
   document.getElementById("ap-confirm").close();
   doApSave(body);
 });
