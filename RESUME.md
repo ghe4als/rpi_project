@@ -65,11 +65,9 @@ independent re-sweep found no 19th site.
   roles table, threat-model paragraph, and a compact quick-start + pointer;
   suite pinned-strings preserved (Threat model, PSK-in-argv accepted risk, all
   5 TRAVELROUTER_ vars). Gate: SUITE GREEN 605/0 post-split.
-- Carried follow-ups (comment-only, verified real, outside S06b's scoped
-  lines): status-server.py:1138 "still a PIN guess" stale rationale;
-  validate-local.sh:332-333 "absent pin is 401" mixed framing;
-  validate-local.sh:1039 "(body.pin;" stale fragment. All one-line edits,
-  non-behavioral.
+- Carried follow-ups (comment-only): the three stale-comment fixes were later
+  resolved (all three phrases are now GONE: status-server.py "still a PIN guess",
+  validate-local.sh "absent pin is 401", "(body.pin;"). Nothing outstanding.
 - Owner decision: F3 stale deployment (live Pi rpi-8e21bb predates the
   S-wave) — re-provision will pick up everything now.
 - S-wave HARDWARE-VERIFIED 2026-09-30 on rpi-8e21bb (fresh Bookworm travel-router flash): all S-wave HTTP routes live — GET / 200, GET /setup 404 (S04), GET /status 401 (S02), GET /admin 200, /health {"status":"ok"}, public / carries the Admin link (S06b), /api/status = {ap_ssid,wan_ssid,internet}, no device-data leak; PIN env staged 0600; wrong-PSK login 401. Captive-portal 404 on /generate_204 is CORRECT-PER-DESIGN (routed mode removes the portal drop-in; standalone-only feature).

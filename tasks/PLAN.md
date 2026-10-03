@@ -42,10 +42,10 @@ Order: R01 → R02 → R03 (locks R01/R02) → R04 (independent, may land first)
 Explicitly deferred: a real podman arm64 integration test and a QEMU `raspi4b`
 full-boot test (owner chose local-suite-only for now).
 
-## Wave U — status page: IP + hierarchy (PROPOSED, not executed)
-- [ ] U01 — Public status: show router LAN IP (`lan_ip`) + fetch-failure row ⬜ `tasks/U01-public-status-lan-ip.md`
-- [ ] U02 — Admin page: show WAN (hotel) IP + WAN iface (`wan_*`) ⬜ `tasks/U02-admin-wan-ip.md`
-- [ ] U03 — Status page hierarchy: heading must read as a heading, not a key ⬜ `tasks/U03-status-page-hierarchy.md`
+## Wave U — status page: IP + hierarchy (COMPLETE ✅)
+- [x] U01 — Public status: show router LAN IP (`lan_ip`) + fetch-failure row ✅ `a20de7c` `tasks/U01-public-status-lan-ip.md`
+- [x] U02 — Admin page: show WAN (hotel) IP + WAN iface (`wan_*`) ✅ `a20de7c` `tasks/U02-admin-wan-ip.md`
+- [x] U03 — Status page hierarchy: heading must read as a heading, not a key ✅ `a20de7c` `tasks/U03-status-page-hierarchy.md`
 
 Context: public `GET /api/status` is privacy-minimal and the suite asserts it
 leaks no IP (§5p(2)/§5ai(1)). Owner decision: expose `lan_ip` publicly (the
@@ -54,8 +54,7 @@ report was a VISUAL issue (heading vs nested rows not distinguished) — U03.
 Order: U01 and U03 both edit `_STATUS_HTML` (rows vs CSS) — fine either way;
 U02 independent. U03 is a UI change → needs a visual-QA screenshot.
 
-**Wave U status: CODE COMPLETE + committed (a20de7c), suite 616/0.**
-Outstanding: U03 visual-QA screenshot (not yet taken).
+**Wave U status: COMPLETE. Committed `a20de7c`, suite 616/0, visual-QA PASSED.**
 
 ## Wave V — hide SSID on the fly (COMPLETE ✅)
 - [x] V01 — Admin: "Apply hide/show now" button + confirm dialog (posts hidden-only) ✅ `84bd2a2` `tasks/V01-admin-hide-toggle.md`
