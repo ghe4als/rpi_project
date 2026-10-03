@@ -1,4 +1,4 @@
-# RESUME — R01 (first-boot apt retry) SHIPPED + HW-verified; R02–R04 planned
+# RESUME — R wave COMPLETE (R01–R04); R01 hardware-verified; suite 612/0
 
 <!--
 SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
@@ -17,13 +17,15 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
-- **R01 SHIPPED (3f73061) + HARDWARE-VERIFIED 2026-10-03.** Trixie arm64 first
-  boot had aborted `role-setup` because `roles/base/install.sh` ran
-  `apt-get update` under `set -euo pipefail` with no retry while the network was
-  not yet usable. New `roles/base/assets/retry.sh` wraps the apt calls in base +
-  travel-router (bounded retry, backoff, then hard-fail). Suite **606/0**;
-  owner re-flashed and the Pi came up fine. Plan files R01–R04 (wave R) are
-  committed. R02–R04 written, NOT executed — see tasks/PLAN.md.
+- **R wave COMPLETE (R01 `3f73061` + HW-verified, R02 `abd4562`, R03 `66c3fb0`,
+  R04 `a773ea0`).** Root cause: Trixie arm64 first boot aborted `role-setup`
+  because `roles/base/install.sh` ran `apt-get update` under `set -euo pipefail`
+  with no retry while the network was not yet usable. Fixes: bounded apt retry
+  then hard-fail (new `roles/base/assets/retry.sh`); advisory route+DNS wait
+  before the NTP/apt gate (`NET_WAIT_SEC`); §5k3 regression battery; bootfs
+  failure diagnostics (`role-setup-dump.sh` → `/boot/firmware/role-setup-debug.log`).
+  Suite **612/0**. R01 hardware-verified 2026-10-03 (owner re-flash came up
+  fine); R02–R04 suite-green only.
 - The `armhf Packages` apt warning and `cc_netplan_nm_patch` are both RED
   HERRINGS (RPi OS arm64 intentionally adds armhf as a foreign arch; the
   cloud-init module warning is cosmetic on stock Trixie). Do not chase them.
@@ -59,12 +61,10 @@ independent re-sweep found no 19th site.
 
 ## Next session steps
 
-1. **R wave: R01 SHIPPED + HW-verified. Approve/execute R02–R04**
-   (tasks/PLAN.md → "Wave R"). Order R01 → R02 → R03 → R04 (R04 independent).
-   - R02: wait for route+DNS before the NTP/apt gate (`NET_WAIT_SEC`, advisory).
-   - R03: `validate-local.sh` §5k3 — apt-failure retry/hard-fail regression.
-   - R04: mirror `role-setup.log` to bootfs on failure (diagnosability).
-   Executing a task = "execute R0N"; commit per task (repo Rule 18).
+1. **R wave COMPLETE (R01–R04 committed).** No pending code work. Optional
+   hardware-verify R02–R04 on the next natural re-flash (R01 already proven):
+   confirm role-setup comes up clean and, on an intentional failure,
+   `/boot/firmware/role-setup-debug.log` appears on bootfs.
 2. NO other pending code work. The comment-truth arc is closed; no S06e planned.
 3. Deferred (owner chose local-suite-only): a real podman arm64 integration
    test and a QEMU `raspi4b` full-boot test. Available on this Mac if wanted
