@@ -68,6 +68,16 @@ hidden change). The ONLY blocker is `admin.html`'s Save guard
 `if (!body.ssid && !body.psk)`. Owner decisions: dedicated apply button +
 confirm dialog. Order: V01 → V02 → V03.
 
+## Wave X — connect UX / saved-passwords redesign (IN PROGRESS)
+- [x] X01 — Connect dialog becomes the credential hub (saved passwords inside; cosmetic try-progress) ✅ `tasks/X01-connect-ux-redesign.md`
+- [ ] X02 — Update suite asserts + docs for the redesign ⬜ (pending)
+
+Owner decisions: **cosmetic playback** (no backend/streaming), **focused
+redesign keeping the existing look**, **dialog is the hub**. X01 executed
+directly on a clean base (SC-wave stashed as `stash@{0}`). Suite 626/0; visual
+QA passed. X02 will add asserts for the new hub ids and update §5x if any pinned
+label changed.
+
 ## Blocked
 None.
 

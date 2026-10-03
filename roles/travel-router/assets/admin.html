@@ -102,14 +102,51 @@
   #scan-table .net-ssid { font-weight: 600; word-break: break-all; }
   #scan-table button { font-size: 0.85rem; padding: 0.35rem 0.7rem; margin: 0; }
 
-  dialog { border: 1px solid #3a434e; border-radius: 10px; background: #1a2027;
-           color: #e8eaed; padding: 1rem; max-width: 26rem; width: 92%; }
+  dialog { box-sizing: border-box; border: 1px solid #3a434e; border-radius: 10px;
+           background: #1a2027; color: #e8eaed; padding: 1rem; max-width: 26rem;
+           width: calc(100% - 1.5rem); max-height: 90vh; overflow-y: auto; }
   dialog::backdrop { background: rgba(4, 8, 12, 0.7); }
   .drow { margin: 0.4rem 0; }
   .dmsg { min-height: 1.2em; font-size: 0.85rem; color: #9aa5b1;
           word-break: break-all; }
   .dmsg.warn { color: #ffb84d; }
   .dmsg.ok { color: #5dd879; }
+
+  /* X01: connect-dialog hub — saved passwords + try-progress */
+  dialog#net-dialog .cardbtns { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  dialog#net-dialog .cardbtns button { margin: 0; }
+  dialog#net-dialog label { display: block; margin-top: 0.6rem; font-size: 0.85rem;
+                            color: #9aa5b1; }
+  dialog#net-dialog h4 { margin: 0.6rem 0 0.25rem; font-size: 0.78rem; color: #8b97a5;
+                         text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .saved { margin-top: 0.6rem; border-top: 1px solid #2a333d; padding-top: 0.5rem; }
+  .saved summary { cursor: pointer; font-size: 0.9rem; color: #c7cdd4; font-weight: 600; }
+  .saved .sub { margin-top: 0.5rem; }
+  .pskrow { display: flex; align-items: center; justify-content: space-between;
+            gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #222a33; }
+  .pskrow-label { font-size: 0.85rem; color: #c7cdd4; font-variant-numeric: tabular-nums; }
+  .pskrow-del { font-size: 0.8rem; padding: 0.3rem 0.6rem; margin: 0; }
+  .progress { margin: 0.5rem 0; }
+  .prow { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem;
+          color: #9aa5b1; padding: 0.15rem 0; }
+  .prow.ok { color: #5dd879; }
+  .prow.fail { color: #ffb84d; }
+  .pdot { width: 9px; height: 9px; border-radius: 50%; background: #3a434e; flex: 0 0 auto; }
+  .prow.run .pdot { border: 2px solid #2d7ff9; border-top-color: transparent;
+                    animation: pspin 0.7s linear infinite; }
+  .prow .pdot.ok { background: #5dd879; }
+  .prow.fail .pdot { background: #ffb84d; }
+  .ptext { word-break: break-all; }
+  @keyframes pspin { to { transform: rotate(360deg); } }
+  button:focus-visible, input:focus-visible, summary:focus-visible {
+    outline: 2px solid #2d7ff9; outline-offset: 2px; }
+  button { transition: transform 180ms ease, opacity 180ms ease, background 180ms ease; }
+  button:hover:not(:disabled) { transform: translateY(-1px); }
+  button:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
+  @media (prefers-reduced-motion: reduce) {
+    button { transition: none; }
+    .prow.run .pdot { animation: none; border-top-color: #2d7ff9; }
+  }
 </style>
 </head>
 <body>
@@ -233,18 +270,6 @@
     <p class="msg" id="stealth-msg"></p>
   </section>
 
-  <section id="pskmanage-section">
-    <h2>Saved passwords</h2>
-    <p class="msg" id="pskmanage-msg"></p>
-    <div id="pskmanage-list"></div>
-    <label for="pm-psk">Add a default password (tried for any network)</label>
-    <input id="pm-psk" type="password" autocomplete="off">
-    <p>
-      <button id="pm-add" type="button">Add default password</button>
-      <button id="pm-refresh" type="button" class="secondary">Refresh list</button>
-    </p>
-  </section>
-
   <section id="ap-section">
     <h2>AP settings</h2>
     <table><tbody id="ap-info-rows"></tbody></table>
@@ -296,15 +321,35 @@
 
 <dialog id="net-dialog">
   <h2 id="d-title">Connect</h2>
-  <div class="drow"><span class="label">Network:</span> <span id="d-ssid"></span></div>
+  <label for="d-ssid-input">Network name (SSID)</label>
+  <input id="d-ssid-input" autocomplete="off" maxlength="32">
   <label for="d-psk">Password (leave empty for open networks)</label>
   <input id="d-psk" type="password" autocomplete="off">
-  <p>
+  <p class="cardbtns">
     <button id="d-connect" type="button">Connect</button>
     <button id="d-try" type="button" class="secondary">Try saved passwords</button>
     <button id="d-cancel" type="button" class="secondary">Cancel</button>
   </p>
+  <div id="d-progress" class="progress" hidden></div>
   <p class="dmsg" id="d-msg"></p>
+  <details id="d-saved" class="saved">
+    <summary>Saved passwords</summary>
+    <div class="sub">
+      <h4>For this network</h4>
+      <div id="d-saved-ssid"></div>
+      <input id="d-add-ssid-psk" type="password" autocomplete="off"
+             placeholder="add a password for this network">
+      <button id="d-add-ssid" type="button" class="secondary">Save for this network</button>
+    </div>
+    <div class="sub">
+      <h4>Defaults (tried for any network)</h4>
+      <div id="d-saved-default"></div>
+      <input id="d-add-default-psk" type="password" autocomplete="off"
+             placeholder="add a default password">
+      <button id="d-add-default" type="button" class="secondary">Save as default</button>
+    </div>
+    <p class="dmsg" id="d-saved-msg"></p>
+  </details>
 </dialog>
 
 <script>
@@ -356,7 +401,7 @@ function currentPin() {
 // panel through the shared handleAuth path (graceful even across a
 // post-rename salt rotation — security plan todo 10/11).
 var GATE_IDS = ["pin-section", "networks-section", "known-section",
-                "manual-section", "pskmanage-section", "ap-section",
+                "manual-section", "ap-section",
                 "clients-section", "blocked-section", "killswitch-section",
                 "dns-section", "audit-section", "sessions-section",
                 "sshlockdown-section", "stealth-section"];
@@ -1071,7 +1116,7 @@ function doApSave(body) {
 }
 
 function busy(on) {
-  ["ap-save", "ap-hidden-apply", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
+  ["ap-save", "ap-hidden-apply", "ap-random", "ap-random-psk",
    "login-btn", "dns-add", "rotate-sessions-btn",
    "scan-btn", "mc-connect", "mc-disconnect", "mc-forget"].forEach(function (id) {
     var el = document.getElementById(id);
@@ -1079,83 +1124,103 @@ function busy(on) {
   });
 }
 
-// --- Saved-passwords manager (ported from pre-strip setup.html pm-*) --------
-// Lists store rows via GET /api/wan/psks-manage (session-only — the admin
-// GET does NOT need X-Pin) and mutates via POST {pin, action, ...}. PSK
-// values never come back — only type/index/ssid are rendered.
-function psksManage(action, extra) {
+// --- Saved passwords (X01: managed inside the connect dialog) ---------------
+// The dialog is the credential hub; the standalone section is gone. Reads are
+// session-only (GET psks-manage); writes are admin writes (session + body.pin).
+// PSK values never come back — only type/index/ssid are rendered.
+function pskSave(action, extra, msgId) {
   var pin = currentPin();
-  if (!pin) { return Promise.reject(new Error("PIN required — enter it in the PIN section")); }
+  if (!pin) { dMsg(msgId, "PIN required — enter it in the PIN section", "warn"); return Promise.resolve(null); }
   var body = extra || {};
   body.pin = pin;
   body.action = action;
-  busy(true);
-  setMsg("pskmanage-msg", "working…");
+  dMsg(msgId, "working…", "");
   return api("/api/wan/psks-manage", body).then(function (r) {
     if (r.status === 403) { return handleErr("psks-manage denied")(r); }
     return r.json();
   }).then(function (d) {
-    setMsg("pskmanage-msg", "done", "ok");
+    if (d && d.ok === false) {
+      throw new Error((d.log && d.log.join(" ")) || ("failed (rc=" + d.rc + ")"));
+    }
+    dMsg(msgId, "saved", "ok");
+    refreshDialogSaved();
     return d;
   }).catch(function (e) {
-    setMsg("pskmanage-msg", String(e.message || e), "warn");
+    dMsg(msgId, String(e.message || e), "warn");
     return null;
-  }).then(function (d) { busy(false); return d; },
-          function () { busy(false); return null; });
-}
-
-function renderPskRows(rows) {
-  var list = document.getElementById("pskmanage-list");
-  while (list.firstChild) { list.removeChild(list.firstChild); }
-  if (!rows || !rows.length) {
-    setMsg("pskmanage-msg", "no saved passwords yet");
-    return;
-  }
-  setMsg("pskmanage-msg", "");
-  rows.forEach(function (row) {
-    var item = document.createElement("div");
-    item.className = "netcard";
-    var label = document.createElement("div");
-    label.className = "ssid";
-    // TYPE/SSID only — the PSK column is discarded server-side and is
-    // never requested, rendered, or stored here.
-    label.textContent = (row.type === "d" ? "default" : "network: " + (row.ssid || "?"))
-      + "  (row " + row.index + ")";
-    item.appendChild(label);
-    var del = document.createElement("button");
-    del.type = "button";
-    del.className = "secondary";
-    del.textContent = "Remove";
-    del.addEventListener("click", function () {
-      psksManage("del", { n: row.index }).then(function (d) {
-        if (d) { refreshPskManage(); }
-      });
-    });
-    item.appendChild(del);
-    list.appendChild(item);
   });
 }
 
-function refreshPskManage() {
-  sessionFetch("/api/wan/psks-manage", { cache: "no-store" })
-    .then(function (r) {
-      if (r.status === 401) { return null; }
-      if (r.status === 403) { return null; }
-      return r.json();
-    })
-    .then(function (d) { if (d) { renderPskRows(d.rows || []); } })
-    .catch(function () {
-      setMsg("pskmanage-msg", "saved passwords unavailable", "warn");
+function renderSavedGroup(containerId, rows, hint) {
+  var list = document.getElementById(containerId);
+  while (list.firstChild) { list.removeChild(list.firstChild); }
+  if (hint) {
+    var h = document.createElement("div");
+    h.className = "dim";
+    h.textContent = hint;
+    list.appendChild(h);
+    return;
+  }
+  if (!rows || !rows.length) {
+    var none = document.createElement("div");
+    none.className = "dim";
+    none.textContent = "none saved";
+    list.appendChild(none);
+    return;
+  }
+  rows.forEach(function (row) {
+    var r = document.createElement("div");
+    r.className = "pskrow";
+    var lab = document.createElement("span");
+    lab.className = "pskrow-label";
+    lab.textContent = (row.type === "d" ? "default" : "network: " + (row.ssid || "?"))
+      + "  (row " + row.index + ")";
+    r.appendChild(lab);
+    var del = document.createElement("button");
+    del.type = "button";
+    del.className = "secondary pskrow-del";
+    del.textContent = "Remove";
+    del.addEventListener("click", function () {
+      pskSave("del", { n: row.index }, "d-saved-msg");
     });
+    r.appendChild(del);
+    list.appendChild(r);
+  });
 }
 
-document.getElementById("pm-refresh").addEventListener("click", refreshPskManage);
+function refreshDialogSaved() {
+  return sessionFetch("/api/wan/psks-manage", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401 || r.status === 403) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      var rows = (d && d.rows) || [];
+      var ssid = DIALOG_SSID;
+      var forNet = rows.filter(function (row) {
+        return row.type !== "d" && row.ssid === ssid;
+      });
+      var defaults = rows.filter(function (row) { return row.type === "d"; });
+      renderSavedGroup("d-saved-ssid", forNet,
+        ssid ? "" : "enter an SSID above to see its saved passwords");
+      renderSavedGroup("d-saved-default", defaults, "");
+    })
+    .catch(function () { dMsg("d-saved-msg", "saved passwords unavailable", "warn"); });
+}
 
-document.getElementById("pm-add").addEventListener("click", function () {
-  var psk = document.getElementById("pm-psk").value;
-  if (!psk) { setMsg("pskmanage-msg", "enter a password to add", "warn"); return; }
-  psksManage("add-default", { psk: psk }).then(function (d) {
-    if (d) { document.getElementById("pm-psk").value = ""; refreshPskManage(); }
+document.getElementById("d-add-ssid").addEventListener("click", function () {
+  var psk = document.getElementById("d-add-ssid-psk").value;
+  if (!DIALOG_SSID) { dMsg("d-saved-msg", "enter an SSID first", "warn"); return; }
+  if (!psk) { dMsg("d-saved-msg", "enter a password to save", "warn"); return; }
+  pskSave("add", { ssid: DIALOG_SSID, psk: psk }, "d-saved-msg").then(function (d) {
+    if (d) { document.getElementById("d-add-ssid-psk").value = ""; }
+  });
+});
+document.getElementById("d-add-default").addEventListener("click", function () {
+  var psk = document.getElementById("d-add-default-psk").value;
+  if (!psk) { dMsg("d-saved-msg", "enter a password to save", "warn"); return; }
+  pskSave("add-default", { psk: psk }, "d-saved-msg").then(function (d) {
+    if (d) { document.getElementById("d-add-default-psk").value = ""; }
   });
 });
 
@@ -1420,30 +1485,99 @@ function refreshKnown() {
     .catch(function () { setMsg("known-msg", "known networks unavailable", "warn"); });
 }
 
-// --- connect dialog (PSK entry + Try saved passwords) ----------------------
-// Native <dialog>; the RAW SSID rides in a closure variable (never
-// re-derived from rendered text).
+// --- connect dialog (X01: the credential hub) ------------------------------
+// Native <dialog>; the RAW SSID rides in the closure + the editable field
+// (never re-derived from rendered label text). The dialog is also where saved
+// passwords for the network are viewed/added/removed.
 var DIALOG_SSID = "";
+var REDUCE_MOTION = !!(window.matchMedia &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+function setDialogSsid(ssid) {
+  DIALOG_SSID = ssid || "";
+  document.getElementById("d-ssid-input").value = DIALOG_SSID;
+  document.getElementById("d-title").textContent =
+    DIALOG_SSID ? ("Connect to " + DIALOG_SSID) : "Connect";
+}
+
 function openNetDialog(rawSsid) {
-  DIALOG_SSID = rawSsid;
-  document.getElementById("d-ssid").textContent = rawSsid || "(hidden network)";
+  setDialogSsid(rawSsid);
   document.getElementById("d-psk").value = "";
   dMsg("d-msg", "");
-  document.getElementById("net-dialog").showModal();
+  clearProgress();
+  setMsg("d-saved-msg", "");
+  document.getElementById("d-saved").open = false;
+  var dlg = document.getElementById("net-dialog");
+  if (!dlg.open) { dlg.showModal(); }
   document.getElementById("d-psk").focus();
+  refreshDialogSaved();
 }
 function netDlgBusy(on) {
-  ["d-connect", "d-try"].forEach(function (id) {
-    document.getElementById(id).disabled = on;
+  ["d-connect", "d-try", "d-cancel", "d-add-ssid", "d-add-default"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.disabled = on; }
   });
 }
+
+// --- Try saved passwords: cosmetic per-candidate progress -------------------
+// The /api/wan/psks response carries the full per-candidate log in `log`
+// (travel-wan logs each attempt to stderr). We reveal it sequentially so the
+// admin sees "trying password 1…/2…" rather than a bare final result. The
+// attempt count is bounded by the store (<=4 per SSID + <=32 defaults), so
+// this is a short, bounded animation; reduced-motion reveals instantly.
+function clearProgress() {
+  var p = document.getElementById("d-progress");
+  while (p.firstChild) { p.removeChild(p.firstChild); }
+  p.hidden = true;
+}
+function progressRow(cls, text) {
+  var p = document.getElementById("d-progress");
+  p.hidden = false;
+  var row = document.createElement("div");
+  row.className = "prow" + (cls ? " " + cls : "");
+  var dot = document.createElement("span");
+  dot.className = "pdot" + (cls === "ok" ? " ok" : (cls === "fail" ? " fail" : ""));
+  var t = document.createElement("span");
+  t.className = "ptext";
+  t.textContent = text;
+  row.appendChild(dot); row.appendChild(t);
+  p.appendChild(row);
+  return row;
+}
+function classifyTryLine(line) {
+  if (/ OK|connected to/i.test(line)) { return "ok"; }
+  if (/failed|no candidate|budget/i.test(line)) { return "fail"; }
+  return "";
+}
+function revealTryLines(lines) {
+  clearProgress();
+  var i = 0;
+  function step() {
+    if (i >= lines.length) { return; }
+    var line = String(lines[i]).replace(/^\[travel-wan\]\s*/, "");
+    progressRow(classifyTryLine(line), line);
+    i++;
+    if (i < lines.length) {
+      window.setTimeout(step, REDUCE_MOTION ? 0 : 350);
+    }
+  }
+  if (lines.length) { step(); }
+}
+
 document.getElementById("d-cancel").addEventListener("click", function () {
   document.getElementById("net-dialog").close();
+});
+document.getElementById("d-ssid-input").addEventListener("input", function () {
+  DIALOG_SSID = this.value.trim();
+  document.getElementById("d-title").textContent =
+    DIALOG_SSID ? ("Connect to " + DIALOG_SSID) : "Connect";
+  refreshDialogSaved();
 });
 document.getElementById("d-connect").addEventListener("click", function () {
   var psk = document.getElementById("d-psk").value;
   var body = { ssid: DIALOG_SSID };
   if (psk) { body.psk = psk; }
+  if (!DIALOG_SSID) { dMsg("d-msg", "enter a network name", "warn"); return; }
   netDlgBusy(true); dMsg("d-msg", "connecting…", "");
   api("/api/wan/connect", body).then(function (r) {
     return r.json();
@@ -1461,19 +1595,25 @@ document.getElementById("d-connect").addEventListener("click", function () {
           function () { netDlgBusy(false); });
 });
 document.getElementById("d-try").addEventListener("click", function () {
+  if (!DIALOG_SSID) { dMsg("d-msg", "enter a network name", "warn"); return; }
+  clearProgress();
   dMsg("d-msg", "trying saved passwords…", "");
   netDlgBusy(true);
   api("/api/wan/psks", { ssid: DIALOG_SSID }).then(function (r) {
     return r.json();
   }).then(function (d) {
-    var lines = d.lines || [];
-    if (lines.length) {
-      dMsg("d-msg", lines.join("  |  "), d.ok ? "ok" : "");
+    // try-psks progress lives in the envelope's `log` field (travel-wan logs
+    // to stderr); stdout `lines` is usually empty.
+    var log = (d.log || []).filter(function (l) {
+      return !/no stored candidates/i.test(l);
+    });
+    var lines = (d.lines && d.lines.length) ? d.lines : log;
+    if (!lines.length) {
+      dMsg("d-msg", d.ok ? "done" : "no saved passwords to try", d.ok ? "ok" : "warn");
     } else {
-      // try-psks progress lives in the envelope's `log` field (travel-wan
-      // logs to stderr); stdout is empty — show it instead of "failed (rc=N)".
-      var log = (d.log && d.log.join(" ")) || (d.ok ? "done" : "failed (rc=" + d.rc + ")");
-      dMsg("d-msg", log, d.ok ? "ok" : "warn");
+      revealTryLines(lines);
+      dMsg("d-msg", d.ok ? "connected" : "no saved password worked",
+           d.ok ? "ok" : "warn");
     }
     if (d.ok) { refreshStatus(); }
   }).catch(function (e) { dMsg("d-msg", String(e.message || e), "warn"); })
@@ -1501,12 +1641,7 @@ function mcWrite(path, extra) {
 
 document.getElementById("scan-btn").addEventListener("click", doScan);
 document.getElementById("mc-connect").addEventListener("click", function () {
-  var ssid = document.getElementById("mc-ssid").value.trim();
-  if (!ssid) { setMsg("mc-msg", "enter a network name", "warn"); return; }
-  var psk = document.getElementById("mc-psk").value;
-  var body = { ssid: ssid };
-  if (psk) { body.psk = psk; }
-  mcWrite("/api/wan/connect", body);
+  openNetDialog(document.getElementById("mc-ssid").value.trim());
 });
 document.getElementById("mc-disconnect").addEventListener("click", function () {
   mcWrite("/api/wan/disconnect", {});
@@ -1535,7 +1670,6 @@ function doLogin() {
         showLogin(false);
         setMsg("login-msg", "");
         refreshApInfo();
-        refreshPskManage();
         refreshStatus();
         refreshKnown();
         refreshAllFeatures();
@@ -1609,7 +1743,6 @@ function refreshAllFeatures() {
     if (r.status === 401) { return; }
     showLogin(false);
     refreshApInfo();
-    refreshPskManage();
     refreshStatus();
     refreshKnown();
     refreshAllFeatures();
