@@ -54,6 +54,21 @@ report was a VISUAL issue (heading vs nested rows not distinguished) — U03.
 Order: U01 and U03 both edit `_STATUS_HTML` (rows vs CSS) — fine either way;
 U02 independent. U03 is a UI change → needs a visual-QA screenshot.
 
+**Wave U status: CODE COMPLETE + committed (a20de7c), suite 616/0.**
+Outstanding: U03 visual-QA screenshot (not yet taken).
+
+## Wave V — hide SSID on the fly (PROPOSED, not executed)
+- [ ] V01 — Admin: "Apply hide/show now" button + confirm dialog (posts hidden-only) ⬜ `tasks/V01-admin-hide-toggle.md`
+- [ ] V02 — Regression tests: hidden-only apconfig argv + session rotation + admin static ⬜ `tasks/V02-hide-toggle-tests.md`
+- [ ] V03 — Docs: document the on-the-fly hide/show toggle in the role manual ⬜ `tasks/V03-hide-toggle-docs.md`
+
+Context: the backend ALREADY supports hidden-only changes end-to-end
+(`/api/wan/apconfig` builds `ap-apply "" "" "2"|"0"`; `travel-wan.sh ap-apply`
+fills empty SSID/PSK from live state; session self-destruct already fires on a
+hidden change). The ONLY blocker is `admin.html`'s Save guard
+`if (!body.ssid && !body.psk)`. Owner decisions: dedicated apply button +
+confirm dialog. Order: V01 → V02 → V03.
+
 ## Blocked
 None.
 
