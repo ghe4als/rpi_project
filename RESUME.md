@@ -1,4 +1,4 @@
-# RESUME — S-waves COMPLETE + S06b/S06c/S06d committed (593-green ×7)
+# RESUME — R01 (first-boot apt retry) SHIPPED + HW-verified; R02–R04 planned
 
 <!--
 SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
@@ -17,6 +17,16 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
+- **R01 SHIPPED (3f73061) + HARDWARE-VERIFIED 2026-10-03.** Trixie arm64 first
+  boot had aborted `role-setup` because `roles/base/install.sh` ran
+  `apt-get update` under `set -euo pipefail` with no retry while the network was
+  not yet usable. New `roles/base/assets/retry.sh` wraps the apt calls in base +
+  travel-router (bounded retry, backoff, then hard-fail). Suite **606/0**;
+  owner re-flashed and the Pi came up fine. Plan files R01–R04 (wave R) are
+  committed. R02–R04 written, NOT executed — see tasks/PLAN.md.
+- The `armhf Packages` apt warning and `cc_netplan_nm_patch` are both RED
+  HERRINGS (RPi OS arm64 intentionally adds armhf as a foreign arch; the
+  cloud-init module warning is cosmetic on stock Trixie). Do not chase them.
 - S06b, S06c, S06d ALL COMPLETE. S06d plan 5/5 todos + F1-F4 + 5 success
   criteria ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
   .omo/evidence/s06d-comment-truth/ (6 run logs).
@@ -49,13 +59,16 @@ independent re-sweep found no 19th site.
 
 ## Next session steps
 
-1. NO pending code work. The comment-truth arc is closed; no S06e is planned.
-   NB: the earlier ":3122-3131 (body.pin; fragment" note was a PHANTOM (that
-   fragment was deleted at S06c).
-2. Optional (deliberately NOT done — cost/benefit): a banned-phrase assert in
-   the suite would structurally prevent the prose drift from recurring. Not
-   warranted for a one-time 38-line comment fix; revisit only if drift recurs.
-3. Hardware smoke test: DONE (see Current state). Remaining known gap: Bookworm flashes cannot bind flash history — provision-bookworm.sh records pending_flashes without an instance_id and deletes /boot/firmware/meta-data, so pi register never matches (Bookworm Lite has no cloud-init). Affects every Bookworm flash; FIXED in S07 (commit bf45e5d): provision-bookworm.sh stamps a Trixie-format instance_id onto bootfs/meta-data, records it in the pending entry, and firstrun persists it to /var/lib/rpi-project/instance_id; suite 604/0 x3 at T01, 605/0 x3 after T02, re-verified 605/0 independently post-commit. The stranded pre-S07 pending entries remain unbindable by design; live bind proof lands on the next natural re-flash.
+1. **R wave: R01 SHIPPED + HW-verified. Approve/execute R02–R04**
+   (tasks/PLAN.md → "Wave R"). Order R01 → R02 → R03 → R04 (R04 independent).
+   - R02: wait for route+DNS before the NTP/apt gate (`NET_WAIT_SEC`, advisory).
+   - R03: `validate-local.sh` §5k3 — apt-failure retry/hard-fail regression.
+   - R04: mirror `role-setup.log` to bootfs on failure (diagnosability).
+   Executing a task = "execute R0N"; commit per task (repo Rule 18).
+2. NO other pending code work. The comment-truth arc is closed; no S06e planned.
+3. Deferred (owner chose local-suite-only): a real podman arm64 integration
+   test and a QEMU `raspi4b` full-boot test. Available on this Mac if wanted
+   (both installed).
 
 ## Standing rules (do not relearn)
 
