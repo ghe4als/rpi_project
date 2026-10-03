@@ -606,7 +606,7 @@ exit 0
 EOF
 chmod +x "$B2B/timedatectl" "$B2B/apt-get"
 rm -f "$B2APT"
-(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2.log" 2>&1); rc=$?
+(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 NET_WAIT_SEC=0 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2.log" 2>&1); rc=$?
 [[ "$rc" -ne 0 ]] && ok "5k2 base refuses when NTP never syncs (rc=$rc)" || bad "5k2 base DID NOT refuse (rc=$rc)"
 [[ ! -f "$B2APT" ]] && ok "5k2 apt not reached when clock unverified" || bad "5k2 apt WAS reached (marker present)"
 # Positive control: with timedatectl reporting NTPSynchronized=yes, base must
@@ -617,7 +617,7 @@ echo "NTPSynchronized=yes"
 exit 0
 SH
 rm -f "$B2APT"
-(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2-ok.log" 2>&1); rc2=$?
+(cd /tmp && PATH="$B2B:$PATH" BASE_NTP_WAIT_SEC=2 NET_WAIT_SEC=0 bash "$ROOT/roles/base/install.sh" >"$TMP/5k2-ok.log" 2>&1); rc2=$?
 [[ -f "$B2APT" ]] && ok "5k2 base proceeds to apt when NTP synced" || bad "5k2 base did NOT proceed to apt (rc=$rc2)"
 rm -rf "$B2B" "$B2APT"
 

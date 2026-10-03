@@ -7,6 +7,32 @@ ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS="$ROLE_DIR/assets"
 source "$ASSETS/retry.sh"
 
+# --- wait for a usable network path before NTP/apt --------------------------
+# On first boot the unit starts at multi-user.target, but WiFi association +
+# DHCP + DNS can still be tens of seconds away. NTP cannot sync without a
+# route and apt cannot reach mirrors without DNS. Wait (bounded) for a default
+# route AND working name resolution before the NTP gate below. Advisory only:
+# on expiry we proceed — the NTP hard gate and apt's bounded retry (R01) are
+# the hard gates, and the unit retries on the next boot. Tests set
+# NET_WAIT_SEC=0 to skip entirely.
+NET_WAIT_SEC="${NET_WAIT_SEC:-120}"
+net_ready() {
+  ip route show default 2>/dev/null | grep -q 'default' || return 1
+  getent hosts deb.debian.org >/dev/null 2>&1 || return 1
+  return 0
+}
+if [[ "${NET_WAIT_SEC}" -gt 0 ]]; then
+  echo "[base] waiting up to ${NET_WAIT_SEC}s for a usable network (route + DNS)"
+  _n=0
+  while [[ "$_n" -lt "$NET_WAIT_SEC" ]]; do
+    if net_ready; then echo "[base] network ready after ${_n}s"; break; fi
+    sleep 3; _n=$(( _n + 3 ))
+  done
+  if ! net_ready; then
+    echo "[base] WARNING: no usable network after ${NET_WAIT_SEC}s; continuing (NTP gate + apt retry remain the hard gates)"
+  fi
+fi
+
 # Wait for a real NTP sync before apt. Pi 3/Zero have no RTC, so on first
 # boot the clock starts at the image build date — possibly a WRONG-but-recent
 # year (e.g. a build from Jun 2026 booted in Sep 2026), which a plain

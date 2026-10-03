@@ -90,3 +90,12 @@ git checkout roles/base/install.sh roles/travel-router/assets/validate-local.sh
 
 ## Next task
 R03
+
+## Execution note (2026-10-03)
+Executed. The block was inserted *before the NTP comment block* rather than
+between the NTP comment and its `echo` (the task's literal insertion point),
+so the NTP comment stays attached to its code. Validation: `bash -n` clean;
+suite GREEN 606/0; `NET_WAIT_SEC=0` skips the wait; with net unavailable the
+block only WARNs and execution continues to the NTP gate (verified: run
+reached the NATS step past the gate); `NET_WAIT_SEC=1` + NTP=no still exits 1
+from the NTP gate (unchanged).
