@@ -1,9 +1,18 @@
 # Project Plan — travel-router role (fleet Pi provisioning)
-Last updated: 2026-09-29
+Last updated: 2026-10-03
 
 ## Status
 Current task: none — S-wave hardware-verified; S07 shipped (Bookworm instance_id bind: bf45e5d + 02a6bc7). Remaining open: live bind proof at the next natural re-flash.
 Last completed: S06c ✅ (fde41bd was the S06b tail; this cleanup commits on top)
+
+WAVE R (2026-10-03): first-boot resilience. A Trixie arm64 Pi4 first boot
+aborted `role-setup` because `roles/base/install.sh` ran `apt-get update`
+under `set -euo pipefail` with no retry while the network was not yet usable;
+the unit stayed enabled and retried each boot, but the AP was never brought up.
+Owner decisions: **bounded retry then hard-fail**, tested via the **existing
+local suite** (no container/QEMU). R01 executed + suite green 606/0 + HARDWARE
+VERIFIED 2026-10-03 (owner re-flash came up fine). R02-R04 pending approval to
+execute.
 
 The authoritative spec for the travel-router role is
 `.omo/plans/travel-router-role.md` (local, gitignored). This file is the
@@ -22,6 +31,16 @@ session index: what is done, what is next.
 - [x] F2 — Code quality review (S-wave; S06b/S06c F2s APPROVE) ✅
 - [x] F3 — Real manual QA (suite+real-surface S06b/S06c; hardware flash remains user-gated in WQ) ✅
 - [x] F4 — Scope fidelity ✅
+
+## Wave R — first-boot resilience (PROPOSED, not executed)
+- [x] R01 — Bounded retry for apt/network steps (`retry()` helper; base + travel-router) ✅ (uncommitted; suite 606/0) `tasks/R01-apt-bounded-retry.md`
+- [ ] R02 — Wait for route+DNS before the NTP/apt gate (`NET_WAIT_SEC`, advisory) ⬜ `tasks/R02-wait-for-network.md`
+- [ ] R03 — `validate-local.sh` §5k3: apt-failure retry/hard-fail regression ⬜ `tasks/R03-retry-regression-test.md`
+- [ ] R04 — Mirror `role-setup.log` to bootfs on failure (diagnosability) ⬜ `tasks/R04-bootfs-failure-diagnostics.md`
+
+Order: R01 → R02 → R03 (locks R01/R02) → R04 (independent, may land first).
+Explicitly deferred: a real podman arm64 integration test and a QEMU `raspi4b`
+full-boot test (owner chose local-suite-only for now).
 
 ## Blocked
 None.

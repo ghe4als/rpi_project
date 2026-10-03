@@ -34,6 +34,13 @@ export LC_ALL=C
 ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS="$ROLE_DIR/assets"
 LOG_TAG="[travel-router]"
+
+# Bounded-retry helper: prefer the copy base installed, fall back to the
+# sibling base role's staged assets (base always runs first; see step (3)).
+for _retry_lib in /usr/local/lib/rpi/retry.sh "$ROLE_DIR/../base/assets/retry.sh" \
+                  /boot/firmware/role/base/assets/retry.sh /boot/role/base/assets/retry.sh; do
+  if [[ -f "$_retry_lib" ]]; then source "$_retry_lib"; break; fi
+done
 # bash 3.2 (/bin/bash on older macOS) chokes on [[ =~ ]] with a literal
 # character range that begins with a space ([ -~]). Put the pattern behind a
 # variable so it works there and on 5.x.
@@ -181,8 +188,9 @@ done
 # NOTE: the stock dnsmasq package AUTO-STARTS dnsmasq.service here with the
 # empty stock config. That is expected and inert; step (8) restarts it.
 log "installing hostapd dnsmasq nftables iw (network still up at this point)"
-real_or_log apt-get update
-real_or_log apt-get install -y --no-install-recommends hostapd dnsmasq nftables iw
+real_or_log retry "${RETRY_ATTEMPTS:-3}" "${RETRY_BASE_SEC:-5}" apt-get update
+real_or_log retry "${RETRY_ATTEMPTS:-3}" "${RETRY_BASE_SEC:-5}" \
+  apt-get install -y --no-install-recommends hostapd dnsmasq nftables iw
 
 # --- (4b) Seed the bootstrap WAN profile (WIFI_SSID as the initial "hotel") --
 # The provisioning WiFi (wired into role.env by the provisioners) becomes the

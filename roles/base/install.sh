@@ -5,6 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS="$ROLE_DIR/assets"
+source "$ASSETS/retry.sh"
 
 # Wait for a real NTP sync before apt. Pi 3/Zero have no RTC, so on first
 # boot the clock starts at the image build date — possibly a WRONG-but-recent
@@ -33,13 +34,18 @@ if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
 fi
 echo "[base] clock now: $(date)"
 
-echo "[base] apt update"
-apt-get update -y
+echo "[base] apt update (bounded retry)"
+retry "${RETRY_ATTEMPTS:-3}" "${RETRY_BASE_SEC:-5}" apt-get update -y
 
-echo "[base] installing common packages"
-apt-get install -y --no-install-recommends \
+echo "[base] installing common packages (bounded retry)"
+retry "${RETRY_ATTEMPTS:-3}" "${RETRY_BASE_SEC:-5}" \
+  apt-get install -y --no-install-recommends \
   vim tmux curl ca-certificates htop rsync less \
   avahi-daemon
+
+# Make the helper available to later roles (travel-router sources it).
+install -d -m 0755 /usr/local/lib/rpi
+install -m 0644 "$ASSETS/retry.sh" /usr/local/lib/rpi/retry.sh
 
 ROLE_ENV="/boot/firmware/role/role.env"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/role/role.env"
