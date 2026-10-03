@@ -628,10 +628,14 @@ _STATUS_HTML = """<!DOCTYPE html>
   h1 { font-size: 1.25rem; }
   section { background: #1a2027; border-radius: 10px; padding: 0.9rem;
             margin-bottom: 0.9rem; }
-  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  h2 { font-size: 0.72rem; margin: 0 0 0.45rem; text-transform: uppercase;
+       letter-spacing: 0.09em; color: #8b97a5; font-weight: 600;
+       border-bottom: 1px solid #2a333d; padding-bottom: 0.35rem; }
   table { border-collapse: collapse; width: 100%; }
-  td { padding: 2px 8px 2px 0; }
-  .label { font-weight: 600; }
+  td { padding: 3px 8px 3px 0; }
+  .label { font-weight: 600; color: #c7cdd4; }
+  #status-rows { border-left: 2px solid #2a333d; }
+  #status-rows td { padding-left: 0.6rem; }
   .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
   .ok { color: #5dd879; }
   .warn { color: #ffb84d; }
@@ -674,6 +678,7 @@ function refreshStatus() {
       while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
       cellRow(tbody, "Network name (SSID)", d.ap_ssid || "?");
       cellRow(tbody, "Connected to", d.wan_ssid || "standalone");
+      cellRow(tbody, "Router address", d.lan_ip || "?");
       var msg = document.getElementById("status-msg");
       if (d.internet === "yes") {
         msg.textContent = "Internet: connected";
@@ -687,6 +692,9 @@ function refreshStatus() {
       }
     })
     .catch(function () {
+      var tbody = document.getElementById("status-rows");
+      while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+      cellRow(tbody, "Status", "unavailable");
       document.getElementById("status-msg").textContent = "status unavailable";
     });
 }
@@ -782,9 +790,10 @@ class StatusHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, json.dumps({"status": "ok"}), "application/json")
         elif path == "/api/status":
-            # Public minimal status — NO auth. Returns only non-sensitive
-            # data: AP SSID, WAN SSID, internet status. No client list,
-            # no WAN IP, no known networks, no scan results.
+            # Public minimal status — NO auth. Returns AP SSID, WAN SSID,
+            # internet status, and the router's OWN lan_ip (the AP-side
+            # address, only reachable from the private AP). Still no client
+            # list, no WAN IP, no known networks, no scan results.
             wan_ssid = _state_field("wan_ssid") or ""
             ap_ssid = ""
             ap_ssid_file = "/etc/rpi-project/travel-router/ap-ssid"
@@ -806,6 +815,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "ap_ssid": ap_ssid,
                 "wan_ssid": wan_ssid,
                 "internet": internet,
+                "lan_ip": _state_field("lan_ip") or "",
             }), "application/json")
         elif path == "/status":
             # Full status (incl. client list) is ADMIN-ONLY — session required.

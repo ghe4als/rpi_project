@@ -2217,6 +2217,7 @@ done
 [[ -n "$wh" ]] && [[ -z "$leak" ]] && ok "5ai(1) minimal page leaks no sensitive fields" || bad "5ai(1) sensitive data in / body: leak=$leak"
 # The new page has the status-rows container + links-list + fetches /api/status
 echo "$wh" | grep -qF 'id="status-rows"' && ok "5ai(1) minimal page has status-rows container" || bad "5ai(1) status-rows MISSING: $wh"
+echo "$wh" | grep -qF 'Router address' && ok "5ai(1) minimal page renders a router-address row" || bad "5ai(1) router-address row MISSING"
 echo "$wh" | grep -qF 'id="links-list"' && ok "5ai(1) minimal page has links-list" || bad "5ai(1) links-list MISSING"
 # S06b F7: the Admin entry must reach the client. The rendered <a> is drawn by
 # client-side JS (browser-only), but / serves _STATUS_HTML verbatim, so the served
@@ -2518,6 +2519,10 @@ grep -qF 'Connected clients' "$A/admin.html" && grep -qF 'clients_list' "$A/admi
 grep -qF '/api/admin/audit' "$A/admin.html" \
   && ok "5al(1) audit section + /api/admin/audit fetch (replaces the /api/wan/log UI)" \
   || bad "5al(1) audit section/audit fetch MISSING"
+grep -qF 'id="net-status-rows"' "$A/admin.html" \
+  && ok "5al(1) Network status section present (U02)" || bad "5al(1) net-status section MISSING"
+grep -qF 'd.wan_ip' "$A/admin.html" \
+  && ok "5al(1) admin renders WAN address (U02)" || bad "5al(1) admin WAN address MISSING"
 sink_hits=$(grep -c -E 'innerHTML|insertAdjacentHTML|document\.write' "$A/admin.html")
 [[ "$sink_hits" == "0" ]] && ok "5al(1) no innerHTML/insertAdjacentHTML/document.write" \
   || bad "5al(1) forbidden DOM sink count=$sink_hits"
@@ -3686,7 +3691,8 @@ pkill -f status-server.py 2>/dev/null; sleep 0.3
 # --- (5p) public /api/status endpoint (S01) ------------------------------------
 sec "5p. public /api/status endpoint (S01)"
 # The new unauthenticated endpoint returns only non-sensitive data:
-# ap_ssid, wan_ssid, internet. No client list, no WAN IP, no known networks.
+# ap_ssid, wan_ssid, internet, and the router's own lan_ip (U01). No client
+# list, no WAN IP, no known networks.
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 printf '{"mode":"standalone","wan_if":"","wan_ssid":"HotelNet","wan_ip":"10.9.8.7","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$B/srv-state.json"
 STW="$B/stub-travel-wan-warn"; printf '#!/bin/bash\nprintf %s "{\\"mode\\":\\"routed\\",\\"wan_if\\":\\"wlan1\\",\\"internet\\":\\"yes\\",\\"standalone\\":false}"\n' "$B" > "$STW"; chmod +x "$STW"
@@ -3699,14 +3705,17 @@ wait_healthy 18103 || true
 r=$(curl -s -w '\n%{http_code}' http://127.0.0.1:18103/api/status 2>/dev/null)
 code="${r##*$'\n'}"; body="${r%$'\n'*}"
 [[ "$code" == "200" ]] && ok "5p(1) GET /api/status no auth -> 200" || bad "5p(1) code=$code"
-echo "$body" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert "ap_ssid" in d and "wan_ssid" in d and "internet" in d' 2>/dev/null \
-  && ok "5p(1) /api/status has ap_ssid, wan_ssid, internet" || bad "5p(1) missing fields: $body"
+echo "$body" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert "ap_ssid" in d and "wan_ssid" in d and "internet" in d and "lan_ip" in d' 2>/dev/null \
+  && ok "5p(1) /api/status has ap_ssid, wan_ssid, internet, lan_ip" || bad "5p(1) missing fields: $body"
 # (2) /api/status does NOT leak sensitive fields
 leak=""
-for w in clients wan_ip lan_ip mode standalone ap_state clients_list; do
+for w in clients wan_ip mode standalone ap_state clients_list; do
   echo "$body" | grep -qF "$w" && leak="$leak [$w]"
 done
 [[ -z "$leak" ]] && ok "5p(2) /api/status leaks no sensitive fields" || bad "5p(2) leak: $leak"
+echo "$body" | grep -qF '"lan_ip"' \
+  && ok "5p(2b) /api/status exposes lan_ip (router's own AP address)" \
+  || bad "5p(2b) lan_ip MISSING"
 # (3) GET / serves the minimal status page (no auth)
 r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18103/ 2>/dev/null)
 [[ "$r" == "200" ]] && ok "5p(3) GET / no auth -> 200" || bad "5p(3) code=$r"

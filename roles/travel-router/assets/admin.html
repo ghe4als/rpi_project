@@ -131,6 +131,11 @@
     <p class="msg" id="pin-msg"></p>
   </section>
 
+  <section id="net-status-section">
+    <h2>Network</h2>
+    <table><tbody id="net-status-rows"></tbody></table>
+  </section>
+
   <section id="networks-section">
     <h2>WiFi networks</h2>
     <button id="scan-btn" type="button">Scan</button>
@@ -785,6 +790,12 @@ function refreshStatus() {
   return statusFetch().then(function (d) {
     if (!d) { return; }
     LAST_STATUS = d;
+    var nt = document.getElementById("net-status-rows");
+    while (nt.firstChild) { nt.removeChild(nt.firstChild); }
+    cellRow(nt, "LAN address", d.lan_ip || "?");
+    cellRow(nt, "WAN address", d.wan_ip || "(none)");
+    cellRow(nt, "WAN interface", d.wan_if || "(none)");
+    cellRow(nt, "Connected to", d.wan_ssid || "standalone");
     renderClients(d.clients_list || []);
     var msg = document.getElementById("clients-msg");
     if (d.ap_state === "down") {
