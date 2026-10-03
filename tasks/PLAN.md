@@ -57,10 +57,10 @@ U02 independent. U03 is a UI change → needs a visual-QA screenshot.
 **Wave U status: CODE COMPLETE + committed (a20de7c), suite 616/0.**
 Outstanding: U03 visual-QA screenshot (not yet taken).
 
-## Wave V — hide SSID on the fly (IN PROGRESS)
+## Wave V — hide SSID on the fly (COMPLETE ✅)
 - [x] V01 — Admin: "Apply hide/show now" button + confirm dialog (posts hidden-only) ✅ `84bd2a2` `tasks/V01-admin-hide-toggle.md`
 - [x] V02 — Regression tests: hidden-only apconfig argv + session rotation + admin static ✅ (suite 626/0) `tasks/V02-hide-toggle-tests.md`
-- [ ] V03 — Docs: document the on-the-fly hide/show toggle in the role manual ⬜ `tasks/V03-hide-toggle-docs.md`
+- [x] V03 — Docs: document the on-the-fly hide/show toggle in the role manual ✅ (suite 626/0) `tasks/V03-hide-toggle-docs.md`
 
 Context: the backend ALREADY supports hidden-only changes end-to-end
 (`/api/wan/apconfig` builds `ap-apply "" "" "2"|"0"`; `travel-wan.sh ap-apply`

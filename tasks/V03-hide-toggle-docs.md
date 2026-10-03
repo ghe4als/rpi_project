@@ -61,3 +61,8 @@ git checkout roles/travel-router/README.md
 
 ## Next task
 Update `tasks/PLAN.md` (Wave V index); commit V01→V02→V03 in order.
+
+## Execution note (2026-10-03)
+Executed as specified. Added the "Hide/show the SSID without renaming"
+subsection under the AP-rename heading. Suite §4 docs cross-check stays green
+(pins README.md + .env.example vars only). Suite GREEN 626/0.

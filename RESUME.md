@@ -1,4 +1,4 @@
-# RESUME — R wave (HW-verified) + U wave COMPLETE; suite 616/0; V wave planned
+# RESUME — R, U, V waves COMPLETE; suite 626/0; R01 hardware-verified
 
 <!--
 SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
@@ -17,7 +17,15 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
-- **U wave COMPLETE (commit `a20de7c`), suite 616/0, visual-QA PASSED.**
+- **V wave COMPLETE (V01 `84bd2a2`, V02 `8cfe965`, V03 + docs commit).** Hide the
+  SSID ON THE FLY. The backend already supported a hidden-only apconfig change;
+  the sole blocker was `admin.html`'s Save guard (`if (!ssid && !psk) return`).
+  V01 adds a dedicated "Apply hide/show now" button (enabled only when the
+  broadcast checkbox differs from live state) + a confirm dialog, posting
+  `{pin, hidden}`. V02 locks hidden-only argv (`ap-apply   2` / `ap-apply   0`)
+  + session rotation on a hidden change (and not on a no-op). V03 documents it.
+  Suite **626/0**.
+- **U wave COMPLETE (commit `a20de7c`), visual-QA PASSED.**
   U03 fixed the public page's ambiguity where `<h2>Network</h2>` read like a key
   with a blank value (heading and its nested rows shared the same left edges) —
   CSS only: muted uppercase heading + rule, indented rows. U01 added the
@@ -27,13 +35,6 @@ independent re-sweep found no 19th site.
   Privacy split: `lan_ip` public, `wan_ip` admin-only (the `wan_ip` leak assert
   is preserved). Visual QA: headless-Chrome screenshot confirmed the hierarchy
   and the new row render correctly.
-- **V wave PLANNED, not executed** (tasks/V01–V03). Hidden-SSID ON THE FLY: the
-  backend ALREADY supports hidden-only apconfig (`ap-apply "" "" "2"|"0"`,
-  `travel-wan.sh` fills empty SSID/PSK from live state, session self-destruct
-  already fires). The ONLY blocker is `admin.html`'s Save guard
-  `if (!body.ssid && !body.psk)`. Plan: dedicated "Apply hide/show now" button +
-  confirm dialog + regression tests + docs. Owner decisions: dedicated button,
-  confirm before applying.
 - The `armhf Packages` apt warning and `cc_netplan_nm_patch` are both RED
   HERRINGS (RPi OS arm64 intentionally adds armhf as a foreign arch; the
   cloud-init module warning is cosmetic on stock Trixie). Do not chase them.
@@ -69,13 +70,10 @@ independent re-sweep found no 19th site.
 
 ## Next session steps
 
-1. **V wave PLANNED (tasks/V01–V03) — execute on request.** Order V01 → V02 →
-   V03. V01: dedicated "Apply hide/show now" button + confirm dialog in
-   admin.html (posts hidden-only `{pin, hidden}`). V02: regression tests
-   (hidden-only argv + session rotation + admin static). V03: docs.
-2. **R wave COMPLETE (R01–R04).** Optional hardware-verify R02–R04 on the next
-   natural re-flash (R01 already proven).
-3. NO other pending code work. Comment-truth arc closed; no S06e planned.
+1. **NO pending code work.** R, U, V waves all COMPLETE; suite 626/0.
+2. Optional hardware-verify R02–R04 (R01 already proven) + the V hide toggle on
+   the next natural re-flash.
+3. Comment-truth arc closed; no S06e planned.
 4. Deferred (owner chose local-suite-only): a real podman arm64 integration
    test and a QEMU `raspi4b` full-boot test. Available on this Mac if wanted
    (both installed).

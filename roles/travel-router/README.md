@@ -209,6 +209,17 @@ SSID manually — the phone re-checks the router over the new connection.
 **Re-provisioning resets the AP name/password to your `.env` values by
 design.**
 
+#### Hide/show the SSID without renaming
+
+The AP-settings card's **Apply hide/show now** button toggles SSID broadcast
+without changing the network name or password: uncheck "Broadcast this SSID"
+and apply to hide, recheck and apply to show again. The button only enables
+when the checkbox differs from the live state, and a confirmation dialog warns
+that all connected devices drop and must re-add the network (hidden networks
+never appear in scans). Hiding is an identity change, so your admin session
+also ends — log in again on the same SSID. The rename Save path is unchanged;
+this is a separate, single-purpose control.
+
 #### WiFi security mode: WPA2 vs WPA3 (per-hardware capability check)
 
 The travel AP runs **WPA2-PSK (RSN/CCMP-128)** — the strongest mode the
