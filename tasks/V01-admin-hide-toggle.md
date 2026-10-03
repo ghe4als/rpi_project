@@ -180,5 +180,14 @@ bash roles/travel-router/assets/validate-local.sh 2>&1 | tail -3
 git checkout roles/travel-router/assets/admin.html
 ```
 
+## Execution note (2026-10-03)
+Executed as specified (commit `84bd2a2`). Validation: static anchors present;
+DOM textContent-only rule holds; extracted JS passes `node --check`; suite GREEN
+**616/0** with existing §5an(iv) polarity asserts intact. **Visual check
+deferred:** the AP-settings card (where the button lives) is hidden until an
+admin session exists, so a headless screenshot only shows Login + Network; a
+logged-in visual check needs a scripted session (deferred to V02's tests or a
+manual Pi check).
+
 ## Next task
 V02
