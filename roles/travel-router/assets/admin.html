@@ -261,6 +261,7 @@
         <input id="ap-hidden" type="checkbox">
         Broadcast this SSID (uncheck to hide)
       </label>
+      <button id="ap-hidden-apply" type="button" class="secondary" disabled>Apply hide/show now</button>
     </p>
     <p class="dmsg" id="ap-hidden-warn" style="display:none">
       Hiding stops the beacon — after the AP restarts, re-add the network manually; hidden networks never appear in scans.
@@ -281,6 +282,16 @@
     <button id="ap-confirm-cancel" type="button" class="secondary">Cancel</button>
   </p>
   <p class="dmsg" id="ap-confirm-msg"></p>
+</dialog>
+
+<dialog id="ap-hide-confirm">
+  <h2 id="ap-hide-title">Hide network?</h2>
+  <p id="ap-hide-confirm-text"></p>
+  <p>
+    <button id="ap-hide-confirm-save" type="button">Yes, apply</button>
+    <button id="ap-hide-confirm-cancel" type="button" class="secondary">Cancel</button>
+  </p>
+  <p class="dmsg" id="ap-hide-confirm-msg"></p>
 </dialog>
 
 <dialog id="net-dialog">
@@ -491,6 +502,7 @@ function badge(text, cls) {
 }
 
 var LAST_STATUS = null;
+var AP_HIDDEN_LOADED = false;
 function refreshStatusLast() { return LAST_STATUS; }
 
 // --- Blocked devices (security plan todo 3; GET/POST /api/admin/blocked) ---
@@ -826,8 +838,10 @@ function refreshApInfo() {
       cellRow(tbody, "Current SSID", d.ap_ssid || "");
       // hidden:false => broadcasting => checked; hidden:true => unchecked
       document.getElementById("ap-hidden").checked = !d.hidden;
+      AP_HIDDEN_LOADED = !!d.hidden;
       document.getElementById("ap-hidden-warn").style.display =
         d.hidden ? "" : "none";
+      updateHiddenApplyBtn();
     })
     .catch(function () {
       // A read failure must never break the dialog — degrade to blank.
@@ -835,6 +849,12 @@ function refreshApInfo() {
       while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
       cellRow(tbody, "Current SSID", "(unknown)");
     });
+}
+
+function updateHiddenApplyBtn() {
+  var desiredHidden = !document.getElementById("ap-hidden").checked;
+  document.getElementById("ap-hidden-apply").disabled =
+    (desiredHidden === AP_HIDDEN_LOADED);
 }
 
 // Random preview: POST /api/admin/apconfig/preview (session + pin) fills
@@ -882,6 +902,7 @@ document.getElementById("ap-random-psk").addEventListener("click", function () {
 document.getElementById("ap-hidden").addEventListener("change", function () {
   document.getElementById("ap-hidden-warn").style.display =
     this.checked ? "none" : "";
+  updateHiddenApplyBtn();
 });
 
 // The "write these down" line appears once a generated value is in play.
@@ -971,6 +992,33 @@ document.getElementById("ap-confirm-save").addEventListener("click", function ()
   doApSave(body);
 });
 
+document.getElementById("ap-hidden-apply").addEventListener("click", function () {
+  var desiredHidden = !document.getElementById("ap-hidden").checked;
+  if (desiredHidden === AP_HIDDEN_LOADED) { return; }
+  var text = document.getElementById("ap-hide-confirm-text");
+  while (text.firstChild) { text.removeChild(text.firstChild); }
+  text.textContent = desiredHidden
+    ? "Hiding stops broadcasting the SSID. All connected devices drop and must re-add the network manually. Your admin session also ends — you will need to log in again."
+    : "Showing resumes broadcasting the SSID. All connected devices drop and must rejoin.";
+  setMsg("ap-hide-confirm-msg", "");
+  document.getElementById("ap-hide-confirm").showModal();
+});
+
+document.getElementById("ap-hide-confirm-cancel").addEventListener("click", function () {
+  document.getElementById("ap-hide-confirm").close();
+});
+
+document.getElementById("ap-hide-confirm-save").addEventListener("click", function () {
+  var pin = currentPin();
+  if (!pin) {
+    setMsg("ap-hide-confirm-msg", "PIN required — enter it in the PIN section", "warn");
+    return;
+  }
+  var desiredHidden = !document.getElementById("ap-hidden").checked;
+  document.getElementById("ap-hide-confirm").close();
+  doApSave({ pin: pin, hidden: desiredHidden });
+});
+
 // The radio drops mid-restart: the response is NOT proof. Capture the
 // (possibly generated) final SSID BEFORE the restart, store it under
 // "admin-last-ssid", then poll GET /status (session) every 2s up to 30s and
@@ -1023,7 +1071,7 @@ function doApSave(body) {
 }
 
 function busy(on) {
-  ["ap-save", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
+  ["ap-save", "ap-hidden-apply", "ap-random", "ap-random-psk", "pm-add", "pm-refresh",
    "login-btn", "dns-add", "rotate-sessions-btn",
    "scan-btn", "mc-connect", "mc-disconnect", "mc-forget"].forEach(function (id) {
     var el = document.getElementById(id);
