@@ -115,6 +115,11 @@ git checkout roles/travel-router/assets/admin.html
 ## Next task
 X02 (suite asserts + docs).
 
+## X02 execution note (2026-10-03)
+Added 9 §5x asserts (pskmanage-section removed; dialog-hub ids; `action:'add'`;
+`revealTryLines`; reduced-motion guard; border-box) and documented the hub in
+`roles/travel-router/README.md`. Suite GREEN **635/0** (was 626).
+
 ## Execution note (2026-10-03)
 Executed directly (subagent delegation was unavailable — no tokens for the
 visual-engineering model). Implemented in `admin.html` only:

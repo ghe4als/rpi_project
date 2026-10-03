@@ -1312,6 +1312,23 @@ grep -qF 'net-dialog' "$A/admin.html" \
   && ok "5x S04 admin.html connect dialog present" || bad "5x S04 connect dialog MISSING"
 grep -qF 'Try saved passwords' "$A/admin.html" \
   && ok "5x S04 admin.html Try saved passwords present" || bad "5x S04 Try saved passwords MISSING"
+# X01: the connect dialog is the credential hub; the standalone saved-passwords
+# section is gone and its capability lives in the dialog.
+grep -qF 'pskmanage-section' "$A/admin.html" \
+  && bad "5x X01 standalone saved-passwords section still present" \
+  || ok "5x X01 standalone pskmanage-section removed (folded into dialog)"
+for id in 'id="d-ssid-input"' 'id="d-saved"' 'id="d-saved-ssid"' 'id="d-saved-default"'; do
+  grep -qF "$id" "$A/admin.html" \
+    && ok "5x X01 dialog hub has $id" || bad "5x X01 dialog hub MISSING $id"
+done
+grep -qF "pskSave(\"add\"" "$A/admin.html" \
+  && ok "5x X01 per-network save uses action:'add'" || bad "5x X01 action:'add' MISSING"
+grep -qF 'revealTryLines' "$A/admin.html" \
+  && ok "5x X01 try-psks progress playback present" || bad "5x X01 revealTryLines MISSING"
+grep -qF 'prefers-reduced-motion: reduce' "$A/admin.html" \
+  && ok "5x X01 reduced-motion guard present" || bad "5x X01 reduced-motion guard MISSING"
+grep -qF 'box-sizing: border-box' "$A/admin.html" \
+  && ok "5x X01 dialog border-box sizing present" || bad "5x X01 border-box MISSING"
 
 # --- (5y) setup-v2 psk leak sweep (M8-h extension) -----------------------------
 sec "5y. setup-v2 psk leak sweep"

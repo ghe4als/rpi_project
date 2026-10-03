@@ -171,6 +171,22 @@ with a Connect button that opens a dialog for the password plus
 "Try saved passwords". Hidden networks and enterprise (802.1X) networks
 are shown as notes — the page never joins those.
 
+#### The connect dialog is the credential hub
+
+Opening a network's dialog (from the scan list, a known network, or **Connect
+manually**) gives one place to do everything for that network: an editable
+network name (so hidden SSIDs can be typed), the password, **Connect**, and
+**Try saved passwords**. "Try saved passwords" now shows each candidate it
+tests in order (a spinner per attempt, then connected / not found) instead of a
+single lump of text.
+
+The dialog also carries a collapsible **Saved passwords** area: **For this
+network** lists that network's saved candidates with a Remove button and an
+"add a password for this network" field; **Defaults** lists the passwords tried
+for *any* network (the `d`-rows seeded from `TRAVELROUTER_DEFAULT_PSKS` /
+`.psksecret`) with Remove and an add field. Password values are never shown —
+only which network/row they belong to.
+
 ### Pre-seeded passwords (.psksecret) and the saved-passwords manager
 
 Starter passwords live in an optional, **gitignored** repo-root file
