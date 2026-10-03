@@ -3041,6 +3041,37 @@ else
   bad "5an(iii-6) trailing-space ssid code=${an_rs##*$'\n'} argv=[$(printf '%q' "$an_rs_argv")] (want 'ap-apply random   ' — random + literal sp + 2 empty slots)"
 fi
 
+# (iii-7)/(iii-8) hidden-ONLY (no ssid, no psk): the on-the-fly hide/show path
+# V01 exposes in admin.html. Server fills both empty argv slots; the stub logs
+# space-joined argv, so hidden-only reads `ap-apply   2` (two empty slots).
+: > "$ANB/an-tool.log"
+ANTOK=$(login_psk 18510 "${TESTADMIN_PSK:-AdminPass99}")
+an_hid_only=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","hidden":true}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_ho_line=$(awk '$1=="ap-apply"' "$ANB/an-tool.log" | head -1)
+if [[ "${an_hid_only##*$'\n'}" == "200" ]] \
+   && printf '%s' "$an_ho_line" | grep -qE '^ap-apply   2$'; then
+  ok "5an(iii-7) hidden-only -> 200 + argv 'ap-apply   2' (ssid/psk empty, hidden=2)"
+else
+  bad "5an(iii-7) hidden-only code=${an_hid_only##*$'\n'} line=[$(printf '%q' "$an_ho_line")] (want 'ap-apply   2')"
+fi
+# hidden-only SHOW -> slot 3 "0"; re-login first (the hide rotated the salt).
+: > "$ANB/an-tool.log"
+ANTOK=$(login_psk 18510 "${TESTADMIN_PSK:-AdminPass99}")
+an_hid_show=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ANTOK" \
+  -d '{"pin":"2468","hidden":false}' \
+  http://127.0.0.1:18510/api/wan/apconfig 2>/dev/null)
+an_hs_line=$(awk '$1=="ap-apply"' "$ANB/an-tool.log" | head -1)
+if [[ "${an_hid_show##*$'\n'}" == "200" ]] \
+   && printf '%s' "$an_hs_line" | grep -qE '^ap-apply   0$'; then
+  ok "5an(iii-8) hidden-only show -> 200 + argv 'ap-apply   0'"
+else
+  bad "5an(iii-8) hidden-only show code=${an_hid_show##*$'\n'} line=[$(printf '%q' "$an_hs_line")] (want 'ap-apply   0')"
+fi
+
 kill "$ANPID" 2>/dev/null; wait "$ANPID" 2>/dev/null
 
 # --------- (iv) STATIC: admin.html AP dialog additions -----------------------
@@ -3059,6 +3090,17 @@ grep -qF 'body.hidden = !hiddenChecked' "$A/admin.html" \
 grep -qF 'body.hidden = hiddenChecked' "$A/admin.html" \
   && bad "5an(iv) hidden polarity BUG REINTRODUCED (body.hidden = hiddenChecked posts broadcast-checked as hidden-true -> every save hides the AP; 2026-10-01 incident)" \
   || ok "5an(iv) un-inverted save polarity absent (2026-10-01 incident regression guard)"
+# V01: the standalone on-the-fly hide/show control (backend already supported
+# hidden-only; the Save guard was the only blocker).
+grep -qF 'id="ap-hidden-apply"' "$A/admin.html" \
+  && ok "5an(iv) on-the-fly hide apply button present (id=ap-hidden-apply)" \
+  || bad "5an(iv) hide apply button MISSING (id=ap-hidden-apply)"
+grep -qF 'id="ap-hide-confirm"' "$A/admin.html" \
+  && ok "5an(iv) hide confirm dialog present (id=ap-hide-confirm)" \
+  || bad "5an(iv) hide confirm dialog MISSING (id=ap-hide-confirm)"
+grep -qF 'doApSave({ pin: pin, hidden: desiredHidden })' "$A/admin.html" \
+  && ok "5an(iv) hide toggle posts hidden-only {pin, hidden}" \
+  || bad "5an(iv) hidden-only post MISSING (expected doApSave({ pin: pin, hidden: desiredHidden }))"
 grep -qF 're-add the network manually' "$A/admin.html" \
   && ok "5an(iv) rejoin warning textContent present" \
   || bad "5an(iv) rejoin warning text MISSING"
@@ -3685,6 +3727,29 @@ apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","ssid":"NewName"}' \
   || bad "5ar(f) failed apply rotated the salt"
 [[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK6")" == 200* ]] \
   && ok "5ar(f) rc!=0 -> pre-apply token still 200" || bad "5ar(f) token rotated on failed apply"
+AR_STOP
+# hidden-ONLY toggle -> salt CHANGED (hide is an identity change; clients must
+# rejoin) + pre-toggle token 401; then a hidden NO-OP -> salt UNCHANGED.
+# (V01's on-the-fly hide/show path; the stub writes LIVE_FILE line 2.)
+rm -f "$AR/session-salt"; printf 'HotelNet\nfalse\n' > "$ARLIVE"
+AR_APPLY=ok AR_START
+ARTOK7=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+ar_salt_before=$(ar_salt)
+apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","hidden":true}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK7")
+[[ "$apx" == 200*'"ok"'*'"rc": 0'* ]] && ok "5ar(f) hidden-only apconfig -> 200 rc=0" || bad "5ar(f) hidden-only: [$apx]"
+[[ "$(ar_salt)" != "$ar_salt_before" && "$(ar_salt)" != "MISSING" ]] \
+  && ok "5ar(f) hidden-only toggle -> salt CHANGED" || bad "5ar(f) hidden-only salt unchanged"
+[[ "$(aq_get_r /api/admin/audit -H "X-Session: $ARTOK7")" == 401* ]] \
+  && ok "5ar(f) hidden-only -> pre-toggle token 401 (self-destruct)" \
+  || bad "5ar(f) pre-toggle hidden token survived"
+ARTOK7B=$(login_psk 18610 "${TESTADMIN_PSK:-AdminPass99}")
+ar_salt_before=$(ar_salt)
+apx=$(aq_post_r /api/wan/apconfig '{"pin":"1357","hidden":true}' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $ARTOK7B")
+[[ "$apx" == 200*'"ok"'*'"rc": 0'* ]] && ok "5ar(f) hidden no-op apconfig -> 200 rc=0" || bad "5ar(f) hidden no-op: [$apx]"
+[[ "$(ar_salt)" == "$ar_salt_before" ]] \
+  && ok "5ar(f) hidden no-op -> salt UNCHANGED" || bad "5ar(f) hidden no-op rotated the salt"
 AR_STOP
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 

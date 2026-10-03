@@ -59,7 +59,7 @@ Outstanding: U03 visual-QA screenshot (not yet taken).
 
 ## Wave V — hide SSID on the fly (IN PROGRESS)
 - [x] V01 — Admin: "Apply hide/show now" button + confirm dialog (posts hidden-only) ✅ `84bd2a2` `tasks/V01-admin-hide-toggle.md`
-- [ ] V02 — Regression tests: hidden-only apconfig argv + session rotation + admin static ⬜ `tasks/V02-hide-toggle-tests.md`
+- [x] V02 — Regression tests: hidden-only apconfig argv + session rotation + admin static ✅ (suite 626/0) `tasks/V02-hide-toggle-tests.md`
 - [ ] V03 — Docs: document the on-the-fly hide/show toggle in the role manual ⬜ `tasks/V03-hide-toggle-docs.md`
 
 Context: the backend ALREADY supports hidden-only changes end-to-end

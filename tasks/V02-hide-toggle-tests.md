@@ -105,3 +105,15 @@ git checkout roles/travel-router/assets/validate-local.sh
 
 ## Next task
 V03
+
+## Execution note (2026-10-03)
+Executed with the helper names reconciled to the suite's real idioms (the plan's
+invented `api_post_sess_apconfig`/`$AP_ARGV_LOG` did not exist):
+- §5an(iii-7/8) use the section's actual curl + `login_psk` + `$ANB/an-tool.log`
+  seam, matching the (iii-2) capture idiom; hidden-only argv asserted as the
+  space-joined `ap-apply   2` / `ap-apply   0` (two empty slots).
+- §5ar(f) uses `aq_post_r`, `ar_salt`, `login_psk`, `AR_START`/`AR_STOP`,
+  re-login between mutations. The no-op assert is sound because the ap-apply
+  stub flips LIVE_FILE line 2 to `true` after the hide, so the second
+  `hidden:true` is a genuine no-op against live state.
+Suite GREEN **626/0** (was 616; +10).
