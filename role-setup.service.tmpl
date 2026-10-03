@@ -12,6 +12,9 @@ ExecStartPost=/bin/systemctl disable role-setup.service
 # no route to the broker exists). The announcer's own retry loop bounds this
 # to <= 20 x 3s inside the unit's 30min start budget.
 ExecStartPost=-/usr/local/bin/rpi-nats-announce setup-complete
+# On a non-success exit, mirror the role log + unit state onto the FAT bootfs
+# (readable from macOS). The helper is staged next to this unit.
+ExecStopPost=-/bin/bash /boot/firmware/role-setup-dump.sh
 StandardOutput=append:/var/log/role-setup.log
 StandardError=append:/var/log/role-setup.log
 TimeoutStartSec=30min

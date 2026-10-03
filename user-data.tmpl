@@ -78,4 +78,10 @@ runcmd:
       echo
       echo "=== cloud-init-output log tail ==="
       tail -100 /var/log/cloud-init-output.log 2>&1
+      echo
+      echo "=== role-setup unit status ==="
+      systemctl status role-setup.service --no-pager 2>&1
+      echo
+      echo "=== role-setup log tail (first-boot provisioning) ==="
+      tail -200 /var/log/role-setup.log 2>&1
     ) > /boot/firmware/cloud-init-debug.log 2>&1 || true

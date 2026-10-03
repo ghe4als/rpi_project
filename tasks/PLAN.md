@@ -36,7 +36,7 @@ session index: what is done, what is next.
 - [x] R01 — Bounded retry for apt/network steps (`retry()` helper; base + travel-router) ✅ (uncommitted; suite 606/0) `tasks/R01-apt-bounded-retry.md`
 - [x] R02 — Wait for route+DNS before the NTP/apt gate (`NET_WAIT_SEC`, advisory) ✅ (suite 606/0) `tasks/R02-wait-for-network.md`
 - [x] R03 — `validate-local.sh` §5k3: apt-failure retry/hard-fail regression ✅ (suite 612/0) `tasks/R03-retry-regression-test.md`
-- [ ] R04 — Mirror `role-setup.log` to bootfs on failure (diagnosability) ⬜ `tasks/R04-bootfs-failure-diagnostics.md`
+- [x] R04 — Mirror `role-setup.log` to bootfs on failure (diagnosability) ✅ (suite 612/0) `tasks/R04-bootfs-failure-diagnostics.md`
 
 Order: R01 → R02 → R03 (locks R01/R02) → R04 (independent, may land first).
 Explicitly deferred: a real podman arm64 integration test and a QEMU `raspi4b`

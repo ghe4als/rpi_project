@@ -214,9 +214,10 @@ if [[ "$ROLE" == "travel-router" && -f "$REPO/.psksecret" ]]; then
 fi
 
 COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
+COPYFILE_DISABLE=1 cp "$REPO/role-setup-dump.sh" "$BOOT/role-setup-dump.sh"
 
 rm -f "$BOOT/custom.toml" "$BOOT/firstrun.sh" "$BOOT/firstrun.log" \
-      "$BOOT/wpa_supplicant.conf"
+      "$BOOT/wpa_supplicant.conf" "$BOOT/role-setup-debug.log"
 
 # Touch $BOOT/ssh so the Raspberry Pi OS legacy "enable SSH on first boot"
 # mechanism fires regardless of whether cloud-init's cc_ssh module runs.

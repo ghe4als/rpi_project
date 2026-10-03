@@ -3786,7 +3786,7 @@ rm -rf "$BW" "$TMP/s07-stub"
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
-bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|roles/base/|role-setup\.service\.tmpl$|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|\.gitignore$|tasks/|RESUME\.md$)' || true)
+bad_scope=$(echo "$scope" | grep -vE '^(roles/travel-router/|roles/base/|role-setup\.service\.tmpl$|role-setup-dump\.sh$|user-data\.tmpl$|provision\.sh$|provision-bookworm\.sh$|\.env\.example$|README\.md$|INVENTORY\.md$|\.gitignore$|tasks/|RESUME\.md$)' || true)
 [[ -z "$scope" ]] && ok "working tree clean" || { [[ -z "$bad_scope" ]] && ok "diff scoped to permitted paths" || bad "diff outside scope: $bad_scope"; }
 
 echo

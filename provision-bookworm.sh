@@ -173,6 +173,7 @@ if [[ "$ROLE" == "travel-router" && -f "$REPO/.psksecret" ]]; then
 fi
 
 COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
+COPYFILE_DISABLE=1 cp "$REPO/role-setup-dump.sh" "$BOOT/role-setup-dump.sh"
 
 # -----------------------------------------------------------------------------
 # Render firstrun.sh.
@@ -322,7 +323,8 @@ fi
 # -----------------------------------------------------------------------------
 # Remove the stale Trixie cloud-init files (they'd be ignored, but clean up).
 # -----------------------------------------------------------------------------
-rm -f "$BOOT/user-data" "$BOOT/network-config" "$BOOT/meta-data"
+rm -f "$BOOT/user-data" "$BOOT/network-config" "$BOOT/meta-data" \
+      "$BOOT/role-setup-debug.log"
 
 # instance_id stamp: lets `pi register` bind this flash to a serial later
 # (same mechanism/file as the Trixie path; bootfs meta-data is read as an

@@ -101,3 +101,18 @@ git checkout user-data.tmpl role-setup.service.tmpl provision.sh provision-bookw
 
 ## Next task
 Update `tasks/PLAN.md` (R-wave index) and, if desired, commit each task separately.
+
+## Execution note (2026-10-03)
+Executed with one deliberate deviation: instead of the inline `ExecStopPost`
+from the plan, the SERVICE_RESULT check lives in a new staged helper
+`role-setup-dump.sh` (copied to bootfs by BOTH provisioners, referenced by the
+unit). Reason: systemd performs its own `$`/`${}` expansion on `Exec*` lines
+and `:-` default syntax is not valid systemd specifier syntax, so an inline
+`[ "${SERVICE_RESULT:-}" != success ]` risks misexpansion; a helper keeps all
+shell logic in one testable place and is present even when role-setup fails
+before installing anything to `/usr/local/bin`. Also updated the suite's §6
+scope allowlist to permit `user-data.tmpl` and `role-setup-dump.sh` (otherwise
+the scope assert fails — those files must be in-scope for R04 to land).
+Validation: `bash -n` clean (helper + both provisioners); plan greps OK
+(helper/unit/provisioners/user-data/cleanup); suite GREEN **612/0** with the
+scope assert PASS.
