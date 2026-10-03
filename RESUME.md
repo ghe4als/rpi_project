@@ -17,6 +17,15 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
+- **R wave COMPLETE (R01 `3f73061` + HW-verified, R02 `abd4562`, R03 `66c3fb0`,
+  R04 `a773ea0`).** Root cause: Trixie arm64 first boot aborted `role-setup`
+  because `roles/base/install.sh` ran `apt-get update` under `set -euo pipefail`
+  with no retry while the network was not yet usable. Fixes: bounded apt retry
+  then hard-fail (new `roles/base/assets/retry.sh`); advisory route+DNS wait
+  before the NTP/apt gate (`NET_WAIT_SEC`); §5k3 regression battery; bootfs
+  failure diagnostics (`role-setup-dump.sh` → `/boot/firmware/role-setup-debug.log`).
+  R01 hardware-verified 2026-10-03 (owner re-flash came up fine); R02–R04
+  suite-green only.
 - **V wave COMPLETE (V01 `84bd2a2`, V02 `8cfe965`, V03 + docs commit).** Hide the
   SSID ON THE FLY. The backend already supported a hidden-only apconfig change;
   the sole blocker was `admin.html`'s Save guard (`if (!ssid && !psk) return`).
