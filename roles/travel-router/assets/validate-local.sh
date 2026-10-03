@@ -621,6 +621,69 @@ rm -f "$B2APT"
 [[ -f "$B2APT" ]] && ok "5k2 base proceeds to apt when NTP synced" || bad "5k2 base did NOT proceed to apt (rc=$rc2)"
 rm -rf "$B2B" "$B2APT"
 
+# --- (5k3) apt failure path: bounded retry then HARD-FAIL (R01) ---------------
+# Reproduces the field failure: apt-get exits non-zero. Asserts the R01
+# contract — retry the budget, then exit non-zero (never silently succeed).
+sec "5k3. apt failure path: bounded retry, then hard-fail (R01)"
+# shellcheck source=/dev/null
+source "$ROOT/roles/base/assets/retry.sh"
+
+# (a) helper unit semantics: retry returns non-zero after the budget.
+B3="$TMP/5k3bin"; mkdir -p "$B3"
+cat > "$B3/always-fail" <<'SH'
+#!/bin/bash
+exit 100
+SH
+chmod +x "$B3/always-fail"
+retry 3 0 "$B3/always-fail"; rc=$?
+[[ "$rc" -ne 0 ]] && ok "5k3 retry returns non-zero after budget (rc=$rc)" \
+                  || bad "5k3 retry masked a persistent failure (rc=$rc)"
+
+# (b) success path: a step that fails twice then succeeds must return 0.
+cat > "$B3/flaky.sh" <<'SH'
+#!/bin/bash
+c="${B3_COUNT:-/tmp/5k3-count.$$}"
+n=$(cat "$c" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" >"$c"
+[ "$n" -ge 3 ]
+SH
+chmod +x "$B3/flaky.sh"
+rm -f "$TMP/5k3-count"; export B3_COUNT="$TMP/5k3-count"
+retry 5 0 "$B3/flaky.sh"; rc=$?
+unset B3_COUNT
+[[ "$rc" -eq 0 ]] && ok "5k3 retry recovers a flaky step (rc=$rc)" \
+                  || bad "5k3 retry failed to recover a flaky step (rc=$rc)"
+[[ "$(cat "$TMP/5k3-count" 2>/dev/null)" == "3" ]] \
+  && ok "5k3 retry attempted exactly 3 times before success" \
+  || bad "5k3 retry attempt count=$(cat "$TMP/5k3-count" 2>/dev/null)"
+
+# (c) base/install.sh under a FAILING apt must exit non-zero (hard-fail),
+#     after the retry budget was actually spent (3 apt-update attempts).
+B3B="$TMP/5k3base-apt"; mkdir -p "$B3B"
+cat > "$B3B/timedatectl" <<'SH'
+#!/bin/bash
+echo "NTPSynchronized=yes"
+SH
+cat > "$B3B/apt-get" <<EOF
+#!/bin/bash
+echo "\$*" >> "$TMP/5k3-apt-calls"
+exit 100
+EOF
+chmod +x "$B3B/timedatectl" "$B3B/apt-get"
+rm -f "$TMP/5k3-apt-calls"
+(cd /tmp && PATH="$B3B:$PATH" BASE_NTP_WAIT_SEC=2 NET_WAIT_SEC=0 \
+  RETRY_ATTEMPTS=3 RETRY_MAX_SEC=0 \
+  bash "$ROOT/roles/base/install.sh" >"$TMP/5k3-base.log" 2>&1); rc=$?
+[[ "$rc" -ne 0 ]] && ok "5k3 base hard-fails when apt keeps failing (rc=$rc)" \
+                  || bad "5k3 base masked persistent apt failure (rc=$rc)"
+calls=$(grep -c 'update' "$TMP/5k3-apt-calls" 2>/dev/null || echo 0)
+[[ "$calls" -eq 3 ]] && ok "5k3 apt update retried 3x before giving up (calls=$calls)" \
+                     || bad "5k3 apt update call count=$calls (expected 3)"
+
+# (d) R02 knob: base references NET_WAIT_SEC (advisory net-wait present).
+grep -q 'NET_WAIT_SEC' "$ROOT/roles/base/install.sh" \
+  && ok "5k3 base has the R02 network-wait knob" \
+  || bad "5k3 base is missing NET_WAIT_SEC (R02)"
+
 # --- (5l) provisioner gating asserts (W01, structural) ------------------------
 sec "5l. provisioner WIFI_* gating (W01)"
 for pf in provision.sh provision-bookworm.sh; do

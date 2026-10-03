@@ -122,3 +122,12 @@ git checkout roles/travel-router/assets/validate-local.sh
 
 ## Next task
 R04
+
+## Execution note (2026-10-03)
+Executed. Two hardening tweaks over the literal snippet: `export B3_COUNT`
+(the assignment-prefix form is not reliably exported to a child script) and
+the dead `n_attempts=0` line was dropped. Suite uses `set -uo pipefail` (no
+`-e`), so §5k3's intentional non-zero `retry` returns are safe. Validation:
+suite GREEN **612/0** (was 606); all six 5k3 asserts PASS. Regression lock
+holds by construction: (c) requires exactly 3 apt-update calls (reverted R01 →
+1 call → FAIL), (d) greps `NET_WAIT_SEC` (reverted R02 → FAIL).
