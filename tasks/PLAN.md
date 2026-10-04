@@ -78,6 +78,21 @@ directly on a clean base (SC-wave stashed as `stash@{0}`). Suite 626/0; visual
 QA passed. X02 will add asserts for the new hub ids and update §5x if any pinned
 label changed.
 
+## Wave WS — wireless security: WPA3/PMF + deauth detection (PROPOSED)
+See `tasks/PLAN-wireless-security.md` (owner decisions pending before code).
+- [ ] WS01 — `travel-wan wifi-capabilities` probe (AP/SAE/PMF/band)
+- [ ] WS02 — `TRAVELROUTER_AP_SECURITY` (wpa2 default / wpa3-transition / wpa3) + fail-loud capability gate
+- [ ] WS03 — Detection Tier 1: disconnect-burst watcher + NATS `deauth-alert`
+- [ ] WS04 — Status/admin deauth banner
+- [ ] WS05 — Suite battery + README (buy-guide; "rotation is not a defense")
+- [ ] WS06 (optional) — Detection Tier 2: monitor-mode sniffer (second radio)
+- [ ] WQ — Hardware QA (USER-GATED): Pi 4 + WPA3 adapter
+
+Honest scope: the **real** deauth defense is **PMF/WPA3**, which the Zero W's
+BCM43430A1 cannot do (chip ceiling). Zero W = detection/alert only; Pi 4 + a
+capable adapter = WPA3/PMF. **SSID rotation on deauth is rejected** (no
+protection; self-inflicted client/session drop).
+
 ## Blocked
 None.
 
