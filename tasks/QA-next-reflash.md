@@ -14,6 +14,7 @@ closes all of them:
 | SQ   | `PLAN-ssid-common.md`     | `.ssid_common` pool feeds random/pick + rotation |
 | R    | R02–R04 (R01 already HW-verified) | apt retry / route-wait / bootfs failure dump |
 | V    | V01–V02                   | on-the-fly hide/show toggle |
+| WS   | `PLAN-wireless-security.md` | Pi 4 WPA3/PMF render + deauth detection |
 
 R01 was hardware-verified 2026-10-03 (owner re-flash). Everything else in the
 R/U/V/X/SC waves is suite-green only.
@@ -22,6 +23,9 @@ R/U/V/X/SC waves is suite-green only.
 
 - [ ] A fresh image is staged with `ROLE=travel-router` (Bookworm armhf
       recommended for the Zero W; Trixie for a Pi 4 — see step 6).
+- [ ] For the **WS** checks: a **Pi 4** flash (its onboard radio is the WPA3
+      target) with `TRAVELROUTER_AP_SECURITY=wpa3`; a client that supports
+      PMF/WPA3 to join with.
 - [ ] `.env` has: `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK`,
       `TRAVELROUTER_SETUP_PIN`, `TRAVELROUTER_ADMIN_PSK`,
       `WIFI_SSID` / `WIFI_PSK` (set to the home/travel test network for the
@@ -126,11 +130,38 @@ curl -s -H "X-Session: <token>" http://192.168.50.1/api/admin/ssids-common
 - [ ] Force an apt failure (e.g. pull DNS mid-install if convenient) and
       confirm `/boot/firmware/role-setup-debug.log` is written.
 
+### 11. WS — WPA3/PMF on the Pi 4 (WS02)
+
+Requires a **Pi 4** flash with `TRAVELROUTER_AP_SECURITY=wpa3`:
+
+- [ ] `travel-wan wifi-capabilities` reports `"sae":true`, `"pmf":true`,
+      `"wpa3":true` on the onboard radio.
+- [ ] `/etc/hostapd/hostapd-travel.conf` contains `wpa_key_mgmt=SAE` and
+      `ieee80211w=2`.
+- [ ] A PMF-capable client joins; the AP does not fall back to WPA2.
+- [ ] Negative check: set `TRAVELROUTER_AP_SECURITY=wpa3` on a **Zero W**
+      (no SAE) → install fails loud with a remediation, no conf written.
+
+### 12. WS — deauth detection (WS03/WS04)
+
+- [ ] Watch the AP: `journalctl -u deauth-watch -f` (or the monitor Pi's
+      `nats sub 'rpi.nodes.>'`).
+- [ ] From a second adapter, blast deauth frames at a connected client (or
+      simulate with a burst of disconnects) → within the window the watcher
+      writes `/run/travel-router/deauth-alert.json` and publishes
+      `rpi.nodes.<host>.deauth-alert`.
+- [ ] The public status page and `/admin` show the warning banner; the admin
+      **Dismiss** button (session + PIN) clears it and the banner hides.
+- [ ] Confirm the router's OWN AP rename / MAC block does NOT raise an alert
+      (self-suppression).
+
 ## Success criteria
 
-- [ ] All WQ, HQ, SQ, V checkboxes above ticked.
+- [ ] All WQ, HQ, SQ, V, R, WS checkboxes above ticked.
 - [ ] Both NATS events observed with the dongle; none without a WAN route.
 - [ ] First boot ends routed to `WIFI_SSID`; status page correct.
+- [ ] WS: Pi 4 renders `wpa3` (SAE + ieee80211w=2) and a PMF client joins;
+      Zero W rejects `wpa3` loud; a simulated deauth raises the alert + banner.
 - [ ] No PSK in any log.
 - [ ] Local suite green (run it once on the Mac before flashing to baseline):
       `bash roles/travel-router/assets/validate-local.sh`.

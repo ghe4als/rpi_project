@@ -114,7 +114,9 @@ original branch and fixed: a duplicated, unreachable `/admin` route branch in
 uniqueness guards so this class of defect is caught structurally. The original
 branch also predated X01; the pool chooser and the X01 connect hub now coexist
 (the pool chooser lives in the AP-settings card, untouched by X01).
-Suite: 656 passed, 0 failed (with the uniqueness guards).
+Suite: 656 passed, 0 failed (with the uniqueness guards); the current suite is
+659 passed, 0 failed (re-run 2026-10-03, evidence
+`.omo/evidence/plan-review-2026-10-03/suite-baseline.txt`).
 
 Order: SC01 → SC02 → SC03 → SC04 → SC05 → SC06 → SQ. One commit per task
 (`feat(provision):` / `feat(travel-router):` / `test:` / `docs:`).

@@ -1,9 +1,17 @@
 # Project Plan — travel-router role (fleet Pi provisioning)
-Last updated: 2026-10-03
+Last updated: 2026-10-04
 
 ## Status
-Current task: none — S-wave hardware-verified; S07 shipped (Bookworm instance_id bind: bf45e5d + 02a6bc7). Remaining open: live bind proof at the next natural re-flash.
-Last completed: S06c ✅ (fde41bd was the S06b tail; this cleanup commits on top)
+Current task: none — R/U/V/X/SC/WS waves ALL COMPLETE. Suite 707/0.
+The only remaining open items are USER-GATED hardware QA, batched into ONE
+re-flash checklist: `tasks/QA-next-reflash.md` (sweeps WQ + HQ + SQ + R/V
+re-verification), plus the WS-wave WQ (Pi 4 WPA3/PMF + simulated deauth).
+Open code work: NONE. WS (wireless security: WPA3/PMF + deauth detection)
+shipped WS01–WS05 — see `tasks/PLAN-wireless-security.md` (CODE COMPLETE).
+Last completed: WS wave ✅ (WS01 `8fd89f6`, WS02 `4779e66`, WS03 `353486d`,
+WS04 `4f926ce`, WS05 `3e239b9`); SC-wave ✅ (SC01–SC06; plan `d9d10fc`);
+X-wave ✅ (`02c7925` + `8418b4e`). S07 Bookworm instance_id bind shipped
+(`bf45e5d` + `02a6bc7`); live bind proof deferred to the same re-flash.
 
 WAVE R (2026-10-03) COMPLETE: first-boot resilience. A Trixie arm64 Pi4 first
 boot aborted `role-setup` because `roles/base/install.sh` ran `apt-get update`
@@ -74,27 +82,30 @@ confirm dialog. Order: V01 → V02 → V03.
 
 Owner decisions: **cosmetic playback** (no backend/streaming), **focused
 redesign keeping the existing look**, **dialog is the hub**. X01 executed
-directly on a clean base (SC-wave stashed as `stash@{0}`). Suite 626/0; visual
-QA passed. X02 will add asserts for the new hub ids and update §5x if any pinned
-label changed.
+directly on a clean base (the pre-rebase SC work was stashed during X01 and has
+since been superseded by the SC commits — the stash is gone). Suite 626/0;
+visual QA passed. X02 added asserts for the new hub ids and updated §5x where
+pinned labels changed.
 
-## Wave WS — wireless security: WPA3/PMF + deauth detection (PROPOSED)
-See `tasks/PLAN-wireless-security.md` (owner decisions pending before code).
-- [ ] WS01 — `travel-wan wifi-capabilities` probe (AP/SAE/PMF/band)
-- [ ] WS02 — `TRAVELROUTER_AP_SECURITY` (wpa2 default / wpa3-transition / wpa3) + fail-loud capability gate
-- [ ] WS03 — Detection Tier 1: disconnect-burst watcher + NATS `deauth-alert`
-- [ ] WS04 — Status/admin deauth banner
-- [ ] WS05 — Suite battery + README (buy-guide; "rotation is not a defense")
-- [ ] WS06 (optional) — Detection Tier 2: monitor-mode sniffer (second radio)
-- [ ] WQ — Hardware QA (USER-GATED): Pi 4 + WPA3 adapter
+## Wave WS — wireless security: WPA3/PMF + deauth detection (COMPLETE ✅)
+See `tasks/PLAN-wireless-security.md` (CODE COMPLETE; WQ user-gated).
+- [x] WS01 — `travel-wan wifi-capabilities` probe (AP/SAE/PMF/band) ✅ `8fd89f6` (§5as)
+- [x] WS02 — `TRAVELROUTER_AP_SECURITY` (wpa2 default / wpa3-transition / wpa3) + fail-loud capability gate ✅ `4779e66` (§5at)
+- [x] WS03 — Detection Tier 1: disconnect-burst watcher + NATS `deauth-alert` ✅ `353486d` (§5au)
+- [x] WS04 — Status/admin deauth banner ✅ `4f926ce` (§5av)
+- [x] WS05 — Suite battery + README (buy-guide; "rotation is not a defense") ✅ `3e239b9` (§5aw)
+- [ ] WS06 (DEFERRED — D3) — Detection Tier 2: monitor-mode sniffer (second radio)
+- [ ] WQ — Hardware QA (USER-GATED): Pi 4 **onboard radio** — provision `wpa3`, join a PMF client, simulate a deauth → alert fires
 
 Honest scope: the **real** deauth defense is **PMF/WPA3**, which the Zero W's
-BCM43430A1 cannot do (chip ceiling). Zero W = detection/alert only; Pi 4 + a
-capable adapter = WPA3/PMF. **SSID rotation on deauth is rejected** (no
-protection; self-inflicted client/session drop).
+BCM43430A1 cannot do (chip ceiling). Zero W = detection/alert only; the Pi 4's
+**onboard** radio = WPA3/PMF (probe-proven SAE + CMAC; no USB adapter needed).
+**SSID rotation on deauth is rejected** (no protection; self-inflicted
+client/session drop). One role, capability-gated — no fork.
 
 ## Blocked
-None.
+- Hardware QA — USER-GATED (needs a re-flash); batched in
+  `tasks/QA-next-reflash.md`, plus the WS-wave WQ (Pi 4).
 
 ## Legacy (complete, not part of this plan)
 - Tailscale role T01–T03 — done (see `tasks/T01-tailscale-role.md` `T02-env-wiring.md` `T03-documentation.md`).

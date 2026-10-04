@@ -1,4 +1,4 @@
-# RESUME — R/U/V/X/SC waves COMPLETE; suite 659/0; R01 hardware-verified
+# RESUME — R/U/V/X/SC/WS waves COMPLETE; suite 707/0; R01 hardware-verified
 
 <!--
 SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
@@ -17,7 +17,26 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
-- **X wave COMPLETE + SC wave COMPLETE. Suite 659/0.**
+- **WS wave COMPLETE (wireless security). Suite 707/0.** Owner decisions
+  D1–D5 resolved 2026-10-04 (`tasks/WS-decisions.md`). One role,
+  capability-gated — no fork; the wpa2 render stays byte-identical.
+  - WS01 `8fd89f6` — `travel-wan wifi-capabilities` probe verb (AP/SAE/PMF/band)
+    + §5as. D1 probe: Pi 4 onboard (BCM43455) advertises SAE + CMAC; Pi 3B+ and
+    Zero W are WPA2-only.
+  - WS02 `4779e66` — `TRAVELROUTER_AP_SECURITY` (wpa2 default |
+    wpa3-transition | wpa3) parameterizes hostapd key-mgmt + ieee80211w;
+    fail-loud capability gate at install (never a silent downgrade); both
+    render sites (install.sh + ap-apply) carry the mode table. §5at.
+  - WS03 `353486d` — Tier-1 forged-deauth detection: `deauth-watch.service`
+    (5 disconnects in 10s, tunable) → `/run/travel-router/deauth-alert.json` +
+    NATS `rpi.nodes.<host>.deauth-alert`; cooldown + self-suppression. §5au.
+  - WS04 `4f926ce` — deauth banner on the public + admin pages; admin
+    GET/POST (`action:clear`, session+PIN); 15-min mtime TTL. §5av.
+  - WS05 `3e239b9` — docs close-out (env-driven mode, SAE buy-guide, "rotation
+    is not a defense") + §5aw. `tasks/PLAN-wireless-security.md` = CODE COMPLETE.
+  - **WS06 DEFERRED** (D3): Tier-2 monitor-mode sniffer. **WQ** (Pi 4 hardware)
+    is USER-GATED — added to `tasks/QA-next-reflash.md`.
+- **X wave COMPLETE + SC wave COMPLETE.**
   - X (connect UX): X01 `02c7925` — the connect dialog is the credential hub
     (saved-passwords folded in; cosmetic try-psks progress playback; box-model
     dialog fix). X02 `8418b4e` — §5x asserts + docs.
@@ -26,8 +45,8 @@ independent re-sweep found no 19th site.
     then rebased onto X01; two copy/paste artifacts fixed (dup /admin route
     branch, dup ap-random-psk listener that double-fired preview) + §5sc
     uniqueness guards added. `tasks/PLAN-ssid-common.md` status = COMPLETE.
-  - **Stale stash:** `stash@{0}` still holds the PRE-rebase SC work — its
-    content is now superseded by the SC commits; safe to `git stash drop`.
+  - **Stash:** the `stash@{0}` that once held the PRE-rebase SC work has been
+    dropped (superseded by the SC commits; `git stash list` is empty).
 - **R wave COMPLETE (R01 `3f73061` + HW-verified, R02 `abd4562`, R03 `66c3fb0`,
   R04 `a773ea0`).** Root cause: Trixie arm64 first boot aborted `role-setup`
   because `roles/base/install.sh` ran `apt-get update` under `set -euo pipefail`
@@ -44,7 +63,9 @@ independent re-sweep found no 19th site.
   broadcast checkbox differs from live state) + a confirm dialog, posting
   `{pin, hidden}`. V02 locks hidden-only argv (`ap-apply   2` / `ap-apply   0`)
   + session rotation on a hidden change (and not on a no-op). V03 documents it.
-  Suite **626/0**.
+  Suite **626/0 at the V gate** (historical); the current suite is **659/0**
+  (re-run 2026-10-03, evidence
+  `.omo/evidence/plan-review-2026-10-03/suite-baseline.txt`).
 - **U wave COMPLETE (commit `a20de7c`), visual-QA PASSED.**
   U03 fixed the public page's ambiguity where `<h2>Network</h2>` read like a key
   with a blank value (heading and its nested rows shared the same left edges) —
@@ -88,11 +109,18 @@ independent re-sweep found no 19th site.
 
 ## Next session steps
 
-1. **NO pending code work.** R, U, V waves all COMPLETE; suite 626/0.
-2. Optional hardware-verify R02–R04 (R01 already proven) + the V hide toggle on
-   the next natural re-flash.
-3. Comment-truth arc closed; no S06e planned.
-4. Deferred (owner chose local-suite-only): a real podman arm64 integration
+1. **NO pending code work.** R, U, V, X, SC, WS waves all COMPLETE. Suite 707/0.
+2. **Hardware QA is the only open work — batched into ONE re-flash:**
+   `tasks/QA-next-reflash.md` sweeps WQ (firstboot-wan), HQ (hotel-setup),
+   SQ (`.ssid_common` pool), plus R02–R04 and the V hide toggle
+   re-verification, the S07 live-bind proof, and the **WS-wave WQ** (Pi 4:
+   provision `wpa3`, join a PMF client, simulate a deauth → alert fires).
+   USER-GATED.
+3. **WS shipped WS01–WS05** (see `tasks/PLAN-wireless-security.md` = CODE
+   COMPLETE). WS06 (Tier-2 sniffer) DEFERRED; WQ is USER-GATED. Do not
+   re-open WS code without a new wave.
+4. Comment-truth arc closed; no S06e planned.
+5. Deferred (owner chose local-suite-only): a real podman arm64 integration
    test and a QEMU `raspi4b` full-boot test. Available on this Mac if wanted
    (both installed).
 
