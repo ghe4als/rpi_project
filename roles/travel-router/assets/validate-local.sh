@@ -3980,6 +3980,90 @@ n=$(grep -cF 'function refreshSsidPool' "$A/admin.html")
 [[ "$n" == "1" ]] && ok "5sc refreshSsidPool defined once" \
   || bad "5sc refreshSsidPool defs=$n (want 1)"
 
+# --- (5as) wifi-capabilities probe battery (WS01) -----------------------------
+sec "5as. wifi-capabilities AP-radio probe (WS01)"
+B5AS="$TMP/ws01"; mkdir -p "$B5AS/sys/class/net/wlan0/wireless" \
+  "$B5AS/sys/devices/platform/soc/mmc1" "$B5AS/sys/devices/platform/soc/wiphy0"
+# AP iface rule needs a NON-usb device symlink -> wlan0 is the onboard radio.
+ln -sf "$B5AS/sys/devices/platform/soc/mmc1" "$B5AS/sys/class/net/wlan0/device"
+ln -sf "$B5AS/sys/devices/platform/soc/wiphy0" "$B5AS/sys/class/net/wlan0/phy80211"
+# Stub iw: pi4-like (SAE + CMAC + AP + band1/2).
+cat > "$B5AS/iw-pi4" <<'IWEOF'
+#!/bin/bash
+cat <<'DUMP'
+Wiphy phy0
+	Supported Ciphers:
+		* CCMP-128 (00-0f-ac:4)
+		* CMAC (00-0f-ac:6)
+	Supported interface modes:
+		 * managed
+		 * AP
+	Band 1:
+	Band 2:
+	Device supports SAE with AUTHENTICATE command
+DUMP
+IWEOF
+chmod +x "$B5AS/iw-pi4"
+# Stub iw: Zero W-like (no SAE, no CMAC; AP present, band 1 only).
+cat > "$B5AS/iw-zero" <<'IWEOF'
+#!/bin/bash
+cat <<'DUMP'
+Wiphy phy0
+	Supported Ciphers:
+		* CCMP-128 (00-0f-ac:4)
+	Supported interface modes:
+		 * managed
+		 * AP
+	Band 1:
+DUMP
+IWEOF
+chmod +x "$B5AS/iw-zero"
+# Stub iw: SAE advertised but NO AP mode -> wpa3 must stay false.
+cat > "$B5AS/iw-noap" <<'IWEOF'
+#!/bin/bash
+cat <<'DUMP'
+Wiphy phy0
+	Supported Ciphers:
+		* CMAC (00-0f-ac:6)
+	Supported interface modes:
+		 * managed
+	Band 1:
+	Device supports SAE with AUTHENTICATE command
+DUMP
+IWEOF
+chmod +x "$B5AS/iw-noap"
+
+# (a) pi4-like -> sae+pmf+ap_mode -> wpa3 true, both bands.
+ws_a=$(IW="$B5AS/iw-pi4" SYSFS_ROOT="$B5AS/sys" bash "$A/travel-wan.sh" wifi-capabilities 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['wpa3'] is True and d['sae'] is True and d['pmf'] is True and d['ap_mode'] is True and d['bands']==['2.4','5'] and d['iw'] is True" "$ws_a" 2>/dev/null \
+  && ok "5as(a) pi4-like -> wpa3/sae/pmf/ap_mode true, bands 2.4+5" \
+  || bad "5as(a) pi4-like wrong: $ws_a"
+# (b) zero-like -> wpa3 false (no SAE, no CMAC).
+ws_b=$(IW="$B5AS/iw-zero" SYSFS_ROOT="$B5AS/sys" bash "$A/travel-wan.sh" wifi-capabilities 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['wpa3'] is False and d['sae'] is False and d['pmf'] is False and d['ap_mode'] is True" "$ws_b" 2>/dev/null \
+  && ok "5as(b) zero-like -> wpa3/sae/pmf false (ap_mode still true)" \
+  || bad "5as(b) zero-like wrong: $ws_b"
+# (c) SAE but no AP mode -> wpa3 false (SAE alone is not enough).
+ws_c=$(IW="$B5AS/iw-noap" SYSFS_ROOT="$B5AS/sys" bash "$A/travel-wan.sh" wifi-capabilities 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['sae'] is True and d['ap_mode'] is False and d['wpa3'] is False" "$ws_c" 2>/dev/null \
+  && ok "5as(c) SAE without AP mode -> wpa3 false" \
+  || bad "5as(c) no-AP gate wrong: $ws_c"
+# (d) iw unavailable -> rc 3, iw:false, no abort (set -e safety).
+ws_d=$(IW="$B5AS/does-not-exist" SYSFS_ROOT="$B5AS/sys" bash "$A/travel-wan.sh" wifi-capabilities 2>/dev/null); ws_drc=$?
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['iw'] is False and d['wpa3'] is False" "$ws_d" 2>/dev/null \
+  && ok "5as(d) iw missing -> iw:false JSON, no abort" || bad "5as(d) missing-iw JSON wrong: $ws_d"
+[[ "$ws_drc" == "3" ]] && ok "5as(d) iw missing -> exit 3" || bad "5as(d) exit=$ws_drc (want 3)"
+# (e) real-repo source pins.
+grep -qF 'wifi-capabilities)' "$A/travel-wan.sh" \
+  && ok "5as(e) dispatch case present" || bad "5as(e) wifi-capabilities dispatch missing"
+grep -qF 'travel-wan wifi-capabilities' "$A/travel-wan.sh" \
+  && ok "5as(e) usage line present" || bad "5as(e) usage line missing"
+grep -qF 'IW="${IW:-iw}"' "$A/travel-wan.sh" && grep -qF 'SYSFS_ROOT="${SYSFS_ROOT:-/sys}"' "$A/travel-wan.sh" \
+  && ok "5as(e) IW + SYSFS_ROOT seams present" || bad "5as(e) probe seams missing"
+# (f) WS02 byte-identity guard: the default template must NOT drift.
+grep -qxF 'wpa=2' "$A/hostapd.conf.tmpl" && grep -qxF 'wpa_key_mgmt=WPA-PSK' "$A/hostapd.conf.tmpl" \
+  && ok "5as(f) hostapd template wpa2 baseline intact" || bad "5as(f) wpa2 template drifted"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

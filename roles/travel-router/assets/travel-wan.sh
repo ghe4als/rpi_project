@@ -31,6 +31,9 @@ NMCLI="${NMCLI:-nmcli}"
 IP="${IP:-ip}"
 CURL="${CURL:-curl}"
 HOSTAPD_CLI="${HOSTAPD_CLI:-hostapd_cli}"
+IW="${IW:-iw}"
+# Same seam as wan-select.sh: tests fake /sys for the AP-iface rule.
+SYSFS_ROOT="${SYSFS_ROOT:-/sys}"
 TRAVELROUTER_STATE_FILE="${TRAVELROUTER_STATE_FILE:-/run/travel-router/state.json}"
 SUDO="${SUDO:-sudo}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -373,6 +376,7 @@ Usage:
   travel-wan ap-apply <SSID> [PSK] [HIDDEN]  re-render + restart the AP (setup API; HIDDEN: 2=hide, 0=visible, empty=keep)
   travel-wan ap-info [--json]            current AP SSID + broadcast state (JSON)
   travel-wan stealth-check               read-only WAN-side management-port check (JSON)
+  travel-wan wifi-capabilities           AP-radio WPA3/PMF capability probe (JSON)
   travel-wan ap-ssid                     print the live AP SSID
   travel-wan try-psks <SSID>             try stored PSK candidates for a network
   travel-wan recheck                      trigger wan-select now (also runs every 30s)
@@ -1129,6 +1133,71 @@ stealth_wan_accept_ports() {
     return 0
 }
 
+# Read-only AP-radio capability probe (WS01). Reports whether the onboard AP
+# radio can do WPA3/PMF so install (WS02) and the admin page can gate on it.
+# Never needs root; a missing iw degrades to "iw":false instead of aborting.
+cmd_wifi_capabilities() {
+    local ap_iface="" d name dev
+    if [[ -d "$SYSFS_ROOT/class/net" ]]; then
+        # Same rule as install.sh step (6) / wan-select.sh (3): first wireless
+        # whose device path is NOT /usb (the onboard radio), fallback wlan0.
+        for d in "$SYSFS_ROOT"/class/net/*; do
+            [[ -d "$d" && -d "$d/wireless" ]] || continue
+            name="$(basename "$d")"
+            dev="$(readlink "$d/device" 2>/dev/null || true)"
+            [[ -z "$dev" ]] && dev="$(readlink -f "$d/device" 2>/dev/null || true)"
+            if [[ "$dev" != *usb* ]]; then ap_iface="$name"; break; fi
+        done
+    fi
+    [[ -n "$ap_iface" ]] || ap_iface="wlan0"
+
+    local phy=""
+    if [[ -e "$SYSFS_ROOT/class/net/$ap_iface/phy80211" ]]; then
+        phy="$(basename "$(readlink "$SYSFS_ROOT/class/net/$ap_iface/phy80211" 2>/dev/null || true)")"
+        [[ "$phy" == "phy80211" ]] && phy=""
+    fi
+
+    if ! command -v "$IW" >/dev/null 2>&1; then
+        log "wifi-capabilities: '$IW' not available (cannot probe phy)"
+        printf '{"iface":"%s","phy":"%s","ap_mode":false,"sae":false,"pmf":false,"wpa3":false,"bands":[],"iw":false}\n' \
+            "$(json_escape "$ap_iface")" "$(json_escape "$phy")"
+        return 3
+    fi
+
+    [[ -n "$phy" ]] || phy="$("$IW" dev "$ap_iface" info 2>/dev/null | sed -n 's/.*wiphy \([0-9][0-9]*\).*/phy\1/p' | head -1)"
+
+    local dump=""
+    if [[ -n "$phy" ]]; then
+        dump="$("$IW" phy "$phy" info 2>/dev/null || true)"
+    else
+        dump="$("$IW" phy 2>/dev/null || true)"
+    fi
+
+    local ap_mode=false sae=false pmf=false bandlist=""
+    if [[ -n "$dump" ]]; then
+        # POSIX classes only: the suite runs on macOS BSD grep (no \s).
+        grep -qE '^[[:space:]]+\* AP[[:space:]]*$' <<<"$dump" && ap_mode=true
+        if grep -qF 'Device supports SAE' <<<"$dump" || grep -qF '00-0f-ac:8' <<<"$dump"; then
+            sae=true
+        fi
+        # CMAC (00-0f-ac:6) is the BIP cipher = management-frame protection.
+        grep -qF 'CMAC' <<<"$dump" && pmf=true
+        grep -qE '^[[:space:]]*Band 1:' <<<"$dump" && bandlist="2.4"
+        grep -qE '^[[:space:]]*Band 2:' <<<"$dump" && bandlist="${bandlist:+$bandlist,}5"
+        grep -qE '^[[:space:]]*Band 4:' <<<"$dump" && bandlist="${bandlist:+$bandlist,}6"
+    fi
+    local wpa3=false
+    [[ "$sae" == "true" && "$ap_mode" == "true" ]] && wpa3=true
+
+    local bands_json=""
+    [[ -n "$bandlist" ]] && bands_json="$(printf '%s' "$bandlist" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"",(i>1?",":""),$i}}')"
+
+    printf '{"iface":"%s","phy":"%s","ap_mode":%s,"sae":%s,"pmf":%s,"wpa3":%s,"bands":[%s],"iw":true}\n' \
+        "$(json_escape "$ap_iface")" "$(json_escape "$phy")" \
+        "$ap_mode" "$sae" "$pmf" "$wpa3" "$bands_json"
+    return 0
+}
+
 cmd_stealth_check() {
     # wan_if comes from the state file (wan-select writes it every tick;
     # standalone mode -> empty string = nothing to accept from = stealth).
@@ -1405,6 +1474,9 @@ main() {
             ;;
         stealth-check)
             cmd_stealth_check
+            ;;
+        wifi-capabilities)
+            cmd_wifi_capabilities
             ;;
         ap-ssid)
             if [[ -s "$AP_SSID_FILE" ]]; then

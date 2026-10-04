@@ -1,7 +1,10 @@
 # Project Plan — Wireless security: WPA3/PMF + deauth detection (WS-wave)
 
-Last updated: 2026-10-03
-Status: PROPOSED — awaiting owner decisions (below) before any code.
+Last updated: 2026-10-04
+Status: IN PROGRESS — WS01 ✅ (suite 668/0); WS02 next. D1–D5 RESOLVED
+(2026-10-04). See `tasks/WS-decisions.md` for the decision-of-record.
+**No fork**: one role, capability-gated at install; the WPA2 render stays
+byte-identical.
 
 ## Goal
 Give the travel-router a real response to forged deauthentication, plus
@@ -29,15 +32,14 @@ detection so the operator knows when it happens:
 ## Hardware reality (the load-bearing constraint)
 - The role deliberately uses the **onboard (non-USB) radio as the AP**
   (`install.sh` step (6): "first wireless whose device path does NOT contain
-  `/usb`"), and the **USB adapter as WAN**. So WPA3-on-USB means either making
-  the USB adapter the AP (demoting the onboard radio to WAN client — loses any
-  5 GHz WAN) or adding a **second** USB adapter.
-- The Zero W has **one micro-USB OTG data port** → cannot host USB-AP +
-  USB-WAN without a powered hub. **The Zero is the wrong shape for two radios.**
-- A WPA3 AP requires the adapter + driver + firmware to expose: **AP mode
-  (NL80211)**, **SAE**, and **PMF / `EXT_KEY_ID`** — verified via
-  `iw phy <phy> info`. "Supports WPA3" marketing ≠ AP-mode SAE in firmware.
-  Probe before buying.
+  `/usb`"), and the **USB adapter as WAN**. **Resolution (D1):** the Pi 4's
+  onboard radio itself exposes SAE + CMAC, so WPA3 runs on the existing AP
+  radio — no second adapter, no USB-as-AP inversion. The Zero W stays WPA2
+  (chip ceiling); Pi 3B+ has no SAE.
+- A WPA3 AP requires the radio + driver + firmware to expose: **AP mode
+  (NL80211)**, **SAE**, and **PMF** — verified via `iw phy <phy> info`. The
+  Pi 4 onboard radio advertises SAE and the CMAC cipher; `EXT_KEY_ID` is
+  absent (yellow flag). WQ proves actual hostapd AP-mode SAE on brcmfmac.
 
 ## Design decisions (proposed)
 1. **Security mode is an explicit, validated env; default backward-compatible.**
@@ -60,33 +62,41 @@ detection so the operator knows when it happens:
    Accurate; gated on a second adapter. Defer if no hardware.
 6. **Alerting reuses existing plumbing.** `rpi-nats-announce` for the event
    (`rpi.nodes.<host>.deauth-alert`) + a status/admin banner. No new transport.
-7. **No auto-rotation.** Optionally a manual "rotate SSID now" affordance (the
-   apconfig path already exists) — a human decides. Not wired to detection.
+7. **No auto-rotation and no manual rotate UI** (D4 resolved). Rotation is not
+   a defense and drops every client + the admin session. Not wired to
+   detection; not offered as a control.
 8. **Zero W = detection only; Pi 4 = PMF.** The plan is explicit about which
    hardware gets which capability; no feature claims the Zero can't deliver.
 
 ## Task list
-- [ ] WS01 — Capability probe: `travel-wan wifi-capabilities` verb (AP/SAE/PMF/band) + suite assert
+- [x] WS01 — Capability probe: `travel-wan wifi-capabilities` verb (AP/SAE/PMF/band) + suite assert ✅ (§5as; suite 668/0)
 - [ ] WS02 — hostapd template parameterization + `TRAVELROUTER_AP_SECURITY` env + install validation (fail-loud on unsupported) + `.env.example`
 - [ ] WS03 — Detection Tier 1: disconnect-burst watcher service + NATS `deauth-alert` (bounded, rate-limited)
 - [ ] WS04 — Status/admin banner for the deauth alert (+ clear/expiry)
 - [ ] WS05 — Suite battery (template render per mode, capability gate, detection heuristic against mocked events) + README docs (buy-guide + "rotation is not a defense")
-- [ ] WS06 (optional) — Detection Tier 2: monitor-mode sniffer, gated on a second radio
-- [ ] WQ — Hardware QA (USER-GATED): Pi 4 + WPA3 adapter — provision `wpa3`, join with a PMF client, confirm `ieee80211w`; simulate a deauth and confirm the alert fires
+- [ ] WS06 (DEFERRED — D3) — Detection Tier 2: monitor-mode sniffer, gated on a second radio
+- [ ] WQ — Hardware QA (USER-GATED): Pi 4 **onboard radio** (D1) — provision `wpa3`, join with a PMF client, confirm `ieee80211w`; simulate a deauth and confirm the alert fires
 
 Order: WS01 → WS02 → (WS03/WS04) → WS05 → [WS06] → WQ. One commit per task
 (`feat(travel-router):` / `test:` / `docs:`).
 
-## Decisions needed from the owner (before any code)
-1. **Target hardware for WPA3:** Pi 4 + which USB adapter model? (Probe first —
-   run `iw phy <phy> info` on the candidate.)
-2. **Default security mode:** keep `wpa2` default and opt into
-   `wpa3-transition`/`wpa3` per device? (Recommended.)
-3. **Detection scope:** Tier 1 only (Zero-friendly), or fund Tier 2 (second radio)?
-4. **Manual rotate affordance:** include a one-tap "rotate SSID" control in the
-   admin page, or leave rotation out entirely?
-5. **Alert threshold:** burst = N disconnects in T seconds (suggest **5 in 10s**
-   as a starting point, tunable).
+## Decisions — RESOLVED 2026-10-04
+
+All five owner decisions are settled; see `tasks/WS-decisions.md` for the
+decision-of-record and probe evidence. Summary:
+
+1. **D1 target hardware:** the Pi 4's **onboard radio** (phy0/BCM43455), not a
+   USB adapter. Probe `iw phy` (2026-10-04) shows SAE + CMAC on Pi 4 onboard;
+   Pi 3B+ and Zero W are WPA2-only. **No topology change** — the onboard radio
+   is already the AP radio. WQ proves hostapd AP-mode SAE on brcmfmac.
+2. **D2 default mode:** `wpa2` (zero-change). `wpa3-transition`/`wpa3` opt-in,
+   fail-loud on unsupported, never a silent downgrade.
+3. **D3 detection:** Tier 1 only (Zero-friendly). Tier 2 deferred.
+4. **D4 manual rotate:** leave out (not a defense; self-DoS).
+5. **D5 threshold:** 5 disconnects in 10 s, tunable.
+
+Architecture: one role, capability-gated (same shape as the existing
+onboard-vs-USB AP rule and default-off flag files). No fork.
 
 ## Validation gate
 `bash roles/travel-router/assets/validate-local.sh` stays green after every
@@ -99,4 +109,5 @@ reachable from the dry-run battery — proven on hardware in WQ.
 - Any claim of prevention on WPA2-only hardware.
 
 ## Blocked
-Awaiting the owner decisions above; the Pi 4 + a capable adapter for WQ.
+None. (D1–D5 resolved 2026-10-04; see `tasks/WS-decisions.md`.) WQ needs the
+Pi 4 hardware — USER-GATED, tracked in `tasks/QA-next-reflash.md` patterns.

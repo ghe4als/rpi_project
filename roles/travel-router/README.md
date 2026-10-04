@@ -301,6 +301,20 @@ after editing, and add a battery case RED-first per repo convention.
 Note: transition mode is still downgrade-attackable by design — pure SAE
 is where the real gain is.
 
+`travel-wan wifi-capabilities` automates the check above and prints the AP
+radio's capability as one JSON line:
+
+```bash
+ssh pi@192.168.50.1 travel-wan wifi-capabilities
+# {"iface":"wlan0","phy":"phy0","ap_mode":true,"sae":true,"pmf":true,
+#  "wpa3":true,"bands":["2.4","5"],"iw":true}
+```
+
+`"wpa3":true` means the AP radio exposes SAE + AP mode (a WPA3 candidate);
+`"wpa3":false` means the radio's ceiling is WPA2. `"pmf"` reflects the CMAC
+(BIP) cipher — the management-frame-protection indicator. A missing `iw`
+yields `"iw":false` and exit 3, never an abort.
+
 ### First-boot notifications (NATS)
 
 Both events need a route to `NATS_URL`; with no USB adapter plugged in
