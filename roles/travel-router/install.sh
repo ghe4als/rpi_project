@@ -311,6 +311,68 @@ if [[ -n "$PSKSECRET_SRC" && -f "$PSKSECRET_SRC" ]]; then
     log "staged .psksecret copy (0600) from '$PSKSECRET_SRC' (values redacted)"
 fi
 
+# --- (4d) Seed the common-SSID pool (SC-wave) ------------------------------
+# Pool: NEWLINE-separated SSIDs at /etc/rpi-project/travel-router/ssid-common
+# (0600, root). Source: optional .ssid_common — TRAVELROUTER_SSID_COMMON_FILE
+# env wins; default lookup uses the psksecret role-tree idiom (provisioners
+# stage it next to role.env). Runtime (status-server) READS this file for
+# the pool-aware random-SSID mint; this script is its sole writer.
+# Re-run contract mirrors AP_SSID re-provisioning: absent file -> pool
+# CLEARED (never stale), present file -> rebuilt from scratch.
+SSIDC_SRC="${TRAVELROUTER_SSID_COMMON_FILE:-}"
+if [[ -z "$SSIDC_SRC" ]]; then
+  for cand in "${ROLE_ENV%/*}/.ssid_common" /boot/firmware/role/.ssid_common /boot/role/.ssid_common; do
+    [[ -f "$cand" ]] && { SSIDC_SRC="$cand"; break; }
+  done
+fi
+SSIDC_FILE="$KPSK_DIR/ssid-common"
+rm -f "$SSIDC_FILE"
+if [[ -n "$SSIDC_SRC" && -f "$SSIDC_SRC" ]]; then
+    SSIDC_VALS=""
+    SSIDC_BAD=0
+    while IFS= read -r s; do
+        s="${s#"${s%%[![:space:]]*}"}"
+        s="${s%"${s##*[![:space:]]}"}"
+        [[ -n "$s" ]] || continue
+        case "$s" in
+            '#'*) continue ;;
+            *$'\t'*|*$'\r'*|*$'\n'*|*$'\v'*|*$'\f'*) SSIDC_BAD=1; continue ;;
+        esac
+        if [[ ${#s} -gt 32 ]] || ! printf '%s' "$s" | grep -qE "$PRINTABLE_RE"; then
+            SSIDC_BAD=1
+            continue
+        fi
+        SSIDC_VALS+="${SSIDC_VALS:+$'\n'}$s"
+    done < "$SSIDC_SRC"
+    if [[ "$SSIDC_BAD" -eq 1 ]]; then
+      fail ".ssid_common contains an invalid SSID" \
+        "every entry needs printable ASCII, <=32 chars, no TAB/CR/LF (pool not provisioned)"
+    fi
+    # de-dupe pool entries (keep first occurrence)
+    if [[ -n "$SSIDC_VALS" ]]; then
+        SSIDC_DEDUPED=""
+        while IFS= read -r s; do
+            [[ -n "$s" ]] || continue
+            SSIDC_DEDUPED+="${SSIDC_DEDUPED:+$'\n'}$s"
+        done <<< "$(printf '%s\n' "$SSIDC_VALS" | awk '!seen[$0]++')"
+        SSIDC_VALS="$SSIDC_DEDUPED"
+    fi
+    if [[ -n "$SSIDC_VALS" ]]; then
+        SSIDC_TMP="$KPSK_DIR/.ssid-common.$$"
+        printf '%s\n' "$SSIDC_VALS" > "$SSIDC_TMP"
+        chmod 0600 "$SSIDC_TMP"
+        mv -f "$SSIDC_TMP" "$SSIDC_FILE"
+        log "common-SSID pool provisioned with $(printf '%s\n' "$SSIDC_VALS" | grep -c .) entries from '$SSIDC_SRC'"
+    else
+        log ".ssid_common present but yields no usable entries; pool left empty"
+    fi
+elif [[ -n "${TRAVELROUTER_SSID_COMMON_FILE:-}" ]]; then
+  fail "TRAVELROUTER_SSID_COMMON_FILE points at a missing file ($TRAVELROUTER_SSID_COMMON_FILE)" \
+    "stage .ssid_common next to role.env (or set TRAVELROUTER_SSID_COMMON_FILE to an existing file)"
+else
+  log "no .ssid_common; common-SSID pool empty (random mint uses the no-lookalike alphabet)"
+fi
+
 # --- (5) Install scripts to their final locations --------------------------
 mkdir -p "${DRY_RUN_PREFIX}/usr/local/lib/travel-router" "${DRY_RUN_PREFIX}/usr/local/bin"
 if [[ "$DRY_RUN" -ne 1 ]]; then
