@@ -125,6 +125,12 @@ BLOCKED_DOMAINS_FILE = os.environ.get(
 DNS_LOCAL_FILE = os.environ.get(
     "TRAVELROUTER_DNS_LOCAL_FILE",
     "/etc/rpi-project/travel-router/dns-local")
+# Common-SSID pool (SC-wave). NEWLINE rows, install.sh-owned (this server
+# only READS it): PRESENT+non-empty = the random-SSID mint draws from the
+# pool; ABSENT/empty = the no-lookalike alphabet (the fresh-flash default).
+SSID_COMMON_FILE = os.environ.get(
+    "TRAVELROUTER_SSID_COMMON_FILE",
+    "/etc/rpi-project/travel-router/ssid-common")
 # Session-salt file (security plan todo 7, force-relogin). Mixed into the
 # session-token fingerprint; regenerated on the Pi at /run/travel-router/
 # (tmpfs — a reboot re-salts and drops stale tokens for free). Rotating this
@@ -954,20 +960,31 @@ class StatusHandler(BaseHTTPRequestHandler):
                 macs = [m for m in out]
             self._send(200, json.dumps({"blocked": macs}),
                        "application/json")
-        elif path == "/admin" or path == "/admin/":
-# Admin page shell (admin plan Todo 2): unauthenticated to LOAD.
-# Every data path is a session/PIN-gated API, so the HTML itself carries no
-# device data. S04: /setup was merged into this page; the setup.html route is
-# gone (404 below).
-            self._serve_page(ADMIN_PAGE, "admin")
         elif path == "/" or path == "/index.html":
             # Public minimal status page (S01) — no auth. Shows AP SSID,
             # WAN SSID, internet status, and helpful links. No client list,
             # no WAN IP, no known networks.
             self._send(200, _STATUS_HTML, "text/html",
                        extra_headers=[("Cache-Control", "no-store")])
+        elif path == "/api/admin/ssids-common":
+            # Admin bucket (SC-wave): session-gated read of the common-SSID
+            # pool for the AP-settings chooser. The pool is provisioning
+            # metadata a guest must not learn (it fingerprints the operator);
+            # rows are names only — never a PSK/PIN. Absent store -> empty
+            # list, never a 5xx (same degrade posture as /api/wan/log).
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({"ssids": self._ssid_common_rows()}),
+                       "application/json")
+        elif path == "/admin" or path == "/admin/":
+            # Admin page shell (admin plan Todo 2): unauthenticated to LOAD.
+            # Every data path is a session/PIN-gated API, so the HTML itself
+            # carries no device data. S04: /setup was merged into this page;
+            # the setup.html route is gone (404 below).
+            self._serve_page(ADMIN_PAGE, "admin")
         else:
             self._send(404, b"404 not found", "text/plain")
+
 
     # --- POST API (H01) --------------------------------------------------------
 
@@ -1012,11 +1029,35 @@ class StatusHandler(BaseHTTPRequestHandler):
         return len(ssid.encode("utf-8")) <= SSID_MAX_BYTES
 
     @staticmethod
-    def _random_ap_ssid():
-        # 8 chars over the no-lookalike alphabet (no I/L/O/0/1), secrets.choice
-        # so the name is unpredictable; no separators so it sorts as noise.
+    def _ssid_common_rows():
+        """Rows of the common-SSID pool (trimmed, blanks dropped). Absent/
+        unreadable store -> []; every failure is a silent degrade to the
+        no-lookalike mint, never a 5xx (install.sh validates rows at
+        provisioning, so rows here never violate the SSID policy)."""
+        try:
+            with open(SSID_COMMON_FILE, "r", encoding="utf-8",
+                      errors="replace") as fh:
+                return [l.strip() for l in fh.read().splitlines() if l.strip()]
+        except OSError:
+            return []
+
+    @classmethod
+    def _random_ap_ssid(cls):
+        # SC-wave: a provisioned common-SSID pool WINS over minting — the
+        # "random" draw picks one pool entry via secrets.choice. Empty/
+        # absent pool falls back to the 8-char no-lookalike alphabet (no
+        # I/L/O/0/1) — the fresh-flash default, unchanged.
+        rows = cls._ssid_common_rows()
+        if rows:
+            return secrets.choice(rows)
         return "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
                        for _ in range(8))
+
+    @staticmethod
+    def _random_ap_ssid_source():
+        """Where the NEXT mint would draw from: 'pool' | 'generated'. Never
+        throws (same degrade as _ssid_common_rows)."""
+        return "pool" if StatusHandler._ssid_common_rows() else "generated"
 
     @staticmethod
     def _random_ap_psk():
@@ -1214,7 +1255,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             # WRITE_LOCK, no file. The response body is the only channel —
             # the generated PSK is never logged anywhere.
             self._send(200, json.dumps({"ssid": self._random_ap_ssid(),
-                                        "psk": self._random_ap_psk()}),
+                                        "psk": self._random_ap_psk(),
+                                        "source": self._random_ap_ssid_source()}),
                        "application/json")
             return
         with WRITE_LOCK:
