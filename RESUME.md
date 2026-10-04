@@ -1,4 +1,4 @@
-# RESUME — R, U, V waves COMPLETE; suite 626/0; R01 hardware-verified
+# RESUME — R/U/V/X/SC waves COMPLETE; suite 659/0; R01 hardware-verified
 
 <!--
 SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
@@ -17,6 +17,17 @@ independent re-sweep found no 19th site.
 
 ## Current state
 
+- **X wave COMPLETE + SC wave COMPLETE. Suite 659/0.**
+  - X (connect UX): X01 `02c7925` — the connect dialog is the credential hub
+    (saved-passwords folded in; cosmetic try-psks progress playback; box-model
+    dialog fix). X02 `8418b4e` — §5x asserts + docs.
+  - SC (common-SSID pool): SC01 `203ba96`, SC02 `207eb96`, SC03 `9f787bf`,
+    SC04 `5b10a25`, SC05 `b650012`, SC06 `75c5f8e`, plan `d9d10fc`. Reviewed
+    then rebased onto X01; two copy/paste artifacts fixed (dup /admin route
+    branch, dup ap-random-psk listener that double-fired preview) + §5sc
+    uniqueness guards added. `tasks/PLAN-ssid-common.md` status = COMPLETE.
+  - **Stale stash:** `stash@{0}` still holds the PRE-rebase SC work — its
+    content is now superseded by the SC commits; safe to `git stash drop`.
 - **R wave COMPLETE (R01 `3f73061` + HW-verified, R02 `abd4562`, R03 `66c3fb0`,
   R04 `a773ea0`).** Root cause: Trixie arm64 first boot aborted `role-setup`
   because `roles/base/install.sh` ran `apt-get update` under `set -euo pipefail`
