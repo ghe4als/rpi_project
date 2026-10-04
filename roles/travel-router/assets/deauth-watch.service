@@ -1,0 +1,13 @@
+[Unit]
+Description=Travel-router forged-deauth detection (Tier 1, heuristic)
+After=hostapd-travel.service network.target
+Wants=hostapd-travel.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/travel-router/deauth-watch.sh
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

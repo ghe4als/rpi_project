@@ -802,6 +802,7 @@ cmd_ap_apply() {
         aplog "ap-ssid: recorded '${new_ssid}' in ${AP_SSID_FILE}"
     fi
     local restart_rc=0
+    deauth_suppress_stamp
     "$SUDO" "$SYSTEMCTL" restart hostapd-travel.service >/dev/null 2>&1 || restart_rc=$?
     aplog "restart: systemctl restart hostapd-travel rc=${restart_rc} (Type=simple: rc0 proves exec only, not bind)"
     if [[ $restart_rc -ne 0 ]]; then
@@ -1323,6 +1324,16 @@ block_reload() {
     return 0
 }
 
+# deauth_suppress_stamp : tell the WS03 watcher the disconnect(s) we are about
+# to cause are self-inflicted (AP restart / MAC kick), not a forged-deauth
+# burst. Best-effort: a failed stamp must never change a verb's rc.
+deauth_suppress_stamp() {
+    local f="${TRAVELROUTER_DEAUTH_SUPPRESS_FILE:-/run/travel-router/deauth-suppress}"
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    : > "$f" 2>/dev/null || true
+    chmod 0600 "$f" 2>/dev/null || true
+}
+
 # block_kick MAC AP_IFACE : deauthenticate a connected station NOW via
 # hostapd_cli on the AP (LAN) interface. Best-effort: rc is deliberately
 # ignored (radio down / station already gone / hostapd busy must never flip
@@ -1335,6 +1346,7 @@ block_kick() {
         log "block: dry-run: hostapd_cli -i $ap deauthenticate $mac"
         return 0
     fi
+    deauth_suppress_stamp
     "$SUDO" "$HOSTAPD_CLI" -i "$ap" deauthenticate "$mac" >/dev/null 2>&1 || true
 }
 

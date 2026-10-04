@@ -315,6 +315,28 @@ ssh pi@192.168.50.1 travel-wan wifi-capabilities
 (BIP) cipher — the management-frame-protection indicator. A missing `iw`
 yields `"iw":false` and exit 3, never an abort.
 
+### Forged-deauth detection (Tier 1, heuristic)
+
+WPA2 management frames are unauthenticated, so anyone in RF range can forge a
+deauth/disassoc and drop your clients. WPA2-only hardware (the Zero W) cannot
+cryptographically prevent this — the real fix is PMF/WPA3 on capable hardware
+(above). As a mitigation the router **detects and alerts**, so you can leave or
+switch networks:
+
+- `deauth-watch.service` watches the AP radio for station disconnects and
+  raises an alert when **5 or more** land within **10 seconds** (both tunable
+  via `TRAVELROUTER_DEAUTH_THRESHOLD` / `TRAVELROUTER_DEAUTH_WINDOW_SEC`).
+- On a burst it writes `/run/travel-router/deauth-alert.json` and publishes
+  `rpi.nodes.<hostname>.deauth-alert` to `NATS_URL`.
+- A cooldown (default 60 s) prevents alert storms; the router's **own** AP
+  restarts and MAC-block kicks are self-suppressed and never counted.
+- This is a **heuristic, not proof** — it does not distinguish a forged frame
+  from a genuine disconnect. And it deliberately **never auto-rotates the
+  SSID**: rotation is not a defense (the attacker does not need the SSID) and
+  it drops every client and the admin session — a self-inflicted DoS.
+- The **only real prevention is PMF/WPA3** (above), and even that cannot stop
+  RF jamming or link-layer DoS. Detection → decide is the honest posture.
+
 ### First-boot notifications (NATS)
 
 Both events need a route to `NATS_URL`; with no USB adapter plugged in

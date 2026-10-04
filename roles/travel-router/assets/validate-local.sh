@@ -4135,6 +4135,54 @@ grep -qF 'm_key_mgmt' "$A/travel-wan.sh" \
 grep -qF 'TRAVELROUTER_AP_SECURITY' "$A/travel-wan.sh" \
   && ok "5at(f) ap-apply reads TRAVELROUTER_AP_SECURITY" || bad "5at(f) ap-apply security read missing"
 
+# --- (5au) forged-deauth Tier-1 watcher battery (WS03) ------------------------
+sec "5au. deauth-watch disconnect-burst detection (WS03)"
+B5AU="$TMP/ws03"; mkdir -p "$B5AU"
+printf 'del station aa:bb:cc:dd:ee:01\ndel station aa:bb:cc:dd:ee:02\ndel station aa:bb:cc:dd:ee:03\n' > "$B5AU/burst"
+printf 'del station aa:bb:cc:dd:ee:01\ndel station aa:bb:cc:dd:ee:02\n' > "$B5AU/two"
+run_dw() { # $1=event src $2=alert file $3=suppress file $4...=extra env
+  local src="$1" af="$2" sf="$3"; shift 3
+  env TRAVELROUTER_DEAUTH_EVENT_SRC="$src" TRAVELROUTER_DEAUTH_ALERT_FILE="$af" \
+      TRAVELROUTER_DEAUTH_SUPPRESS_FILE="$sf" TRAVELROUTER_DEAUTH_DRY_RUN=1 \
+      TRAVELROUTER_DEAUTH_THRESHOLD=3 TRAVELROUTER_DEAUTH_WINDOW_SEC=10 \
+      "$@" bash "$A/deauth-watch.sh" 2>&1
+}
+# (a) burst -> alert file with count 3 + a dry-run publish line.
+out=$(run_dw "$B5AU/burst" "$B5AU/alert.json" "$B5AU/suppress")
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));assert d['count']==3 and d['event']=='deauth-alert' and d['threshold']==3" "$B5AU/alert.json" 2>/dev/null \
+  && ok "5au(a) burst -> alert.json count=3 event=deauth-alert" || bad "5au(a) alert file wrong: $(cat "$B5AU/alert.json" 2>/dev/null)"
+grep -q 'would publish rpi.nodes' <<<"$out" \
+  && ok "5au(a) burst -> NATS publish attempted (dry-run)" || bad "5au(a) no publish line"
+# (b) sub-threshold -> no alert file.
+run_dw "$B5AU/two" "$B5AU/alert2.json" "$B5AU/suppress" >/dev/null
+[[ ! -f "$B5AU/alert2.json" ]] && ok "5au(b) 2 disconnects -> no alert (below threshold)" \
+  || bad "5au(b) false alert on sub-threshold"
+# (c) cooldown: 6 disconnects -> exactly one fire (file mtime is the clock).
+printf 'del station a\ndel station b\ndel station c\ndel station d\ndel station e\ndel station f\n' > "$B5AU/six"
+outc=$(run_dw "$B5AU/six" "$B5AU/alert3.json" "$B5AU/suppress")
+n=$(grep -c 'would publish' <<<"$outc")
+[[ "$n" == "1" ]] && ok "5au(c) cooldown -> exactly one publish for 6 disconnects" \
+  || bad "5au(c) publish count=$n (want 1)"
+# (d) self-suppression: a FRESH suppress stamp -> burst ignored.
+rm -f "$B5AU/alert4.json"; : > "$B5AU/suppress4"
+run_dw "$B5AU/burst" "$B5AU/alert4.json" "$B5AU/suppress4" >/dev/null
+[[ ! -f "$B5AU/alert4.json" ]] && ok "5au(d) self-suppression -> burst ignored" \
+  || bad "5au(d) self-suppression failed (alert written)"
+# (e) AP-STA-DISCONNECTED form is counted.
+printf 'AP-STA-DISCONNECTED a\nAP-STA-DISCONNECTED b\nAP-STA-DISCONNECTED c\n' > "$B5AU/sta"
+run_dw "$B5AU/sta" "$B5AU/alert5.json" "$B5AU/suppress" >/dev/null
+grep -q '"count":3' "$B5AU/alert5.json" 2>/dev/null \
+  && ok "5au(e) AP-STA-DISCONNECTED form counted" || bad "5au(e) AP-STA form not counted"
+# (f) structural: unit + install wiring + suppress call site.
+grep -q 'Restart=on-failure' "$A/deauth-watch.service" \
+  && grep -q 'WantedBy=multi-user.target' "$A/deauth-watch.service" \
+  && ok "5au(f) deauth-watch.service Restart + [Install]" || bad "5au(f) unit wiring wrong"
+grep -qF 'deauth-watch.service' "$ROOT/roles/travel-router/install.sh" \
+  && grep -qF 'systemctl enable --now deauth-watch.service' "$ROOT/roles/travel-router/install.sh" \
+  && ok "5au(f) install.sh stages + enables the watcher" || bad "5au(f) install.sh watcher wiring missing"
+grep -qF 'deauth_suppress_stamp' "$A/travel-wan.sh" \
+  && ok "5au(f) travel-wan self-suppression stamp present" || bad "5au(f) suppress call missing"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

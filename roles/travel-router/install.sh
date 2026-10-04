@@ -397,6 +397,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   install -m 0755 "$ASSETS/wan-select.sh"      /usr/local/lib/travel-router/wan-select.sh
   install -m 0755 "$ASSETS/status-server.py"   /usr/local/lib/travel-router/status-server.py
   install -m 0755 "$ASSETS/staged-env-refresh.sh" /usr/local/lib/travel-router/staged-env-refresh.sh
+  install -m 0755 "$ASSETS/deauth-watch.sh"    /usr/local/lib/travel-router/deauth-watch.sh
   install -m 0755 "$ASSETS/travel-wan.sh"      /usr/local/bin/travel-wan
   install -m 0644 "$ASSETS/admin.html"         /usr/local/lib/travel-router/admin.html
   install -m 0644 "$ASSETS/nftables.conf.tmpl" /usr/local/lib/travel-router/nftables.conf.tmpl
@@ -407,7 +408,7 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   mkdir -p /etc/rpi-project/travel-router
   install -m 0644 "$ASSETS/hostapd.conf.tmpl" /etc/rpi-project/travel-router/hostapd.conf.tmpl
   mkdir -p /etc/systemd/system
-  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
+  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service deauth-watch.service; do
     install -m 0644 "$ASSETS/$unit" "/etc/systemd/system/$unit"
   done
   log "installed travel-router scripts to /usr/local/{bin,lib/travel-router}"
@@ -415,6 +416,7 @@ else
   cp "$ASSETS/wan-select.sh"     "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/wan-select.sh"
   cp "$ASSETS/status-server.py"  "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   cp "$ASSETS/staged-env-refresh.sh" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/staged-env-refresh.sh"
+  cp "$ASSETS/deauth-watch.sh"   "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/deauth-watch.sh"
   cp "$ASSETS/travel-wan.sh"     "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
   cp "$ASSETS/admin.html"        "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/admin.html"
   cp "$ASSETS/nftables.conf.tmpl" "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/nftables.conf.tmpl"
@@ -425,7 +427,7 @@ else
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/lib/travel-router/status-server.py"
   chmod 0755 "${DRY_RUN_PREFIX}/usr/local/bin/travel-wan"
   mkdir -p "${DRY_RUN_PREFIX}/etc/systemd/system"
-  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
+  for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service deauth-watch.service; do
     cp "$ASSETS/$unit" "${DRY_RUN_PREFIX}/etc/systemd/system/$unit"
   done
   log "dry-run: staged scripts under prefix"
@@ -579,6 +581,7 @@ real_or_log systemctl restart dnsmasq.service
 real_or_log systemctl enable --now hostapd-travel.service
 real_or_log systemctl enable --now wan-select.timer
 real_or_log systemctl enable --now travel-router-status.service
+real_or_log systemctl enable --now deauth-watch.service
 log "system wiring done: wan-select + hostapd-travel enabled, dnsmasq enabled+restarted"
 
 # --- (10) Final banner -----------------------------------------------------
