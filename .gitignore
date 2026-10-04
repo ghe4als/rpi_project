@@ -6,3 +6,4 @@ inventory.yaml
 
 __pycache__/
 .psksecret
+.ssid_common

@@ -213,6 +213,13 @@ if [[ "$ROLE" == "travel-router" && -f "$REPO/.psksecret" ]]; then
   cp "$REPO/.psksecret" "$BOOT/role/.psksecret"
 fi
 
+# travel-router SC-wave: optional common-SSID pool (.ssid_common,
+# gitignored) — staged next to role.env so install.sh can find it via the
+# role-tree path, same idiom as .psksecret above.
+if [[ "$ROLE" == "travel-router" && -f "$REPO/.ssid_common" ]]; then
+  cp "$REPO/.ssid_common" "$BOOT/role/.ssid_common"
+fi
+
 COPYFILE_DISABLE=1 cp "$REPO/role-setup.service.tmpl" "$BOOT/role-setup.service"
 COPYFILE_DISABLE=1 cp "$REPO/role-setup-dump.sh" "$BOOT/role-setup-dump.sh"
 
