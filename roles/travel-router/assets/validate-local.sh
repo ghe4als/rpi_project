@@ -3874,6 +3874,112 @@ bind_miss=$(yq -r "${bind_expr/INST/no-such-id}" "$TMP/s07-bind-inv.yaml")
   || bad "5z-5 offline bind: hit='$bind_hit' (want 1) miss='$bind_miss' (want empty/null)"
 rm -rf "$BW" "$TMP/s07-stub"
 
+
+# --- (5sc) common-SSID pool battery (SC-wave) ---------------------------------
+sec "5sc. common-SSID pool (.ssid_common ingest + pool-aware mint + chooser)"
+# (a) install ingest: pool file lands 0600, comments/blanks skipped, env-file
+#     absent->cleared semantics covered by (e); entries de-duped.
+printf '# pool battery\n\nHotelAlpha\nHomeBase99\n# trailing comment\nHotelAlpha\n  TravelNet  \n' > "$TMP/ssidc-a"
+pfxsc="$TMP/ssidc-run1"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxsc" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+   TRAVELROUTER_SSID_COMMON_FILE="$TMP/ssidc-a" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/ssidc-run1.log" 2>&1; then
+  ok "5sc pool dry-run rc=0"
+else bad "5sc pool dry-run exited $?"; fi
+S5C="$pfxsc/etc/rpi-project/travel-router/ssid-common"
+[[ -f "$S5C" ]] && ok "5sc pool staged" || bad "5sc pool MISSING (ingest unimplemented)"
+if [[ -f "$S5C" ]]; then
+  m=$(stat -f%Lp "$S5C" 2>/dev/null || stat -c%a "$S5C" 2>/dev/null)
+  [[ "$m" == "600" ]] && ok "5sc pool mode 0600" || bad "5sc pool mode=$m (want 600)"
+  c=$(grep -c $'^HotelAlpha$' "$S5C"); [[ "$c" == "1" ]] \
+    && ok "5sc dedupe keep-first (one HotelAlpha)" || bad "5sc HotelAlpha count=$c (want 1)"
+  c=$(grep -c . "$S5C"); [[ "$c" == "3" ]] \
+    && ok "5sc comment/blank skipped, trim applied (3 rows)" || bad "5sc row count=$c (want 3)"
+  grep -qx 'TravelNet' "$S5C" && ok "5sc trimmed entry intact" || bad "5sc TravelNet row lost"
+else bad "5sc pool content skipped (file missing)"; fi
+# (b) structural: install.sh uses the SSID_COMMON env override
+grep -qF 'TRAVELROUTER_SSID_COMMON_FILE' "$ROOT/roles/travel-router/install.sh" \
+  && ok "5sc install.sh honours TRAVELROUTER_SSID_COMMON_FILE" || bad "5sc env override missing"
+# (c) provisioner staging (both)
+for pf in provision.sh provision-bookworm.sh; do
+  grep -qF '.ssid_common' "$ROOT/$pf" \
+    && ok "5sc $pf stages .ssid_common" || bad "5sc $pf missing .ssid_common staging"
+done
+# (d) gitignore
+grep -q '^\.ssid_common$' "$ROOT/.gitignore" && ok "5sc .ssid_common gitignored" \
+  || bad "5v-style .gitignore missing ^\.ssid_common$"
+# (e) re-run with absent pool source -> pool CLEARED (no stale pool)
+rm -f "$TMP/ssidc-a"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxsc" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$TMP/ssidc-run2.log" 2>&1; then
+  ok "5sc absent-source re-run rc=0"
+else bad "5sc absent-source re-run exited $?"; fi
+[[ ! -f "$S5C" ]] && ok "5sc absent source clears pool (no stale rows)" \
+  || bad "5sc stale pool survives re-run"
+# (f) fail-loud invalid entry: TAB in a row -> rc=1 + remediation
+printf 'NotGood\tRow\n' > "$TMP/ssidc-bad"
+pfxscb="$TMP/ssidc-runbad"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$pfxscb" TRAVELROUTER_ROLE_ENV="$TMP/pskseed.env" \
+  TRAVELROUTER_SSID_COMMON_FILE="$TMP/ssidc-bad" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$TMP/ssidc-bad.log" 2>&1
+# (g) live server: pool-aware mint + source field + ssids-common gate matrix.
+#     Own live server on 18096 (§5w/§5t pattern — §5w killed its server, so
+#     §5sc starts a fresh one): PIN 1234 + ADMIN_PSK, stub ap-apply exit 0.
+ssidc_pool="$B/ssidc-pool"
+printf 'PoolNet1\nPoolNet2\n' > "$ssidc_pool"
+kill "$SPID" 2>/dev/null; sleep 0.3
+TRAVELROUTER_SETUP_PIN="1234" TRAVELROUTER_ADMIN_PSK="${TESTADMIN_PSK:-AdminPass99}" \
+  TRAVELWAN_BIN="$STWV2" TRAVELROUTER_STATE_FILE="$KNOWN_STATE2" \
+  TRAVELROUTER_SSID_COMMON_FILE="$ssidc_pool" \
+  TRAVELROUTER_STATUS_PORT=18096 TRAVELROUTER_BIND_HOST=127.0.0.1 python3 "$A/status-server.py" >"$B/srv-sc.log" 2>&1 &
+SPID=$!; sleep 1.5
+wait_healthy 18096 || true
+TOK_5SC=$(login_psk 18096 "${TESTADMIN_PSK:-AdminPass99}")
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18096/api/admin/ssids-common)
+[[ "$r" == "401" ]] && ok "5sc GET ssids-common no session -> 401" || bad "5sc no-session code=$r (want 401)"
+r=$(curl -s -w '\n%{http_code}' -H "X-Session: $TOK_5SC" http://127.0.0.1:18096/api/admin/ssids-common 2>/dev/null)
+code="${r##*$'\n'}"; body="${r%$'\n'*}"
+[[ "$code" == "200" ]] && ok "5sc GET ssids-common + session -> 200" || bad "5sc GET code=$code (want 200)"
+python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert d['ssids']==['PoolNet1','PoolNet2']" "$body" 2>/dev/null \
+  && ok "5sc ssids-common rows == pool fixture" || bad "5sc rows wrong: $body"
+ok5sc_mint=0
+for i in 1 2 3 4 5 6; do
+  r=$(curl -s -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+    -H "X-Session: $TOK_5SC" -d '{"pin":"1234"}' http://127.0.0.1:18096/api/admin/apconfig/preview 2>/dev/null)
+  if python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert d['ssid'] in ('PoolNet1','PoolNet2'); assert d['source']=='pool'" "$r" 2>/dev/null; then
+    ok5sc_mint=$((ok5sc_mint+1))
+  fi
+done
+[[ "$ok5sc_mint" == "6" ]] && ok "5sc 6x preview draws pool rows + source=pool" \
+  || bad "5sc pool mint hits=$ok5sc_mint (want 6): $r"
+rm -f "$ssidc_pool"
+r=$(curl -s -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
+  -H "X-Session: $TOK_5SC" -d '{"pin":"1234"}' http://127.0.0.1:18096/api/admin/apconfig/preview 2>/dev/null)
+python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert d['source']=='generated'; assert len(d['ssid'])==8; assert all(c in 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' for c in d['ssid'])" "$r" 2>/dev/null \
+  && ok "5sc empty pool -> generated no-lookalike + source=generated" \
+  || bad "5sc generated fallback wrong: $r"
+# (h) structural: admin.html pool chooser contract (fill-only; no new write path)
+grep -qF 'refreshSsidPool' "$A/admin.html" \
+  && ok "5sc admin.html wires refreshSsidPool" || bad "5sc refreshSsidPool MISSING in UI"
+grep -qF 'ap-pool-rows' "$A/admin.html" \
+  && ok "5sc admin.html declares ap-pool-rows" || bad "5sc ap-pool-rows MISSING in UI"
+n=$(grep -cF 'ssids-common' "$A/admin.html")
+[[ "$n" == "1" ]] && ok "5sc admin.html hits ssids-common once (fill-only; no write to it)" \
+  || bad "5sc admin.html ssids-common hits=$n (want 1 — the GET only)"
+n=$(grep -cE "innerHTML[^=]" "$A/admin.html" || true)
+[[ "$n" == "0" ]] && ok "5sc chooser adds no innerHTML sink" || bad "5sc innerHTML uses=$n (want 0)"
+# (i) uniqueness guards: a duplicated route branch / event listener is dead or
+#     double-fires (the SC branch shipped both — caught here, not by behavior).
+n=$(grep -cE 'elif path == "/admin"' "$A/status-server.py")
+[[ "$n" == "1" ]] && ok "5sc status-server has exactly one /admin route branch" \
+  || bad "5sc /admin route branches=$n (want 1 — duplicate is dead code)"
+n=$(grep -cF 'ap-random-psk").addEventListener' "$A/admin.html")
+[[ "$n" == "1" ]] && ok "5sc ap-random-psk listener defined once" \
+  || bad "5sc ap-random-psk listeners=$n (want 1 — duplicate double-fires preview)"
+n=$(grep -cF 'function refreshSsidPool' "$A/admin.html")
+[[ "$n" == "1" ]] && ok "5sc refreshSsidPool defined once" \
+  || bad "5sc refreshSsidPool defs=$n (want 1)"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)
