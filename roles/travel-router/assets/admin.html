@@ -279,6 +279,8 @@
       <button id="ap-random" type="button">Random name</button>
       <button id="ap-random-psk" type="button">Random password</button>
     </p>
+    <p class="dmsg" id="ap-pool-hint" style="display:none"></p>
+    <div id="ap-pool-rows"></div>
     <label for="ap-psk">New password (8-63 chars, optional)</label>
     <input id="ap-psk" type="password" autocomplete="off">
     <p>
@@ -927,7 +929,9 @@ function previewFill(kind) {
     var pskEl = document.getElementById("ap-psk");
     if (kind === "ssid" || !ssidEl.value) { ssidEl.value = d.ssid; }
     if (kind === "psk" || !pskEl.value) { pskEl.value = d.psk; }
-    apMsg("values generated — write them down before saving", "warn");
+    apMsg(d.source === "pool"
+          ? "name drawn from the common-SSID pool — write it down before saving"
+          : "values generated — write them down before saving", "warn");
   }).catch(function (e) {
     apMsg(String(e.message || e), "warn");
   }).then(function () {
@@ -937,12 +941,51 @@ function previewFill(kind) {
   });
 }
 
+
 document.getElementById("ap-random").addEventListener("click", function () {
   previewFill("ssid");
 });
 document.getElementById("ap-random-psk").addEventListener("click", function () {
   previewFill("psk");
 });
+
+// --- Common-SSID pool (SC-wave) ---------------------------------------------
+// Session-gated read of the provisioning pool (GET, session-only — reads do
+// NOT need the PIN); entries render as buttons that FILL the SSID field
+// only. Choosing is not a write: saving still goes through the normal
+// PIN-gated /api/wan/apconfig (identity-change semantics, confirm dialog,
+// auto-restore) — the pool adds no second write path.
+function refreshSsidPool() {
+  return sessionFetch("/api/admin/ssids-common", { cache: "no-store" })
+    .then(function (r) { return r.status === 200 ? r.json() : null; })
+    .then(function (d) {
+      renderPoolRows(d ? d.ssids : null);
+    })
+    .catch(function () { renderPoolRows(null); });
+}
+
+function renderPoolRows(rows) {
+  var list = document.getElementById("ap-pool-rows");
+  var hint = document.getElementById("ap-pool-hint");
+  while (list.firstChild) { list.removeChild(list.firstChild); }
+  if (!rows || !rows.length) {
+    hint.style.display = "none";
+    return;
+  }
+  hint.style.display = "";
+  hint.textContent = "Common names (from .ssid_common) — tap to fill the name field:";
+  rows.forEach(function (ssid) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "secondary";
+    b.textContent = ssid;
+    b.addEventListener("click", function () {
+      document.getElementById("ap-ssid").value = ssid;
+      apMsg("pool name '" + ssid + "' filled — save (with PIN) to apply", "warn");
+    });
+    list.appendChild(b);
+  });
+}
 
 document.getElementById("ap-hidden").addEventListener("change", function () {
   document.getElementById("ap-hidden-warn").style.display =
@@ -1673,6 +1716,7 @@ function doLogin() {
         refreshStatus();
         refreshKnown();
         refreshAllFeatures();
+        refreshSsidPool();
       } else if (r.status === 429) {
         setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
       } else {
@@ -1746,6 +1790,7 @@ function refreshAllFeatures() {
     refreshStatus();
     refreshKnown();
     refreshAllFeatures();
+    refreshSsidPool();
   }).catch(function () {
     showLogin(true);
   });
