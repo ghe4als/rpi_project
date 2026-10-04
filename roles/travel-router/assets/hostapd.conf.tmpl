@@ -20,10 +20,14 @@ wmm_enabled=1
 channel=__AP_CHANNEL__
 __AP_HIDDEN__
 
-# WPA2 security
+# AP security — mode rendered from TRAVELROUTER_AP_SECURITY:
+#   wpa2            -> WPA-PSK, no 802.11w (default)
+#   wpa3-transition -> WPA-PSK SAE, ieee80211w=1
+#   wpa3            -> SAE, ieee80211w=2
 wpa=2
 wpa_passphrase=__AP_PSK__
-wpa_key_mgmt=WPA-PSK
+wpa_key_mgmt=__AP_KEY_MGMT__
 auth_algs=1
 rsn_pairwise=CCMP
 wpa_pairwise=CCMP
+__AP_IEEE80211W__

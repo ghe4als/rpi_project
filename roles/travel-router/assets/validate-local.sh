@@ -4060,9 +4060,80 @@ grep -qF 'travel-wan wifi-capabilities' "$A/travel-wan.sh" \
   && ok "5as(e) usage line present" || bad "5as(e) usage line missing"
 grep -qF 'IW="${IW:-iw}"' "$A/travel-wan.sh" && grep -qF 'SYSFS_ROOT="${SYSFS_ROOT:-/sys}"' "$A/travel-wan.sh" \
   && ok "5as(e) IW + SYSFS_ROOT seams present" || bad "5as(e) probe seams missing"
-# (f) WS02 byte-identity guard: the default template must NOT drift.
-grep -qxF 'wpa=2' "$A/hostapd.conf.tmpl" && grep -qxF 'wpa_key_mgmt=WPA-PSK' "$A/hostapd.conf.tmpl" \
-  && ok "5as(f) hostapd template wpa2 baseline intact" || bad "5as(f) wpa2 template drifted"
+# (f) WS02 baseline: the RENDERED default conf must stay WPA2 (the template
+#     now carries __AP_KEY_MGMT__, so grep the render, not the template).
+grep -qxF 'wpa_key_mgmt=WPA-PSK' "$pfx/etc/hostapd/hostapd-travel.conf" \
+  && grep -qxF 'wpa=2' "$pfx/etc/hostapd/hostapd-travel.conf" \
+  && ! grep -qE '^ieee80211w=' "$pfx/etc/hostapd/hostapd-travel.conf" \
+  && ok "5as(f) default render stays WPA2 (no PMF/SAE)" || bad "5as(f) wpa2 default render drifted"
+
+# --- (5at) TRAVELROUTER_AP_SECURITY render + gate battery (WS02) --------------
+sec "5at. AP security mode render + capability gate (WS02)"
+B5AT="$TMP/ws02"; mkdir -p "$B5AT/sys/class/net/wlan0/wireless" \
+  "$B5AT/sys/devices/platform/soc/mmc1" "$B5AT/sys/devices/platform/soc/wiphy0"
+ln -sf "$B5AT/sys/devices/platform/soc/mmc1" "$B5AT/sys/class/net/wlan0/device"
+ln -sf "$B5AT/sys/devices/platform/soc/wiphy0" "$B5AT/sys/class/net/wlan0/phy80211"
+# Probe stub (the WS01 verb is stubbed via TRAVELROUTER_CAP_PROBE only if
+# install.sh honours it; otherwise the real verb runs against a stubbed iw).
+printf '#!/bin/bash\nprintf %%s "{\\"iface\\":\\"wlan0\\",\\"phy\\":\\"wiphy0\\",\\"ap_mode\\":true,\\"sae\\":true,\\"pmf\\":true,\\"wpa3\\":true,\\"bands\\":[\\"2.4\\"],\\"iw\\":true}\\n"\n' > "$B5AT/cap-sae"; chmod +x "$B5AT/cap-sae"
+printf '#!/bin/bash\nprintf %%s "{\\"iface\\":\\"wlan0\\",\\"phy\\":\\"wiphy0\\",\\"ap_mode\\":true,\\"sae\\":false,\\"pmf\\":false,\\"wpa3\\":false,\\"bands\\":[\\"2.4\\"],\\"iw\\":true}\\n"\n' > "$B5AT/cap-nosae"; chmod +x "$B5AT/cap-nosae"
+# Base role.env for the mode runs (SSID/PSK/PIN/ADMIN required).
+ws2_env() { printf 'TRAVELROUTER_AP_SSID=TestNet\nTRAVELROUTER_AP_PSK=TestPass123\nTRAVELROUTER_SETUP_PIN=9876\nTRAVELROUTER_ADMIN_PSK=AdminPass99\n'; }
+ws2_env > "$B5AT/base.env"
+# (a) default (var absent) -> WPA-PSK, no ieee80211w.
+ws2_env > "$B5AT/def.env"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$B5AT/def" TRAVELROUTER_ROLE_ENV="$B5AT/def.env" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$B5AT/def.log" 2>&1; then
+  grep -qxF 'wpa_key_mgmt=WPA-PSK' "$B5AT/def/etc/hostapd/hostapd-travel.conf" \
+    && ! grep -qE '^ieee80211w=' "$B5AT/def/etc/hostapd/hostapd-travel.conf" \
+    && ok "5at(a) default mode -> WPA-PSK, no 802.11w" || bad "5at(a) default render wrong: $(grep -E '^wpa_key_mgmt|^ieee80211w' "$B5AT/def/etc/hostapd/hostapd-travel.conf" 2>/dev/null | tr '\n' ' ')"
+else bad "5at(a) default run rc=$?"; fi
+# (b) wpa3-transition + SAE radio -> WPA-PSK SAE + ieee80211w=1.
+ws2_env > "$B5AT/tr.env"
+printf 'TRAVELROUTER_AP_SECURITY=wpa3-transition\n' >> "$B5AT/tr.env"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$B5AT/tr" TRAVELROUTER_ROLE_ENV="$B5AT/tr.env" \
+   TRAVELROUTER_CAP_PROBE="$B5AT/cap-sae" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$B5AT/tr.log" 2>&1; then
+  grep -qxF 'wpa_key_mgmt=WPA-PSK SAE' "$B5AT/tr/etc/hostapd/hostapd-travel.conf" \
+    && grep -qxF 'ieee80211w=1' "$B5AT/tr/etc/hostapd/hostapd-travel.conf" \
+    && ok "5at(b) transition -> WPA-PSK SAE + ieee80211w=1" || bad "5at(b) transition render wrong: $(grep -E 'key_mgmt|ieee80211w' "$B5AT/tr/etc/hostapd/hostapd-travel.conf" 2>/dev/null | tr '\n' ' ')"
+else bad "5at(b) transition run rc=$? ($(tail -2 "$B5AT/tr.log" | tr '\n' ' '))"; fi
+# (c) wpa3 + SAE radio -> SAE + ieee80211w=2.
+ws2_env > "$B5AT/w3.env"
+printf 'TRAVELROUTER_AP_SECURITY=wpa3\n' >> "$B5AT/w3.env"
+if TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$B5AT/w3" TRAVELROUTER_ROLE_ENV="$B5AT/w3.env" \
+   TRAVELROUTER_CAP_PROBE="$B5AT/cap-sae" \
+   bash "$ROOT/roles/travel-router/install.sh" >"$B5AT/w3.log" 2>&1; then
+  grep -qxF 'wpa_key_mgmt=SAE' "$B5AT/w3/etc/hostapd/hostapd-travel.conf" \
+    && grep -qxF 'ieee80211w=2' "$B5AT/w3/etc/hostapd/hostapd-travel.conf" \
+    && ok "5at(c) wpa3 -> SAE + ieee80211w=2" || bad "5at(c) wpa3 render wrong: $(grep -E 'key_mgmt|ieee80211w' "$B5AT/w3/etc/hostapd/hostapd-travel.conf" 2>/dev/null | tr '\n' ' ')"
+else bad "5at(c) wpa3 run rc=$? ($(tail -2 "$B5AT/w3.log" | tr '\n' ' '))"; fi
+# (d) wpa3 + NO-SAE radio -> fail loud + remediation; no silent downgrade.
+ws2_env > "$B5AT/nosae.env"
+printf 'TRAVELROUTER_AP_SECURITY=wpa3\n' >> "$B5AT/nosae.env"
+rm -rf "$B5AT/nosae"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$B5AT/nosae" TRAVELROUTER_ROLE_ENV="$B5AT/nosae.env" \
+  TRAVELROUTER_CAP_PROBE="$B5AT/cap-nosae" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$B5AT/nosae.log" 2>&1; ws2rc=$?
+[[ "$ws2rc" -eq 1 ]] && grep -q 'remediation:' "$B5AT/nosae.log" \
+  && ok "5at(d) wpa3 on WPA2-only radio -> rc=1 + remediation (fail loud)" \
+  || bad "5at(d) gate did not fail loud (rc=$ws2rc)"
+[[ ! -f "$B5AT/nosae/etc/hostapd/hostapd-travel.conf" ]] \
+  && ok "5at(d) gated run wrote no conf (no silent downgrade)" || bad "5at(d) gated run wrote a conf"
+# (e) invalid mode -> fail loud.
+ws2_env > "$B5AT/bad.env"
+printf 'TRAVELROUTER_AP_SECURITY=wpa4\n' >> "$B5AT/bad.env"
+TRAVELROUTER_DRY_RUN=1 DRY_RUN_PREFIX="$B5AT/bad" TRAVELROUTER_ROLE_ENV="$B5AT/bad.env" \
+  bash "$ROOT/roles/travel-router/install.sh" >"$B5AT/bad.log" 2>&1; bmrc=$?
+[[ "$bmrc" -eq 1 ]] && grep -q 'remediation:' "$B5AT/bad.log" \
+  && ok "5at(e) invalid mode wpa4 -> rc=1 + remediation" || bad "5at(e) invalid mode rc=$bmrc"
+# (f) structural: both render sites substitute the new markers.
+grep -qF '__AP_KEY_MGMT__' "$ROOT/roles/travel-router/install.sh" \
+  && ok "5at(f) install.sh substitutes __AP_KEY_MGMT__" || bad "5at(f) install.sh key_mgmt substitution missing"
+grep -qF 'm_key_mgmt' "$A/travel-wan.sh" \
+  && ok "5at(f) ap-apply carries m_key_mgmt" || bad "5at(f) ap-apply key_mgmt marker missing"
+grep -qF 'TRAVELROUTER_AP_SECURITY' "$A/travel-wan.sh" \
+  && ok "5at(f) ap-apply reads TRAVELROUTER_AP_SECURITY" || bad "5at(f) ap-apply security read missing"
 
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"

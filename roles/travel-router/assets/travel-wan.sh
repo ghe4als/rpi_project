@@ -709,6 +709,19 @@ cmd_ap_apply() {
     local m_channel="__AP_""CHANNEL__"
     local m_psk="__AP_""PSK__"
     local m_hidden="__AP_""HIDDEN__"
+    local m_key_mgmt="__AP_""KEY_MGMT__"
+    local m_ieee80211w="__AP_""IEEE80211W__"
+    # AP security mode (D2): same table as install.sh. ap-apply must render the
+    # same key-mgmt/PMF placeholders the template now carries, or a runtime
+    # rename would leave them unsubstituted (hostapd parse error).
+    local r_security="${TRAVELROUTER_AP_SECURITY:-wpa2}"
+    local r_key_mgmt r_ieee80211w_expr
+    case "$r_security" in
+        wpa2)            r_key_mgmt="WPA-PSK";     r_ieee80211w_expr="/${m_ieee80211w}/d" ;;
+        wpa3-transition) r_key_mgmt="WPA-PSK SAE"; r_ieee80211w_expr="s|${m_ieee80211w}|ieee80211w=1|" ;;
+        wpa3)            r_key_mgmt="SAE";         r_ieee80211w_expr="s|${m_ieee80211w}|ieee80211w=2|" ;;
+        *) log "ap-apply: invalid TRAVELROUTER_AP_SECURITY='${r_security}' (want wpa2|wpa3-transition|wpa3)"; return 1 ;;
+    esac
     # Hidden flag: "" = keep the CURRENT conf's value (preserve an existing
     # ignore_broadcast_ssid line on a psk-/ssid-only change; absent = stay
     # visible). "2" = hidden (hostapd stops the SSID beacon; clients must add
@@ -736,6 +749,8 @@ cmd_ap_apply() {
         -e "s|${m_country}|${r_country}|g" \
         -e "s|${m_channel}|${r_channel}|g" \
         -e "s|${m_psk}|${new_psk}|g" \
+        -e "s|${m_key_mgmt}|${r_key_mgmt}|g" \
+        -e "$r_ieee80211w_expr" \
         -e "$hidden_sed_expr" \
         "$tmpl" > "$tmp" 2>/dev/null || { rm -f "$tmp"; aplog "FAIL: cannot render new conf from ${tmpl}"; log "ap-apply: cannot render new conf"; return 2; }
     chmod 0600 "$tmp"

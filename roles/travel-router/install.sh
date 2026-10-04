@@ -90,6 +90,7 @@ fi
 
 # --- Defaults --------------------------------------------------------------
 : "${TRAVELROUTER_AP_COUNTRY:=${WIFI_COUNTRY:-US}}"
+: "${TRAVELROUTER_AP_SECURITY:=wpa2}"
 # AP_SSID / AP_PSK intentionally have NO defaults: both are required by the
 # role contract (see .env.example). A random PSK would leave an AP nobody can
 # discover the key for; a default SSID hides a missing config.
@@ -136,6 +137,22 @@ esac
 pchars="[^A-Za-z0-9._-]"
 printf "%s" "$pkey" | grep -qE "$pchars" && fail "AP_PSK has a char outside A-Za-z0-9._-$" \
   "trim TRAVELROUTER_AP_PSK to letters, digits and . _ -"
+
+# AP security mode (D2): wpa2 is the zero-change default; wpa3-transition and
+# wpa3 are opt-in and gated against the AP radio further down (the gate needs
+# iw, which step (4) installs, so it cannot run here).
+case "$TRAVELROUTER_AP_SECURITY" in
+  wpa2)            ap_key_mgmt="WPA-PSK";      ap_ieee80211w="0" ;;
+  wpa3-transition) ap_key_mgmt="WPA-PSK SAE";  ap_ieee80211w="1" ;;
+  wpa3)            ap_key_mgmt="SAE";          ap_ieee80211w="2" ;;
+  *) fail "TRAVELROUTER_AP_SECURITY='${TRAVELROUTER_AP_SECURITY}' is not a valid mode" \
+       "use wpa2 (default), wpa3-transition, or wpa3" ;;
+esac
+if [[ "$ap_ieee80211w" == "0" ]]; then
+  ap_ieee80211w_expr='/__AP_IEEE80211W__/d'
+else
+  ap_ieee80211w_expr="s|__AP_IEEE80211W__|ieee80211w=${ap_ieee80211w}|"
+fi
 
 # SETUP_PIN is REQUIRED: it is the second factor on every admin write
 # (deny-by-default in status-server when unset — H01; this validation
@@ -446,6 +463,22 @@ chmod 0644 "$unmanaged"
 real_or_log systemctl restart NetworkManager
 log "NM unmanaged conf (iface=${ap}) -> ${unmanaged}"
 
+# --- (6b) Capability gate for wpa3* (fail loud, never silent downgrade) -----
+# The AP radio must expose SAE; the WS01 probe reports it. iw is installed by
+# step (4), so the gate runs here. wpa2 skips it.
+if [[ "$ap_ieee80211w" != "0" ]]; then
+  cap_json=""
+  cap_probe="${TRAVELROUTER_CAP_PROBE:-$ASSETS/travel-wan.sh}"
+  if [[ -x "$cap_probe" ]]; then
+    cap_json="$(IW="${IW:-iw}" SYSFS_ROOT="${SYSFS_ROOT:-/sys}" bash "$cap_probe" wifi-capabilities 2>/dev/null || true)"
+  fi
+  if [[ "$cap_json" != *'"sae":true'* ]]; then
+    fail "TRAVELROUTER_AP_SECURITY=${TRAVELROUTER_AP_SECURITY} but the AP radio has no SAE/PMF support" \
+      "the radio ceiling is WPA2 (run 'travel-wan wifi-capabilities'); use TRAVELROUTER_AP_SECURITY=wpa2 or move to SAE-capable hardware (e.g. Pi 4 onboard)"
+  fi
+  log "AP security gate: ${TRAVELROUTER_AP_SECURITY} accepted (SAE-capable AP radio)"
+fi
+
 # --- (7) Render ONCE (hostapd, dnsmasq, sysctl) ----------------------------
 # install.sh is the sole owner of these files; wan-select never re-renders.
 mkdir -p "${DRY_RUN_PREFIX}/etc/hostapd" "${DRY_RUN_PREFIX}/etc/dnsmasq.d" "${DRY_RUN_PREFIX}/etc/sysctl.d"
@@ -455,6 +488,8 @@ sed -e "s|__AP_INTERFACE__|${ap}|g" \
     -e "s|__AP_COUNTRY__|${TRAVELROUTER_AP_COUNTRY}|g" \
     -e "s|__AP_CHANNEL__|${TRAVELROUTER_AP_CHANNEL:-6}|g" \
     -e "s|__AP_PSK__|${pkey}|g" \
+    -e "s|__AP_KEY_MGMT__|${ap_key_mgmt}|g" \
+    -e "$ap_ieee80211w_expr" \
     -e '/__AP_HIDDEN__/d' \
     "$ASSETS/hostapd.conf.tmpl" > "$hostapd_conf"
 chmod 0600 "$hostapd_conf"

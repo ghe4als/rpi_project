@@ -1,7 +1,7 @@
 # Project Plan — Wireless security: WPA3/PMF + deauth detection (WS-wave)
 
 Last updated: 2026-10-04
-Status: IN PROGRESS — WS01 ✅ (suite 668/0); WS02 next. D1–D5 RESOLVED
+Status: IN PROGRESS — WS01 ✅ + WS02 ✅ (suite 677/0); WS03 next. D1–D5 RESOLVED
 (2026-10-04). See `tasks/WS-decisions.md` for the decision-of-record.
 **No fork**: one role, capability-gated at install; the WPA2 render stays
 byte-identical.
@@ -70,7 +70,7 @@ detection so the operator knows when it happens:
 
 ## Task list
 - [x] WS01 — Capability probe: `travel-wan wifi-capabilities` verb (AP/SAE/PMF/band) + suite assert ✅ (§5as; suite 668/0)
-- [ ] WS02 — hostapd template parameterization + `TRAVELROUTER_AP_SECURITY` env + install validation (fail-loud on unsupported) + `.env.example`
+- [x] WS02 — hostapd template parameterization + `TRAVELROUTER_AP_SECURITY` env + install validation (fail-loud on unsupported) + `.env.example` ✅ (§5at; suite 677/0)
 - [ ] WS03 — Detection Tier 1: disconnect-burst watcher service + NATS `deauth-alert` (bounded, rate-limited)
 - [ ] WS04 — Status/admin banner for the deauth alert (+ clear/expiry)
 - [ ] WS05 — Suite battery (template render per mode, capability gate, detection heuristic against mocked events) + README docs (buy-guide + "rotation is not a defense")
