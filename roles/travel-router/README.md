@@ -327,7 +327,9 @@ switch networks:
   raises an alert when **5 or more** land within **10 seconds** (both tunable
   via `TRAVELROUTER_DEAUTH_THRESHOLD` / `TRAVELROUTER_DEAUTH_WINDOW_SEC`).
 - On a burst it writes `/run/travel-router/deauth-alert.json` and publishes
-  `rpi.nodes.<hostname>.deauth-alert` to `NATS_URL`.
+  `rpi.nodes.<hostname>.deauth-alert` to `NATS_URL`. The public status page
+  and the admin page both surface a warning banner while the alert is fresh
+  (15 min TTL); the admin page can **Dismiss** it (session + PIN).
 - A cooldown (default 60 s) prevents alert storms; the router's **own** AP
   restarts and MAC-block kicks are self-suppressed and never counted.
 - This is a **heuristic, not proof** — it does not distinguish a forged frame

@@ -1,7 +1,7 @@
 # Project Plan — Wireless security: WPA3/PMF + deauth detection (WS-wave)
 
 Last updated: 2026-10-04
-Status: IN PROGRESS — WS01 ✅ + WS02 ✅ + WS03 ✅ (suite 687/0); WS04 next.
+Status: IN PROGRESS — WS01–WS04 ✅ (suite 699/0); WS05 next (final).
 D1–D5 RESOLVED (2026-10-04). See `tasks/WS-decisions.md` for the
 decision-of-record. **No fork**: one role, capability-gated at install; the
 WPA2 render stays byte-identical.
@@ -72,7 +72,7 @@ detection so the operator knows when it happens:
 - [x] WS01 — Capability probe: `travel-wan wifi-capabilities` verb (AP/SAE/PMF/band) + suite assert ✅ (§5as; suite 668/0)
 - [x] WS02 — hostapd template parameterization + `TRAVELROUTER_AP_SECURITY` env + install validation (fail-loud on unsupported) + `.env.example` ✅ (§5at; suite 677/0)
 - [x] WS03 — Detection Tier 1: disconnect-burst watcher service + NATS `deauth-alert` (bounded, rate-limited) ✅ (§5au; suite 687/0)
-- [ ] WS04 — Status/admin banner for the deauth alert (+ clear/expiry)
+- [x] WS04 — Status/admin banner for the deauth alert (+ clear/expiry) ✅ (§5av; suite 699/0)
 - [ ] WS05 — Suite battery (template render per mode, capability gate, detection heuristic against mocked events) + README docs (buy-guide + "rotation is not a defense")
 - [ ] WS06 (DEFERRED — D3) — Detection Tier 2: monitor-mode sniffer, gated on a second radio
 - [ ] WQ — Hardware QA (USER-GATED): Pi 4 **onboard radio** (D1) — provision `wpa3`, join with a PMF client, confirm `ieee80211w`; simulate a deauth and confirm the alert fires

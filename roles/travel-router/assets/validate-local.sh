@@ -4183,6 +4183,69 @@ grep -qF 'deauth-watch.service' "$ROOT/roles/travel-router/install.sh" \
 grep -qF 'deauth_suppress_stamp' "$A/travel-wan.sh" \
   && ok "5au(f) travel-wan self-suppression stamp present" || bad "5au(f) suppress call missing"
 
+# --- (5av) deauth alert banner battery (WS04) ---------------------------------
+sec "5av. deauth alert banner + dismiss (WS04)"
+B5AV="$TMP/ws04"; mkdir -p "$B5AV"
+ALERT5AV="$B5AV/deauth-alert.json"
+printf '{"event":"deauth-alert","count":7,"window_sec":10,"threshold":5,"host":"h","ts":"t"}\n' > "$ALERT5AV"
+# Own live server on 18097: PIN 1234 + ADMIN_PSK, stub travel-wan, TTL 900s.
+STWV4="$B5AV/stub-travel-wan"; printf '#!/bin/bash\nexit 0\n' > "$STWV4"; chmod +x "$STWV4"
+STATE5AV="$B5AV/state.json"
+printf '{"mode":"standalone","wan_if":"","wan_ssid":"","wan_ip":"","lan_ip":"127.0.0.1","ap_interface":"wlan0"}' > "$STATE5AV"
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+TRAVELROUTER_SETUP_PIN="1234" TRAVELROUTER_ADMIN_PSK="${TESTADMIN_PSK:-AdminPass99}" \
+  TRAVELWAN_BIN="$STWV4" TRAVELROUTER_STATE_FILE="$STATE5AV" \
+  TRAVELROUTER_DEAUTH_ALERT_FILE="$ALERT5AV" TRAVELROUTER_DEAUTH_ALERT_TTL_SEC=900 \
+  TRAVELROUTER_STATUS_PORT=18097 TRAVELROUTER_BIND_HOST=127.0.0.1 \
+  python3 "$A/status-server.py" >"$B5AV/srv.log" 2>&1 &
+SPID=$!; sleep 1.5
+wait_healthy 18097 || true
+TOK_5AV=$(login_psk 18097 "${TESTADMIN_PSK:-AdminPass99}")
+# (a) active alert surfaces on the PUBLIC /api/status (no auth).
+body=$(curl -s http://127.0.0.1:18097/api/status 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['deauth']['active'] is True and d['deauth']['count']==7" "$body" 2>/dev/null \
+  && ok "5av(a) public /api/status carries deauth active+count" || bad "5av(a) public deauth field wrong: $body"
+# (b) admin GET reflects it too (session-gated).
+r=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18097/api/admin/deauth 2>/dev/null)
+[[ "$r" == "401" ]] && ok "5av(b) GET /api/admin/deauth no session -> 401" || bad "5av(b) no-session code=$r"
+body=$(curl -s -H "X-Session: $TOK_5AV" http://127.0.0.1:18097/api/admin/deauth 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['deauth']['active'] is True" "$body" 2>/dev/null \
+  && ok "5av(b) admin GET + session -> active" || bad "5av(b) admin GET wrong: $body"
+# (c) TTL expiry: an OLD mtime -> inactive (no cleanup process needed).
+touch -t 202001010000 "$ALERT5AV"
+body=$(curl -s http://127.0.0.1:18097/api/status 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['deauth']['active'] is False" "$body" 2>/dev/null \
+  && ok "5av(c) stale alert -> inactive (TTL expiry)" || bad "5av(c) stale alert still active: $body"
+# (d) no file -> inactive.
+rm -f "$ALERT5AV"
+body=$(curl -s http://127.0.0.1:18097/api/status 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['deauth']['active'] is False" "$body" 2>/dev/null \
+  && ok "5av(d) absent alert -> inactive" || bad "5av(d) absent alert wrong: $body"
+# (e) dismiss: no session -> 401; session no PIN -> 403; session+PIN -> 200 + file gone.
+printf '{"event":"deauth-alert","count":4,"window_sec":10,"threshold":5,"host":"h","ts":"t"}\n' > "$ALERT5AV"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -d '{"pin":"1234","action":"clear"}' \
+  http://127.0.0.1:18097/api/admin/deauth 2>/dev/null)
+[[ "$r" == "401" ]] && ok "5av(e) dismiss no session -> 401" || bad "5av(e) no-session code=$r"
+r=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5AV" -d '{"pin":"9999","action":"clear"}' \
+  http://127.0.0.1:18097/api/admin/deauth 2>/dev/null)
+[[ "$r" == "403" ]] && ok "5av(e) dismiss wrong PIN -> 403" || bad "5av(e) wrong-pin code=$r"
+r=$(curl -s -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' -H "X-Session: $TOK_5AV" -d '{"pin":"1234","action":"clear"}' \
+  http://127.0.0.1:18097/api/admin/deauth 2>/dev/null)
+[[ "${r##*$'\n'}" == "200" ]] && ok "5av(e) dismiss session+PIN -> 200" || bad "5av(e) dismiss code=${r##*$'\n'}"
+[[ ! -f "$ALERT5AV" ]] && ok "5av(e) dismiss removed the alert file" || bad "5av(e) alert file survived dismiss"
+# (f) structural: banner wiring in both pages, no innerHTML sink.
+grep -qF 'id="deauth-banner"' "$A/status-server.py" && grep -qF 'd.deauth' "$A/status-server.py" \
+  && ok "5av(f) public page carries deauth banner + reads d.deauth" || bad "5av(f) public banner wiring missing"
+grep -qF 'id="deauth-section"' "$A/admin.html" && grep -qF 'id="deauth-dismiss"' "$A/admin.html" \
+  && ok "5av(f) admin.html carries deauth section + dismiss" || bad "5av(f) admin banner wiring missing"
+n=$(grep -cE "innerHTML[^=]" "$A/admin.html" || true)
+[[ "$n" == "0" ]] && ok "5av(f) admin.html still adds no innerHTML sink" || bad "5av(f) innerHTML uses=$n"
+kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
+pkill -f status-server.py 2>/dev/null; sleep 0.3
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

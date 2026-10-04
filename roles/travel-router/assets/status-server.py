@@ -146,6 +146,15 @@ AUDIT_FILE = os.environ.get(
 AUDIT_CAP = 200
 _AUDIT_LOCK = threading.Lock()
 _AUDIT_RING = deque(maxlen=AUDIT_CAP)
+# Forged-deauth alert (WS03/WS04). The deauth-watch service writes this on a
+# burst; the public page and admin page surface it for the TTL window so the
+# operator can decide to leave/switch. Stale alerts self-expire — no cleanup
+# process needed (mtime is the clock; the file is on tmpfs and dies at reboot).
+DEAUTH_ALERT_FILE = os.environ.get(
+    "TRAVELROUTER_DEAUTH_ALERT_FILE",
+    "/run/travel-router/deauth-alert.json")
+DEAUTH_ALERT_TTL = float(os.environ.get(
+    "TRAVELROUTER_DEAUTH_ALERT_TTL_SEC", "900"))
 
 # HTTP-probe hosts whose DNS the H03 drop-in points at this server. Mirrors
 # portal-dnsmasq.conf.tmpl (dns.msftncsi.com is a DNS-value probe, never here).
@@ -273,6 +282,27 @@ def _killswitch_on():
     safe default — a fresh flash must serve clients, never a locked-out
     router. Never inverted."""
     return os.path.exists(KILLSWITCH_FILE)
+
+
+def _deauth_alert_now():
+    """Active forged-deauth alert, or None. Reads the WS03 alert file mtime as
+    the age clock (no tz parsing) and self-expires after DEAUTH_ALERT_TTL.
+    Never raises — an unreadable/absent/old file is simply "no active alert"."""
+    try:
+        age = time.time() - os.path.getmtime(DEAUTH_ALERT_FILE)
+    except OSError:
+        return None
+    if age < 0 or age >= DEAUTH_ALERT_TTL:
+        return None
+    count = 0
+    try:
+        with open(DEAUTH_ALERT_FILE, "r", encoding="utf-8") as fh:
+            parsed = json.load(fh)
+        if isinstance(parsed, dict) and isinstance(parsed.get("count"), int):
+            count = parsed["count"]
+    except (OSError, ValueError):
+        pass
+    return {"active": True, "count": count, "age_sec": int(age)}
 
 
 def _killswitch_write(on):
@@ -651,6 +681,7 @@ _STATUS_HTML = """<!DOCTYPE html>
 <body>
 <main>
   <h1>Travel Router Status</h1>
+  <p id="deauth-banner" class="warn" style="display:none"></p>
   <section>
     <h2>Network</h2>
     <table><tbody id="status-rows"></tbody></table>
@@ -695,6 +726,14 @@ function refreshStatus() {
       } else {
         msg.textContent = "Internet: not connected";
         msg.className = "msg";
+      }
+      var db = document.getElementById("deauth-banner");
+      if (d.deauth && d.deauth.active) {
+        db.textContent = "Possible deauthentication attack detected (" +
+          (d.deauth.count || "?") + " disconnects) — consider leaving this network.";
+        db.style.display = "";
+      } else {
+        db.style.display = "none";
       }
     })
     .catch(function () {
@@ -822,6 +861,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "wan_ssid": wan_ssid,
                 "internet": internet,
                 "lan_ip": _state_field("lan_ip") or "",
+                "deauth": _deauth_alert_now() or {"active": False},
             }), "application/json")
         elif path == "/status":
             # Full status (incl. client list) is ADMIN-ONLY — session required.
@@ -975,6 +1015,14 @@ class StatusHandler(BaseHTTPRequestHandler):
             if not _require_session(self):
                 return
             self._send(200, json.dumps({"ssids": self._ssid_common_rows()}),
+                       "application/json")
+        elif path == "/api/admin/deauth":
+            # Admin bucket (WS04): session-gated read of the forged-deauth
+            # alert. Same view as the public /api/status field; the admin page
+            # uses it for the dismissable banner. Absent/expired -> inactive.
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({"deauth": _deauth_alert_now() or {"active": False}}),
                        "application/json")
         elif path == "/admin" or path == "/admin/":
             # Admin page shell (admin plan Todo 2): unauthenticated to LOAD.
@@ -1182,6 +1230,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/admin/sshlockdown"
                 or path == "/api/admin/dns"
                 or path == "/api/admin/blocked"
+                or path == "/api/admin/deauth"
                 or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
@@ -1198,6 +1247,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                                "/api/admin/sshlockdown",
                                "/api/admin/dns",
                                "/api/admin/blocked",
+                               "/api/admin/deauth",
                                "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
@@ -1526,6 +1576,25 @@ class StatusHandler(BaseHTTPRequestHandler):
                                "application/json")
                     return
                 self._send(200, json.dumps({"ok": True}), "application/json")
+                return
+            elif path == "/api/admin/deauth":
+                # WS04 dismiss: clear the forged-deauth alert. Only "clear" is
+                # valid; the server owns no state beyond the WS03 alert file.
+                if body.get("action") != "clear":
+                    self._send(400, json.dumps({"error": "deauth"}),
+                               "application/json")
+                    return
+                try:
+                    os.remove(DEAUTH_ALERT_FILE)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                self._send(200, json.dumps({"ok": True,
+                                            "deauth": {"active": False}}),
+                           "application/json")
                 return
             elif path == "/api/admin/rotate-sessions":
                 # Security plan todo 7 (force-relogin): regenerate the salt

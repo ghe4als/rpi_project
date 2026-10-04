@@ -173,6 +173,12 @@
     <table><tbody id="net-status-rows"></tbody></table>
   </section>
 
+  <section id="deauth-section" style="display:none">
+    <h2>Security alert</h2>
+    <p class="dmsg" id="deauth-msg"></p>
+    <p><button id="deauth-dismiss" type="button" class="secondary">Dismiss</button></p>
+  </section>
+
   <section id="networks-section">
     <h2>WiFi networks</h2>
     <button id="scan-btn" type="button">Scan</button>
@@ -865,6 +871,41 @@ function refreshStatus() {
     }
   });
 }
+
+// --- Forged-deauth alert (WS04) --------------------------------------------
+// Session-gated read; the banner is dismissable (POST /api/admin/deauth clear,
+// PIN-gated). Text nodes only — no HTML string is ever parsed into the DOM.
+function refreshDeauth() {
+  sessionFetch("/api/admin/deauth", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status === 401) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      var sec = document.getElementById("deauth-section");
+      var msg = document.getElementById("deauth-msg");
+      if (!d || !d.deauth || !d.deauth.active) {
+        sec.style.display = "none";
+        return;
+      }
+      msg.textContent = "Possible deauthentication attack detected (" +
+        (d.deauth.count || "?") + " disconnects in the last window). " +
+        "Consider leaving this network or switching to a trusted one.";
+      msg.className = "dmsg warn";
+      sec.style.display = "";
+    })
+    .catch(function () {});
+}
+
+document.getElementById("deauth-dismiss").addEventListener("click", function () {
+  api("/api/admin/deauth", { pin: currentPin(), action: "clear" })
+    .then(handleErr("dismiss failed"))
+    .then(function (r) { return r.json(); })
+    .then(function () { refreshDeauth(); })
+    .catch(function (e) {
+      dMsg("deauth-msg", e.message, "warn");
+    });
+});
 
 // --- AP settings ------------------------------------------------------------
 // Current SSID + Broadcast checkbox preloaded from GET /api/admin/ap-info
@@ -1774,6 +1815,7 @@ function refreshAllFeatures() {
   refreshAudit();
   refreshSshlockdown();
   refreshStealth();
+  refreshDeauth();
 }
 
 (function initSession() {
