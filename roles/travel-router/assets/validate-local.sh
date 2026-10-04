@@ -4246,6 +4246,29 @@ n=$(grep -cE "innerHTML[^=]" "$A/admin.html" || true)
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 pkill -f status-server.py 2>/dev/null; sleep 0.3
 
+# --- (5aw) WS docs-truth pins (WS05) ------------------------------------------
+sec "5aw. WS docs-truth pins (WS05)"
+ROLE_README="$ROOT/roles/travel-router/README.md"
+# (a) security mode is documented as an env var with all three modes.
+grep -qF 'TRAVELROUTER_AP_SECURITY' "$ROLE_README" \
+  && ok "5aw(a) README documents TRAVELROUTER_AP_SECURITY" || bad "5aw(a) README missing AP_SECURITY"
+for m in wpa2 wpa3-transition wpa3; do
+  grep -qF "$m" "$ROLE_README" && ok "5aw(a) README names mode $m" || bad "5aw(a) mode $m undocumented"
+done
+# (b) the rotation ban is stated verbatim.
+grep -qF 'rotation is not a defense' "$ROLE_README" \
+  && ok "5aw(b) README states 'rotation is not a defense'" || bad "5aw(b) rotation ban missing"
+# (c) the capability verb is referenced.
+grep -qF 'wifi-capabilities' "$ROLE_README" \
+  && ok "5aw(c) README references the wifi-capabilities verb" || bad "5aw(c) verb undocumented"
+# (d) .env.example carries the var.
+grep -qE '^TRAVELROUTER_AP_SECURITY=' "$ROOT/.env.example" \
+  && ok "5aw(d) .env.example documents TRAVELROUTER_AP_SECURITY" || bad "5aw(d) .env.example missing AP_SECURITY"
+# (e) the stale template-editing instruction is GONE (env-driven now).
+grep -qF 'Re-provision after editing' "$ROLE_README" \
+  && bad "5aw(e) stale 'Re-provision after editing' still present" \
+  || ok "5aw(e) stale template-edit instruction removed"
+
 # --- (6) scope assert ---------------------------------------------------------
 sec "6. scope assert (working tree vs HEAD)"
 scope=$(git diff --name-only HEAD 2>/dev/null)

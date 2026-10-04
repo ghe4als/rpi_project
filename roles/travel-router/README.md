@@ -266,40 +266,62 @@ this is a separate, single-purpose control.
 
 #### WiFi security mode: WPA2 vs WPA3 (per-hardware capability check)
 
-The travel AP runs **WPA2-PSK (RSN/CCMP-128)** — the strongest mode the
-Zero W's radio supports. Upgrading to WPA3 is a hardware question, not a
-config preference: SAE (WPA3's handshake) needs support in BOTH the radio
-firmware and hostapd. Before buying hardware or editing the template, run
-this capability check on the Pi (SSH over the travel LAN):
+The travel AP runs **WPA2-PSK (RSN/CCMP-128)** by default — the strongest mode
+the Zero W's radio supports. Upgrading to WPA3 is a hardware question, not just
+a config preference: SAE (WPA3's handshake) needs support in BOTH the radio
+firmware and hostapd. The mode is an **env var** (no template editing):
+
+```
+TRAVELROUTER_AP_SECURITY="wpa2"             # default: WPA-PSK, no PMF
+# "wpa3-transition" -> wpa_key_mgmt=WPA-PSK SAE + ieee80211w=1 (optional PMF)
+# "wpa3"            -> wpa_key_mgmt=SAE + ieee80211w=2 (PMF required; WPA2-only clients locked out)
+```
+
+At install the requested mode is validated against the AP radio; unsupported
+hardware **fails loud with a remediation** — never a silent downgrade to WPA2.
+The wpa2 render is byte-identical to the pre-WS behavior.
+
+The router ships `travel-wan wifi-capabilities` to check the radio (see below);
+the underlying `iw phy` recipe is how that verb decides:
 
 ```bash
 hostapd -v                        # need hostapd >= 2.9; 2.10 is fine (2.11 too)
 iw phy0 info > /tmp/phy0.txt      # phy0 = onboard radio (AP side); phy1 = USB WAN
 
-# THE test: any SAE support at all?
+# THE test: SAE support + the CMAC (management-frame/BIP) cipher
 grep -c SAE /tmp/phy0.txt
 #   0  -> no WPA3 (this radio's ceiling is WPA2-CCMP)
-#  >0  -> SAE possible; also confirm under "Supported extended features":
-grep -A12 "Supported extended features" /tmp/phy0.txt | grep -E "EXT_KEY_ID|FILS|SAE"
+#  >0  -> SAE possible; also confirm the AP mode + CMAC cipher are listed
 ```
 
 Interpreting the dump:
 - **Supported Ciphers**: WEP40/WEP104/TKIP are legacy — you want CCMP-128
-  (or CCMP-256/GCMP on better radios). CCMP-128 = WPA2's AES; GCMP-256
-  appearing here hints at WPA3-class hardware.
-- **Supported extended features**: SAE/FILS/EXT_KEY_ID entries = WPA3-capable
-  driver+firmware. (The Zero W's BCM43430A1 lists only `CQM_RSSI_LIST` —
-  verified 2026-09-22, hence WPA2-only.)
+  (or CCMP-256/GCMP on better radios). **CMAC** = the BIP cipher that PMF
+  needs. CCMP-128 = WPA2's AES; GCMP-256 hints at WPA3-class hardware.
+- **Supported interface modes**: `AP` must be present (SAE without AP mode
+  still can't run our AP).
 - **AKM suites** (shown on newer iw versions): look for
   `00-0f-ac:8` (SAE) alongside `00-0f-ac:2` (PSK). SAE + PSK = transition
   mode possible; SAE only = WPA3-only mode.
+- **Extended features**: `EXT_KEY_ID` is a WPA3/PMF hint, but its absence is
+  not disqualifying — the CMAC cipher + the "supports SAE" line are stronger.
 
-If the radio supports SAE, the config change in `hostapd.conf.tmpl` is:
-`wpa_key_mgmt=WPA-PSK SAE` + `ieee80211w=1` (transition; WPA3-only =
-`SAE` + `ieee80211w=2`, which locks out WPA2-only devices). Re-provision
-after editing, and add a battery case RED-first per repo convention.
 Note: transition mode is still downgrade-attackable by design — pure SAE
 is where the real gain is.
+
+##### SAE-capable hardware (what to buy for WPA3/PMF)
+
+| Hardware | AP radio | WPA2 | WPA3/PMF | Notes |
+|---|---|---|---|---|
+| Pi Zero W v1.1 | BCM43430A1 | yes | **no** | chip ceiling; detection-only |
+| Pi 3B+ | BCM43455 (2.4 GHz only) | yes | **no** | no SAE advertised |
+| **Pi 4** | BCM43455 (2.4 + 5 GHz) | yes | **yes** | SAE + CMAC; the WQ target |
+| Pi 5 | (verify) | yes | probe first | run `wifi-capabilities` |
+
+**Rule: probe before buying.** Run `travel-wan wifi-capabilities` on the
+candidate; `"wpa3":true` (SAE + AP mode) is the only signal that matters. A USB
+adapter is not required for WPA3 on the Pi 4 — its **onboard** radio is the AP
+and already exposes SAE, so there is no topology change.
 
 `travel-wan wifi-capabilities` automates the check above and prints the AP
 radio's capability as one JSON line:
@@ -314,6 +336,14 @@ ssh pi@192.168.50.1 travel-wan wifi-capabilities
 `"wpa3":false` means the radio's ceiling is WPA2. `"pmf"` reflects the CMAC
 (BIP) cipher — the management-frame-protection indicator. A missing `iw`
 yields `"iw":false` and exit 3, never an abort.
+
+#### SSID rotation is NOT a defense
+
+Do not expect the router to "hide" or rotate the SSID on an attack. **It never
+does so automatically, and rotation would not help:** a deauth attacker does
+not need your SSID, while rotating it drops every client and your admin session
+— a self-inflicted DoS. If you want to rename the network, do it deliberately
+via the AP-settings flow; it is never wired to detection.
 
 ### Forged-deauth detection (Tier 1, heuristic)
 
