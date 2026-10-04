@@ -212,6 +212,34 @@ Afterwards the store itself is managed at runtime:
   (TYPE⟨TAB⟩SSID⟨TAB⟩PSK, root only — the store is 0600),
   `travel-wan psks-del <index>`.
 
+### Common SSID names (.ssid_common)
+
+An optional, **gitignored** repo-root file `.ssid_common` feeds the travel
+AP a pool of network names you rotate through (one SSID per line; `#`
+comments and blank lines are skipped):
+
+```
+HomeNet
+CafeNet
+LabNet
+```
+
+Same pipeline as `.psksecret`: staged next to `role.env` at provisioning,
+ingested **once at install** into `/etc/rpi-project/travel-router/ssid-common`
+(0600; entries validated — printable ASCII, ≤32 chars — a bad entry fails
+install with a remediation, duplicates keep the first occurrence). Re-run
+behavior mirrors AP re-provisioning: a re-run WITHOUT the file clears the
+pool; a re-run WITH it rebuilds from scratch. There is no runtime editor —
+edit the file and re-run install (dry-run safe).
+
+When the pool is non-empty, the admin page's **Random name** button draws
+from it (the preview response says `source: "pool"`, otherwise
+`"generated"`), and the AP-settings card lists the pool under "Common
+names" — tap one to fill the name field, then save with the PIN as usual
+(a pool pick is not a second write path; identity-change session rotation
+and auto-restore apply unchanged). Empty/absent pool = today's random mint
+from the no-lookalike alphabet; nothing changes on a fresh flash.
+
 ### Changing the router's own network (AP rename)
 
 The admin page's "AP settings" flow (and `POST /api/wan/apconfig`) changes
