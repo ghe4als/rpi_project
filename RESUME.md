@@ -1,155 +1,24 @@
-# RESUME — R/U/V/X/SC/WS waves COMPLETE; suite 707/0; R01 hardware-verified
+# RESUME — copyparty crypto wave COMPLETE
 
-<!--
-SESSION 2026-09-29. S06b cleanup, S06c doc-truth, and S06d comment-truth all
-EXECUTED + VERIFIED. S06d commits a178a6d (validate-local.sh 34/34),
-5d6b1e2 (README 3/3), b5aaaa1 (RESUME 5/5): 16 stale credential-model
-comments/labels in validate-local.sh + 2 README lines now describe the S03
-session gate instead of the pre-S03 client-PIN model. Suite 593/0 x2 at the
-S06d gate (7+ greens across the three waves). The S06d plan was dual-reviewed
-(r3: momus APPROVE + oracle OKAY) and every todo DoneClaim independently
-verified. S06d is TERMINAL — no S06e planned.
-COMMENT-TRUTH ARC IS CLOSED: S06b (5 files) -> S06c (3 residuals) -> S06d
-(18 spots). The recurring cause was scope drawn from an eyeballed list rather
-than an exhaustive class sweep; S06d was scoped from a full sweep and its
-independent re-sweep found no 19th site.
--->
+Last commit: df32196 feat(copyparty): Tailscale-only file server + gocryptfs
+at-rest crypto + age sealing (17 files, incl. roles/tailscale/README.md).
 
-## Current state
+## State
+- copyparty role LIVE on rpi-f96245 (192.168.0.106 / tailscale 100.67.183.33):
+  auth-only, tailscale-only bind, gocryptfs at-rest under /var/lib/copyparty,
+  https via tailscale serve, real-reboot-proofed.
+- Evidence: .omo/evidence/copyparty-at-rest-crypto/ (T1-T6, F1-F4).
 
-- **WS wave COMPLETE (wireless security). Suite 707/0.** Owner decisions
-  D1–D5 resolved 2026-10-04 (`tasks/WS-decisions.md`). One role,
-  capability-gated — no fork; the wpa2 render stays byte-identical.
-  - WS01 `8fd89f6` — `travel-wan wifi-capabilities` probe verb (AP/SAE/PMF/band)
-    + §5as. D1 probe: Pi 4 onboard (BCM43455) advertises SAE + CMAC; Pi 3B+ and
-    Zero W are WPA2-only.
-  - WS02 `4779e66` — `TRAVELROUTER_AP_SECURITY` (wpa2 default |
-    wpa3-transition | wpa3) parameterizes hostapd key-mgmt + ieee80211w;
-    fail-loud capability gate at install (never a silent downgrade); both
-    render sites (install.sh + ap-apply) carry the mode table. §5at.
-  - WS03 `353486d` — Tier-1 forged-deauth detection: `deauth-watch.service`
-    (5 disconnects in 10s, tunable) → `/run/travel-router/deauth-alert.json` +
-    NATS `rpi.nodes.<host>.deauth-alert`; cooldown + self-suppression. §5au.
-  - WS04 `4f926ce` — deauth banner on the public + admin pages; admin
-    GET/POST (`action:clear`, session+PIN); 15-min mtime TTL. §5av.
-  - WS05 `3e239b9` — docs close-out (env-driven mode, SAE buy-guide, "rotation
-    is not a defense") + §5aw. `tasks/PLAN-wireless-security.md` = CODE COMPLETE.
-  - **WS06 DEFERRED** (D3): Tier-2 monitor-mode sniffer. **WQ** (Pi 4 hardware)
-    is USER-GATED — added to `tasks/QA-next-reflash.md`.
-- **X wave COMPLETE + SC wave COMPLETE.**
-  - X (connect UX): X01 `02c7925` — the connect dialog is the credential hub
-    (saved-passwords folded in; cosmetic try-psks progress playback; box-model
-    dialog fix). X02 `8418b4e` — §5x asserts + docs.
-  - SC (common-SSID pool): SC01 `203ba96`, SC02 `207eb96`, SC03 `9f787bf`,
-    SC04 `5b10a25`, SC05 `b650012`, SC06 `75c5f8e`, plan `d9d10fc`. Reviewed
-    then rebased onto X01; two copy/paste artifacts fixed (dup /admin route
-    branch, dup ap-random-psk listener that double-fired preview) + §5sc
-    uniqueness guards added. `tasks/PLAN-ssid-common.md` status = COMPLETE.
-  - **Stash:** the `stash@{0}` that once held the PRE-rebase SC work has been
-    dropped (superseded by the SC commits; `git stash list` is empty).
-- **R wave COMPLETE (R01 `3f73061` + HW-verified, R02 `abd4562`, R03 `66c3fb0`,
-  R04 `a773ea0`).** Root cause: Trixie arm64 first boot aborted `role-setup`
-  because `roles/base/install.sh` ran `apt-get update` under `set -euo pipefail`
-  with no retry while the network was not yet usable. Fixes: bounded apt retry
-  then hard-fail (new `roles/base/assets/retry.sh`); advisory route+DNS wait
-  before the NTP/apt gate (`NET_WAIT_SEC`); §5k3 regression battery; bootfs
-  failure diagnostics (`role-setup-dump.sh` → `/boot/firmware/role-setup-debug.log`).
-  R01 hardware-verified 2026-10-03 (owner re-flash came up fine); R02–R04
-  suite-green only.
-- **V wave COMPLETE (V01 `84bd2a2`, V02 `8cfe965`, V03 + docs commit).** Hide the
-  SSID ON THE FLY. The backend already supported a hidden-only apconfig change;
-  the sole blocker was `admin.html`'s Save guard (`if (!ssid && !psk) return`).
-  V01 adds a dedicated "Apply hide/show now" button (enabled only when the
-  broadcast checkbox differs from live state) + a confirm dialog, posting
-  `{pin, hidden}`. V02 locks hidden-only argv (`ap-apply   2` / `ap-apply   0`)
-  + session rotation on a hidden change (and not on a no-op). V03 documents it.
-  Suite **626/0 at the V gate** (historical); the current suite is **659/0**
-  (re-run 2026-10-03, evidence
-  `.omo/evidence/plan-review-2026-10-03/suite-baseline.txt`).
-- **U wave COMPLETE (commit `a20de7c`), visual-QA PASSED.**
-  U03 fixed the public page's ambiguity where `<h2>Network</h2>` read like a key
-  with a blank value (heading and its nested rows shared the same left edges) —
-  CSS only: muted uppercase heading + rule, indented rows. U01 added the
-  router's OWN `lan_ip` to the public `GET /api/status` + a "Router address"
-  row (and a fetch-failure row so the section is never empty). U02 added an
-  admin-only Network panel showing LAN/WAN address, WAN iface, connected SSID.
-  Privacy split: `lan_ip` public, `wan_ip` admin-only (the `wan_ip` leak assert
-  is preserved). Visual QA: headless-Chrome screenshot confirmed the hierarchy
-  and the new row render correctly.
-- The `armhf Packages` apt warning and `cc_netplan_nm_patch` are both RED
-  HERRINGS (RPi OS arm64 intentionally adds armhf as a foreign arch; the
-  cloud-init module warning is cosmetic on stock Trixie). Do not chase them.
-- S06b, S06c, S06d ALL COMPLETE. S06d plan 5/5 todos + F1-F4 + 5 success
-  criteria ticked. Ledger: .omo/start-work/ledger.jsonl; artifacts:
-  .omo/evidence/s06d-comment-truth/ (6 run logs).
-- Suite gate: monotonic; **593 passed, 0 failed** at the S06d gate (historical);
-  **605 passed, 0 failed** post-S07 (T01/T02 x3 + independent re-run each).
-- S07 LIVE BIND PROVEN on hardware 2026-10-01: fresh Bookworm flash
-  rpios-20261001115252-5789 -> pi register bound it to rpi-8e21bb (first
-  Bookworm flash ever to bind flash history); flashed_at/image/role/os recorded
-  in the device's flashes list. Evidence: .omo/evidence/hw-2026-10-01-reflash/.
-- F3 stale-deployment (security-finishing) CLOSED by the same re-flash: deployed
-  /admin + all /api/admin/* reads return 200 (were 404 on the Sep-22 build).
-- Working tree: CLEAN.
-- 2026-10-01 docs split: the travel-router portion of README.md (10 sections,
-  ~300 lines) moved verbatim into `roles/travel-router/README.md` (the role's
-  full manual, + Feature parking lot for future-wave ideas). README keeps the
-  roles table, threat-model paragraph, and a compact quick-start + pointer;
-  suite pinned-strings preserved (Threat model, PSK-in-argv accepted risk, all
-  5 TRAVELROUTER_ vars). Gate: SUITE GREEN 605/0 post-split.
-- Carried follow-ups (comment-only): the three stale-comment fixes were later
-  resolved (all three phrases are now GONE: status-server.py "still a PIN guess",
-  validate-local.sh "absent pin is 401", "(body.pin;"). Nothing outstanding.
-- Owner decision: F3 stale deployment (live Pi rpi-8e21bb predates the
-  S-wave) — re-provision will pick up everything now.
-- S-wave HARDWARE-VERIFIED 2026-09-30 on rpi-8e21bb (fresh Bookworm travel-router flash): all S-wave HTTP routes live — GET / 200, GET /setup 404 (S04), GET /status 401 (S02), GET /admin 200, /health {"status":"ok"}, public / carries the Admin link (S06b), /api/status = {ap_ssid,wan_ssid,internet}, no device-data leak; PIN env staged 0600; wrong-PSK login 401. Captive-portal 404 on /generate_204 is CORRECT-PER-DESIGN (routed mode removes the portal drop-in; standalone-only feature).
-- S07 COMPLETE (2026-09-30): the Bookworm flash-binding gap is FIXED — provision-bookworm.sh mints a Trixie-format instance_id, stamps bootfs/meta-data (after the stale-file cleanup), records it first in the pending_flashes entry, and firstrun persists it to /var/lib/rpi-project/instance_id. Commits bf45e5d (code + 11 suite asserts) and 02a6bc7 (docs + offline bind assert + RESUME flip). Suite: 605 passed / 0 failed, x3 consecutive, plus one independent post-commit re-run. Live bind proof deferred to the next natural re-flash (current Pi predates the fix; post-switch re-probe env-blocked — Pi unreachable from home LAN).
-- Prior work travel-router-security-finishing PAUSED (its F3 landed as a
-  root-cause-proven stale deployment).
+## Next human actions (user-side)
+1. BACK UP the gocryptfs key: /boot/firmware/role/copyparty.crypt.key on the Pi
+   + /tmp/opencode/.copyparty.crypt.key on this Mac (only copies in existence).
+2. Swap placeholder creds al:pw -> real (runbook: roles/copyparty/README.md
+   "Credential rotation" §1) + mirror in .env COPYPARTY_ACCOUNTS.
+3. After UI verification: delete plaintext quarantines on the Pi:
+   /var/lib/copyparty.pre-crypt-backup + /var/lib/copyparty.oldplaintext.
+4. Optional: stage the fixed role tree to the card (diff-only cleanup; card
+   already runs fixed artifacts from the live fixes).
 
-## Next session steps
-
-1. **NO pending code work.** R, U, V, X, SC, WS waves all COMPLETE. Suite 707/0.
-2. **Hardware QA is the only open work — batched into ONE re-flash:**
-   `tasks/QA-next-reflash.md` sweeps WQ (firstboot-wan), HQ (hotel-setup),
-   SQ (`.ssid_common` pool), plus R02–R04 and the V hide toggle
-   re-verification, the S07 live-bind proof, and the **WS-wave WQ** (Pi 4:
-   provision `wpa3`, join a PMF client, simulate a deauth → alert fires).
-   USER-GATED.
-3. **WS shipped WS01–WS05** (see `tasks/PLAN-wireless-security.md` = CODE
-   COMPLETE). WS06 (Tier-2 sniffer) DEFERRED; WQ is USER-GATED. Do not
-   re-open WS code without a new wave.
-4. Comment-truth arc closed; no S06e planned.
-5. Deferred (owner chose local-suite-only): a real podman arm64 integration
-   test and a QEMU `raspi4b` full-boot test. Available on this Mac if wanted
-   (both installed).
-
-## Standing rules (do not relearn)
-
-- Mac on `192.168.0.x` = home LAN (Brook) → Pi unreachable; STOP and ask
-  the user to switch to the travel SSID (192.168.50.x). Never poll.
-- NEVER run hostapd against the live conf or a conf with
-  `interface=wlan0` while hostapd-travel runs — use a dead-iface probe
-  copy only.
-- Login API needs `X-Requested-With: XMLHttpRequest` from curl.
-- The suite is client/capture-fragile: every curl wrapper must pass the
-  URL EXACTLY ONCE. Suite ALSO flakes on macOS loopback ([000] transport
-  failures — validate-local.sh:3122-3126; bounded re-run, max 3 attempts
-  per position; all-[000] = flake, non-transport = real).
-- The suite's DRY_RUN seam is `TRAVELROUTER_DRY_RUN=1` (+ optional
-  `TRAVELROUTER_DRY_RUN_PREFIX`), NOT bare `DRY_RUN=1`.
-- Suite gate: monotonic; do not re-derive the 5ar(e) order. Fixed ports +
-  system-wide pkill make CONCURRENT suite runs kill each other — always
-  run suites sequentially.
-- Comment/prose edits to validate-local.sh: use FULL-LINE old_strings. Some
-  phrases occur twice with opposite truth values (`PIN gate` at :365 stale
-  vs :2426 accurate) — a file-wide substring replace corrupts the accurate
-  one.
-- `hostapd_cli -p` takes the ctrl socket DIRECTORY, NOT the socket file
-  (cost one debug round-trip 2026-09-26; §5z stubs exit 3 on it).
-- 2026-09-26 hardware verification of the AP-rename brick fix is DONE
-  (f3-manual.md + Pi's apconfig.log). Do not re-run those.
-- PIN (2026-09-28 S06 decision): KEEP as admin-write second factor;
-  GET-bucket X-Pin is GONE — do not revive.
-- Suite `$LOG` (validate-local.sh:12) is defined but never written — tee
-  run output into .omo/evidence/<work>/ yourself when evidence matters.
+## Parked (user decisions, not started)
+- rclone crypt over WebDAV (option B) / LUKS (option D)
+- USB hot-plug discovery (stays SSH-by-design)
