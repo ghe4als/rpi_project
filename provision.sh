@@ -145,7 +145,11 @@ collect_deps() {
   src="$(find_role_src "$r")" || { echo "ERROR: dependency role '$r' not found in ROLES_PATHS='$ROLES_PATHS'" >&2; exit 1; }
   deps_file="$src/role.deps"
   if [[ -f "$deps_file" ]]; then
-    while IFS= read -r dep; do
+    # read -r drops an unterminated final line, so a role.deps without a
+    # trailing newline would silently lose its last dependency. Loop on the
+    # line itself so a missing trailing newline can't eat the last dep.
+    # (burned a flash on this: copyparty's dep was silently dropped)
+    while IFS= read -r dep || [[ -n "$dep" ]]; do
       dep="${dep%%#*}"; dep="${dep//[[:space:]]/}"
       [[ -n "$dep" ]] || continue
       collect_deps "$dep"
@@ -187,7 +191,7 @@ find "$BOOT/role" -name install.sh -exec chmod +x {} \;
 ROLE_ENV_FILE="$BOOT/role/role.env"
 {
   echo "ROLE=$ROLE"
-  for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER)_/ {print $1}'); do
+  for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER|COPYPARTY)_/ {print $1}'); do
     val="${!var}"
     # \r from CRLF sources would be baked into role.env by %q and trip the
     # printable-ASCII validation in the role installers (e.g. AP_SSID).

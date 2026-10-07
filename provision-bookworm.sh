@@ -109,7 +109,9 @@ collect_deps() {
   src="$(find_role_src "$r")" || { echo "ERROR: dependency role '$r' not found in ROLES_PATHS='$ROLES_PATHS'" >&2; exit 1; }
   deps_file="$src/role.deps"
   if [[ -f "$deps_file" ]]; then
-    while IFS= read -r dep; do
+    # read -r drops an unterminated final line; loop on the line itself so a
+    # role.deps missing its trailing newline can't silently lose the last dep.
+    while IFS= read -r dep || [[ -n "$dep" ]]; do
       dep="${dep%%#*}"; dep="${dep//[[:space:]]/}"
       [[ -n "$dep" ]] || continue
       collect_deps "$dep"
@@ -152,7 +154,7 @@ find "$BOOT/role" -name install.sh -exec chmod +x {} \;
 ROLE_ENV_FILE="$BOOT/role/role.env"
 {
   echo "ROLE=$ROLE"
-  for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER)_/ {print $1}'); do
+  for var in $(env | awk -F= '/^(TOUCHSCREEN|NATS|OLLAMA|COOP|MOTION|TAILSCALE|NETDATA|TRAVELROUTER|COPYPARTY)_/ {print $1}'); do
     printf '%s=%q\n' "$var" "${!var}"
   done
   # travel-router bootstraps its WAN from the provisioning WiFi: install.sh

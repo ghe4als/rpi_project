@@ -1,0 +1,46 @@
+[Unit]
+Description=copyparty file server (Tailscale-only bind)
+Documentation=https://github.com/9001/copyparty
+Wants=network-online.target
+Wants=tailscale-up.service
+Requires=tailscaled.service
+__CRYPT_ORDERING__
+[Service]
+Type=notify
+# __CRYPT_STATE__ renders to 1 (crypto on) or 0; the guard + ordering lines
+# below render conditionally in install.sh via the same token.
+User=copyparty
+Group=copyparty
+WorkingDirectory=/var/lib
+Environment=PYTHONUNBUFFERED=x
+Environment=COPYPARTY_CRYPT=__CRYPT_STATE__
+Environment=COPYPARTY_DIR=__COPYPARTY_DIR__
+ExecStartPre=/usr/local/bin/copyparty-start-guard
+LogsDirectory=copyparty
+ExecStart=/usr/local/bin/copyparty-start
+# copyparty-start may wait up to COPYPARTY_WAIT_SEC (default 180s) for the
+# tailnet before exec'ing; systemd would kill the start at its 90s default.
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=5
+
+# Hardening (subset of upstream contrib/systemd/copyparty.service):
+MemoryMax=50%
+MemorySwapMax=50%
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+# copyparty writes its DB/thumbnails next to the shared root and its config
+# under /etc/copyparty — both are needed writable; everything else stays RO.
+ReadWritePaths=/etc/copyparty
+
+[Install]
+WantedBy=multi-user.target

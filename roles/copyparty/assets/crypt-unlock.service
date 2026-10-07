@@ -1,0 +1,11 @@
+[Unit]
+Description=Decrypt and mount copyparty encrypted volume
+Wants=local-fs.target
+Before=copyparty.service
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/crypt-mount
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

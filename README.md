@@ -148,6 +148,7 @@ tree + `role.env` onto the SD card's bootfs partition.
 | `security-camera` | Motion + UVC webcam streamer (`http://<host>:8081`). | `MOTION_PORT` |
 | `touchscreen` | SPI 3.5" panel kiosk (cage + foot on the SPI DRM panel). | `TOUCHSCREEN_*` |
 | `tailscale` | Remote-access VPN: subnet router + Tailscale SSH. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET` |
+| `copyparty` | File server (copyparty) bound ONLY to the Pi's Tailscale IP — no LAN/public exposure. Adds `tailscale` via `role.deps`. | `TAILSCALE_AUTH_KEY`, `TAILSCALE_SUBNET`, `COPYPARTY_PORT`, `COPYPARTY_DIR`, `COPYPARTY_ACCOUNTS` |
 | `monitor` | NATS server (JetStream + :8222 monitoring) + Netdata parent dashboard. For an always-on Pi 4. | `NATS_URL`, `NETDATA_STREAM_API_KEY` |
 | `netdata-child` | Netdata agent that streams this Pi's metrics to the monitor Pi. Add to a fleet Pi's `role.deps`. | `NETDATA_STREAM_API_KEY`, `NETDATA_PARENT_HOST` |
 | `travel-router` | Travel WiFi router: the Pi's onboard radio is always your private AP; a USB adapter (WiFi dongle or Ethernet) auto-becomes the WAN. | `TRAVELROUTER_AP_SSID`, `TRAVELROUTER_AP_PSK`, `TRAVELROUTER_DEFAULT_PSKS` |
