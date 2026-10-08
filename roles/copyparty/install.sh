@@ -197,7 +197,10 @@ fi
 # UI's rename/move buttons, "d" enables the delete button; without "d" a
 # copied-to-Pi folder cannot be removed from the UI (2026-10-07 report).
 # Verified on 1.20.24/1.20.25: anon → 401.
-VOL_LINE="-v $COPYPARTY_DIR::rwmd,$(echo "$COPYPARTY_ACCOUNTS" | cut -d',' -f1 | cut -d':' -f1)"
+VOL_LINE="-v $COPYPARTY_DIR:"
+EXTRA_SEGS="$(echo "$COPYPARTY_ACCOUNTS" | cut -d, -f2- -s | tr ',' '\n' | cut -d':' -f1 | sed 's/^/rwmd,/' | tr '\n' ':')"
+VOL_LINE="$VOL_LINE:rwmd,$(echo "$COPYPARTY_ACCOUNTS" | cut -d',' -f1 | cut -d':' -f1)"
+[[ -n "$EXTRA_SEGS" ]] && VOL_LINE="$VOL_LINE:${EXTRA_SEGS%:}"
 
 install -d -m 0750 /etc/copyparty
 {
