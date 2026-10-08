@@ -143,7 +143,23 @@ Two independent credentials exist. Rotate them separately.
 
 ### 1. Web-UI account (routine, instant)
 
-The service reads `/etc/copyparty/args` at start. To rotate UI creds:
+**Or just run the rotation pusher** — generates fresh passwords for the
+accounts you name (default: all), applies them on the Pi, restarts,
+verifies every new login over HTTP before touching anything local, mirrors
+`.env` to match, and prints the new pairs once:
+
+```bash
+cd ~/code/rpi_project
+roles/copyparty/rotate-accounts.sh              # rotate ALL accounts
+roles/copyparty/rotate-accounts.sh al           # rotate one
+roles/copyparty/rotate-accounts.sh --check      # peek, no change
+```
+
+Fail-safe behavior: if any new login fails verification it stops with the
+`.env` unmodified and prints the SSH one-liner to restore the on-Pi args
+backup (`args.bak-*-rotation`).
+
+The service reads `/etc/copyparty/args` at start. To rotate UI creds
 
 ```bash
 ssh pi@<pi>
