@@ -325,6 +325,7 @@ NATS notifications, and recovery/upgrade paths:
 | `provision-bookworm.sh` | Bookworm (firstrun.sh) provisioner. |
 | `role-setup.service.tmpl` | Oneshot unit that runs the role on first boot. |
 | `roles/<name>/install.sh` | Role installer (runs on the Pi). |
+| `roles/copyparty/rotate-accounts.sh` | Push a UI password rotation: generate → apply → restart → verify logins → mirror `.env` → print pairs once. See the role README. |
 | `.env` / `.env.example` | Per-host secrets + config (gitignored). |
 | `pi` | Inventory CLI. See `./pi help`. |
 | `inventory.yaml` | Per-Pi state (gitignored). See [`INVENTORY.md`](INVENTORY.md). |
