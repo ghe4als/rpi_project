@@ -160,8 +160,9 @@ with the argon2-hashed form copyparty echoes in the journal at startup
 hashed at rest.
 
 Extra accounts: add `-a user2:pass2` lines; they get read-only access
-until granted write by appending their name after a `:rw,` segment in the
-`-v` line (first user is the r/w owner).
+until granted write by appending their name after a `:rwmd,` segment in the
+`-v` line (first user is the r/w/m/d owner; that is also where you can
+hand out move-only or delete-only rights, e.g. `:m,user2,` or `:d,user3,`).
 
 ### 2. gocryptfs volume key (only if the key itself was exposed)
 

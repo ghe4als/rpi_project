@@ -122,6 +122,9 @@ fi
 # flash needs no hand-steps. A CUSTOM COPYPARTY_DIR (e.g. a USB mount) must
 # exist already — mkdir-on-missing would land on the SD card and get shadowed
 # once the real mount shows up.
+# NOTE: with COPYPARTY_CRYPT=1 the share is a gocryptfs FUSE mount owned by
+# the copyparty user — root cannot write into it, so asset staging must run
+# as copyparty (mobile-folder-upload.js proven on hardware).
 if [[ ! -d "$COPYPARTY_DIR" && "$COPYPARTY_DIR" == "/var/lib/copyparty" ]]; then
   mkdir -p "$COPYPARTY_DIR"
 fi
@@ -131,6 +134,20 @@ if [[ ! -d "$COPYPARTY_DIR" ]]; then
   exit 1
 fi
 chown copyparty:copyparty "$COPYPARTY_DIR"
+
+# -----------------------------------------------------------------------------
+# Browser JS: mobile-folder-upload.js restores the folder picker on Android
+# (upstream hard-codes files-only on touch devices; modern Android engines
+# support the webkitdirectory input). Served from inside the share as
+# /.res/mfu.js and injected via --js-browser in the args file.
+# -----------------------------------------------------------------------------
+RES_DIR="$COPYPARTY_DIR/.res"
+if [[ ! -d "$RES_DIR" ]]; then
+  sudo -u copyparty mkdir -p "$RES_DIR"
+fi
+install -m 0644 "$ASSETS/mobile-folder-upload.js" "$RES_DIR/mfu.js.tmp"
+chown copyparty:copyparty "$RES_DIR/mfu.js.tmp"
+sudo -u copyparty mv "$RES_DIR/mfu.js.tmp" "$RES_DIR/mfu.js"
 
 # -----------------------------------------------------------------------------
 # Accounts are REQUIRED (auth-only posture: every request needs a login):
@@ -174,10 +191,13 @@ fi
 # The service reads this so secrets never sit in argv (ps-visible) and stays
 # easy to edit by hand.
 # -----------------------------------------------------------------------------
-# Auth-only share perms: NO anonymous access at all — the volume grants r+rw
-# ONLY to the listed accounts (first = r/w owner; later ones read-only until
-# you add them after another :rw, seg). Verified on 1.20.24: anon → 401.
-VOL_LINE="-v $COPYPARTY_DIR::rw,$(echo "$COPYPARTY_ACCOUNTS" | cut -d',' -f1 | cut -d':' -f1)"
+# Auth-only share perms: NO anonymous access at all — the volume grants
+# r+w+m+d ONLY to the listed accounts (first = r/w/m/d owner; later ones
+# read-only until you add them after another :rwmd, seg). "m" enables the
+# UI's rename/move buttons, "d" enables the delete button; without "d" a
+# copied-to-Pi folder cannot be removed from the UI (2026-10-07 report).
+# Verified on 1.20.24/1.20.25: anon → 401.
+VOL_LINE="-v $COPYPARTY_DIR::rwmd,$(echo "$COPYPARTY_ACCOUNTS" | cut -d',' -f1 | cut -d':' -f1)"
 
 install -d -m 0750 /etc/copyparty
 {
@@ -185,6 +205,7 @@ install -d -m 0750 /etc/copyparty
   echo "# Shares + accounts. Bind IP is resolved at runtime by copyparty-start."
   echo "--usernames"
   echo "-p $COPYPARTY_PORT"
+  echo "--js-browser /.res/mfu.js"
   echo "$VOL_LINE"
   printf '%s\n' "${ACC_ARGS[@]}"
 } > /etc/copyparty/args
