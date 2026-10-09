@@ -43,109 +43,152 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Travel Router — Admin</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
-         background: #101418; color: #e8eaed; }
+  /* 80s retro-terminal theme — CSS only, no external requests (offline device) */
+  :root {
+    color-scheme: dark;
+    --bg: #160e26;            /* deep space purple */
+    --panel: #1d1436;         /* panel purple */
+    --panel-edge: #6320c9;    /* neon purple border */
+    --hotpink: #ff5aa7;
+    --cyan: #29e0e8;
+    --grid: #3d2a66;
+    --text: #e9e2ff;
+    --sub: #a89cd6;
+    --ok: #3ee6a6;
+    --warn: #ffc857;
+    --failbg: #4a1740;
+    --inputbg: #120b22;
+    --neon-shadow: 0 0 8px rgba(41, 224, 232, 0.45), 0 0 16px rgba(99, 32, 201, 0.35);
+    --pink-shadow: 0 0 8px rgba(255, 90, 167, 0.4);
+  }
+  body { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; margin: 0;
+         padding: 1rem 1rem 2rem; color: var(--text);
+         background: var(--bg) linear-gradient(rgba(61, 42, 102, 0.35) 1px, transparent 1px);
+         background-size: 100% 3px; }
   main { max-width: 30rem; margin: 0 auto; }
-  h1 { font-size: 1.25rem; }
-  section { background: #1a2027; border-radius: 10px; padding: 0.9rem;
-            margin-bottom: 0.9rem; }
-  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  h1 { font-size: 1.3rem; letter-spacing: 0.04em; text-transform: uppercase;
+       color: var(--hotpink); text-shadow: var(--pink-shadow); border-bottom: 2px solid var(--hotpink);
+       padding-bottom: 0.4rem; }
+  section { background: var(--panel); border-radius: 4px; padding: 0.9rem;
+            margin-bottom: 0.9rem;
+            border: 1px solid var(--panel-edge); border-left: 4px solid var(--hotpink);
+            box-shadow: var(--neon-shadow); }
+  h2 { font-size: 0.85rem; margin: 0 0 0.6rem; color: var(--cyan);
+       text-transform: uppercase; letter-spacing: 0.09em; }
   table { border-collapse: collapse; width: 100%; }
   td { padding: 2px 8px 2px 0; }
-  .label { font-weight: 600; }
+  .label { font-weight: 700; color: var(--cyan); }
   input, button { font-size: 1rem; }
   input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin: 0.3rem 0;
-          border-radius: 6px; border: 1px solid #3a434e; background: #101418;
-          color: #e8eaed; }
+          border-radius: 4px; border: 1px solid var(--panel-edge);
+          background: var(--inputbg); color: var(--text); }
+  input[type="checkbox"] { width: auto; margin: 0 0.45rem 0 0; vertical-align: middle;
+                           accent-color: var(--cyan); }
+  input:focus { border-color: var(--cyan); box-shadow: 0 0 6px rgba(41, 224, 232, 0.4);
+                outline: none; }
+  label { color: var(--sub); font-size: 0.9rem; }
   button { padding: 0.55rem 1rem; margin: 0.3rem 0.3rem 0.3rem 0;
-           border-radius: 8px; border: 0; background: #2d7ff9; color: white;
-           font-weight: 600; }
-  button.secondary { background: #3a434e; }
-  button:disabled { opacity: 0.5; }
-  .msg { min-height: 1.2em; font-size: 0.9rem; color: #9aa5b1; }
-  .warn { color: #ffb84d; }
-  .ok { color: #5dd879; }
+           border-radius: 4px; border: 1px solid var(--cyan);
+           background: #0e5f66; color: var(--cyan); font-weight: 700;
+           text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; }
+  button.secondary { background: transparent; border-color: var(--hotpink);
+                     color: var(--hotpink); }
+  button.secondary:hover:not(:disabled) { background: #3a1140;
+                                          box-shadow: var(--pink-shadow); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .msg { min-height: 1.2em; font-size: 0.9rem; color: var(--sub); }
+  .warn { color: var(--warn); }
+  .ok { color: var(--ok); }
 
-  .netcard { background: #222a33; border-radius: 8px; padding: 0.7rem 0.8rem;
-             margin: 0.4rem 0; }
-  .netcard .ssid { font-weight: 700; font-size: 1.02rem; word-break: break-all; }
-  .netcard .meta { font-size: 0.85rem; color: #9aa5b1; margin-top: 0.25rem;
+  .netcard { background: var(--panel); border: 1px solid var(--grid);
+             border-left: 4px solid var(--cyan); border-radius: 4px;
+             padding: 0.7rem 0.8rem; margin: 0.4rem 0; }
+  .netcard .ssid { font-weight: 700; font-size: 1.02rem; word-break: break-all;
+                   color: var(--text); }
+  .netcard .meta { font-size: 0.85rem; color: var(--sub); margin-top: 0.25rem;
                    display: flex; align-items: center; flex-wrap: wrap;
                    gap: 0.4rem 0.6rem; }
   .badge { display: inline-block; font-size: 0.72rem; padding: 1px 6px;
-           border-radius: 999px; background: #2d7ff9; color: white;
-           font-weight: 600; letter-spacing: 0.02em; }
-  .badge.auto { background: #2d6f4d; color: #d6ffe6; }
+           border-radius: 999px; background: #0e5f66; color: var(--cyan);
+           border: 1px solid var(--cyan); font-weight: 700;
+           letter-spacing: 0.03em; }
+  .badge.auto { background: #103d2e; color: var(--ok); border-color: var(--ok); }
   .netcard .cardbtns { margin-top: 0.5rem; display: flex; flex-wrap: wrap;
                        gap: 0.35rem; }
-  .netcard .cardmsg { min-height: 1.1em; font-size: 0.82rem; color: #9aa5b1;
+  .netcard .cardbtns button { margin: 0; font-size: 0.85rem; padding: 0.35rem 0.7rem; }
+  .netcard .cardmsg { min-height: 1.1em; font-size: 0.82rem; color: var(--sub);
                       margin-top: 0.35rem; word-break: break-all; }
-  .netcard .cardmsg.warn { color: #ffb84d; }
-  .netcard .cardmsg.ok { color: #5dd879; }
-  .dim { color: #6b7682; font-style: italic; }
-  .notedown { font-size: 0.85rem; color: #ffb84d; word-break: break-all;
-               margin: 0.4rem 0; }
+  .netcard .cardmsg.warn { color: var(--warn); }
+  .netcard .cardmsg.ok { color: var(--ok); }
+  .dim { color: var(--sub); font-style: italic; }
+  .notedown { font-size: 0.85rem; color: var(--warn); word-break: break-all;
+              margin: 0.4rem 0; }
 
   /* S04 merge (from setup.html): signal bars + scan table + badge variants */
   .sig { display: inline-flex; gap: 2px; margin-left: 0.25rem; vertical-align: middle; }
-  .sig i { display: inline-block; width: 4px; height: 12px; background: #3a434e;
+  .sig i { display: inline-block; width: 4px; height: 12px; background: var(--grid);
            border-radius: 1px; }
-  .sig i.on { background: #5dd879; }
-  .badge.open { background: #3a434e; color: #e8eaed; }
-  .badge.ent  { background: #7a3e3e; color: #ffd6d6; }
-  .badge.known{ background: #2d7ff9; }
+  .sig i.on { background: var(--ok); box-shadow: 0 0 4px rgba(62, 230, 166, 0.6); }
+  .badge.open { background: transparent; color: var(--sub); border-color: var(--sub); }
+  .badge.ent  { background: var(--failbg); color: #ff8ac2; border-color: var(--hotpink); }
+  .badge.known{ background: #24135a; color: #c99bff; border-color: #a44dff; }
   #scan-table-wrap { max-height: 21rem; overflow-y: auto; }
   #scan-table { width: 100%; }
-  #scan-table td { padding: 4px 6px 4px 0; border-bottom: 1px solid #222a33;
+  #scan-table td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--grid);
                    font-size: 0.9rem; }
   #scan-table .net-ssid { font-weight: 600; word-break: break-all; }
-  #scan-table button { font-size: 0.85rem; padding: 0.35rem 0.7rem; margin: 0; }
+  #scan-table button { font-size: 0.8rem; padding: 0.3rem 0.6rem; margin: 0; }
 
-  dialog { box-sizing: border-box; border: 1px solid #3a434e; border-radius: 10px;
-           background: #1a2027; color: #e8eaed; padding: 1rem; max-width: 26rem;
-           width: calc(100% - 1.5rem); max-height: 90vh; overflow-y: auto; }
-  dialog::backdrop { background: rgba(4, 8, 12, 0.7); }
+  dialog { box-sizing: border-box; border: 1px solid var(--panel-edge); border-radius: 4px;
+           background: var(--panel); color: var(--text); padding: 1rem; max-width: 26rem;
+           width: calc(100% - 1.5rem); max-height: 90vh; overflow-y: auto;
+           box-shadow: var(--neon-shadow); }
+  dialog::backdrop { background: rgba(10, 4, 24, 0.8); }
   .drow { margin: 0.4rem 0; }
-  .dmsg { min-height: 1.2em; font-size: 0.85rem; color: #9aa5b1;
+  .dmsg { min-height: 1.2em; font-size: 0.85rem; color: var(--sub);
           word-break: break-all; }
-  .dmsg.warn { color: #ffb84d; }
-  .dmsg.ok { color: #5dd879; }
+  .dmsg.warn { color: var(--warn); }
+  .dmsg.ok { color: var(--ok); }
 
   /* X01: connect-dialog hub — saved passwords + try-progress */
   dialog#net-dialog .cardbtns { display: flex; flex-wrap: wrap; gap: 0.4rem; }
   dialog#net-dialog .cardbtns button { margin: 0; }
   dialog#net-dialog label { display: block; margin-top: 0.6rem; font-size: 0.85rem;
-                            color: #9aa5b1; }
-  dialog#net-dialog h4 { margin: 0.6rem 0 0.25rem; font-size: 0.78rem; color: #8b97a5;
-                         text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
-  .saved { margin-top: 0.6rem; border-top: 1px solid #2a333d; padding-top: 0.5rem; }
-  .saved summary { cursor: pointer; font-size: 0.9rem; color: #c7cdd4; font-weight: 600; }
+                            color: var(--sub); }
+  dialog#net-dialog h4 { margin: 0.6rem 0 0.25rem; font-size: 0.75rem; color: var(--hotpink);
+                         text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+  .saved { margin-top: 0.6rem; border-top: 1px solid var(--grid); padding-top: 0.5rem; }
+  .saved summary { cursor: pointer; font-size: 0.9rem; color: var(--cyan); font-weight: 700;
+                   text-transform: uppercase; letter-spacing: 0.05em; }
   .saved .sub { margin-top: 0.5rem; }
-  .pskrow { display: flex; align-items: center; justify-content: space-between;
-            gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #222a33; }
-  .pskrow-label { font-size: 0.85rem; color: #c7cdd4; font-variant-numeric: tabular-nums; }
-  .pskrow-del { font-size: 0.8rem; padding: 0.3rem 0.6rem; margin: 0; }
+  /* Saved-passwords table (scan-table idiom: one row per saved candidate) */
+  .psktable { width: 100%; border-collapse: collapse; }
+  .psktable td { font-size: 0.85rem; color: var(--text); padding: 4px 6px 4px 0;
+                 border-bottom: 1px solid var(--grid);
+                 font-variant-numeric: tabular-nums; }
+  .psktable .psk-no { color: var(--cyan); font-weight: 700; white-space: nowrap; }
+  .psktable .psk-what { word-break: break-all; }
+  .psktable button { font-size: 0.75rem; padding: 0.25rem 0.55rem; margin: 0; }
   .progress { margin: 0.5rem 0; }
   .prow { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem;
-          color: #9aa5b1; padding: 0.15rem 0; }
-  .prow.ok { color: #5dd879; }
-  .prow.fail { color: #ffb84d; }
-  .pdot { width: 9px; height: 9px; border-radius: 50%; background: #3a434e; flex: 0 0 auto; }
-  .prow.run .pdot { border: 2px solid #2d7ff9; border-top-color: transparent;
+          color: var(--sub); padding: 0.15rem 0; }
+  .prow.ok { color: var(--ok); }
+  .prow.fail { color: var(--warn); }
+  .pdot { width: 9px; height: 9px; border-radius: 50%; background: var(--grid); flex: 0 0 auto; }
+  .prow.run .pdot { border: 2px solid var(--cyan); border-top-color: transparent;
                     animation: pspin 0.7s linear infinite; }
-  .prow .pdot.ok { background: #5dd879; }
-  .prow.fail .pdot { background: #ffb84d; }
+  .prow .pdot.ok { background: var(--ok); }
+  .prow.fail .pdot { background: var(--warn); }
   .ptext { word-break: break-all; }
   @keyframes pspin { to { transform: rotate(360deg); } }
   button:focus-visible, input:focus-visible, summary:focus-visible {
-    outline: 2px solid #2d7ff9; outline-offset: 2px; }
+    outline: 2px solid var(--cyan); outline-offset: 2px; }
   button { transition: transform 180ms ease, opacity 180ms ease, background 180ms ease; }
-  button:hover:not(:disabled) { transform: translateY(-1px); }
-  button:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
+  button:not(:disabled):hover { transform: translateY(-1px); }
+  button:not(:disabled):active { transform: translateY(1px) scale(0.98); }
   @media (prefers-reduced-motion: reduce) {
     button { transition: none; }
-    .prow.run .pdot { animation: none; border-top-color: #2d7ff9; }
+    .prow.run .pdot { animation: none; border-top-color: var(--cyan); }
   }
 </style>
 </head>
@@ -1235,6 +1278,9 @@ function pskSave(action, extra, msgId) {
   });
 }
 
+// Saved-passwords table (scan-table idiom): one row per candidate —
+//  [N] what (default / network: SSID, with its store row id) [Remove].
+// PSK values never come back — only type/index/ssid are rendered.
 function renderSavedGroup(containerId, rows, hint) {
   var list = document.getElementById(containerId);
   while (list.firstChild) { list.removeChild(list.firstChild); }
@@ -1252,24 +1298,34 @@ function renderSavedGroup(containerId, rows, hint) {
     list.appendChild(none);
     return;
   }
+  var table = document.createElement("table");
+  table.className = "psktable";
+  var tbody = document.createElement("tbody");
   rows.forEach(function (row) {
-    var r = document.createElement("div");
-    r.className = "pskrow";
-    var lab = document.createElement("span");
-    lab.className = "pskrow-label";
-    lab.textContent = (row.type === "d" ? "default" : "network: " + (row.ssid || "?"))
-      + "  (row " + row.index + ")";
-    r.appendChild(lab);
+    var tr = document.createElement("tr");
+    var no = document.createElement("td");
+    no.className = "psk-no";
+    no.textContent = "#" + row.index;
+    tr.appendChild(no);
+    var what = document.createElement("td");
+    what.className = "psk-what";
+    what.textContent = (row.type === "d" ? "default"
+      : "network: " + (row.ssid || "?"));
+    tr.appendChild(what);
+    var act = document.createElement("td");
     var del = document.createElement("button");
     del.type = "button";
-    del.className = "secondary pskrow-del";
+    del.className = "secondary";
     del.textContent = "Remove";
     del.addEventListener("click", function () {
       pskSave("del", { n: row.index }, "d-saved-msg");
     });
-    r.appendChild(del);
-    list.appendChild(r);
+    act.appendChild(del);
+    tr.appendChild(act);
+    tbody.appendChild(tr);
   });
+  table.appendChild(tbody);
+  list.appendChild(table);
 }
 
 function refreshDialogSaved() {
@@ -1603,16 +1659,49 @@ function netDlgBusy(on) {
   });
 }
 
-// --- Try saved passwords: cosmetic per-candidate progress -------------------
-// The /api/wan/psks response carries the full per-candidate log in `log`
-// (travel-wan logs each attempt to stderr). We reveal it sequentially so the
-// admin sees "trying password 1…/2…" rather than a bare final result. The
+// --- Try saved passwords: live per-candidate progress ------------------------
+// The /api/wan/psks call is one blocking POST (try-psks runs synchronously in
+// travel-wan), so live per-attempt feedback is approximated client-side: the
+// pending candidate count is read up front from psks-manage (s-rows for the
+// SSID + d-row defaults) and a spinner row ticks "trying 1 of N… 2 of N…"
+// while the POST is in flight. When the envelope lands, the REAL per-candidate
+// log (each "candidate i/N OK|failed" line from travel-wan stderr) is revealed
+// instantly as classified rows — no replay delay on top of the wait. The
 // attempt count is bounded by the store (<=4 per SSID + <=32 defaults), so
-// this is a short, bounded animation; reduced-motion reveals instantly.
-function clearProgress() {
-  var p = document.getElementById("d-progress");
-  while (p.firstChild) { p.removeChild(p.firstChild); }
-  p.hidden = true;
+// the total can never spin past the bounded store size; reduced-motion still
+// gets progress without the decorative reveal.
+var TRY_TICK_MS = 700;
+function pskCandidateCount() {
+  var n = 0;
+  document.querySelectorAll("#d-saved-ssid .psktable tbody tr, " +
+                            "#d-saved-default .psktable tbody tr")
+    .forEach(function (tr) { n += 1; });
+  return n;
+}
+var TRY_TICKER = null;
+function startTryTick(total) {
+  stopTryTick();
+  if (total <= 0) { return; }
+  var row = progressRow("run", "trying 1 of " + total + "…");
+  var i = 1;
+  TRY_TICKER = window.setInterval(function () {
+    if (i >= total) { return; }   // hold at N of N until the response lands
+    i += 1;
+    row.className = "prow run";
+    var t = row.querySelector(".ptext");
+    if (t) { t.textContent = "trying " + i + " of " + total + "…"; }
+  }, TRY_TICK_MS);
+}
+function stopTryTick() {
+  if (TRY_TICKER !== null) {
+    window.clearInterval(TRY_TICKER);
+    TRY_TICKER = null;
+  }
+}
+function classifyTryLine(line) {
+  if (/ OK|connected to/i.test(line)) { return "ok"; }
+  if (/failed|no candidate|budget/i.test(line)) { return "fail"; }
+  return "";
 }
 function progressRow(cls, text) {
   var p = document.getElementById("d-progress");
@@ -1628,13 +1717,18 @@ function progressRow(cls, text) {
   p.appendChild(row);
   return row;
 }
-function classifyTryLine(line) {
-  if (/ OK|connected to/i.test(line)) { return "ok"; }
-  if (/failed|no candidate|budget/i.test(line)) { return "fail"; }
-  return "";
+function clearProgress() {
+  stopTryTick();
+  var p = document.getElementById("d-progress");
+  while (p.firstChild) { p.removeChild(p.firstChild); }
+  p.hidden = true;
 }
 function revealTryLines(lines) {
+  // Drop the speculative tick row; the real per-candidate result replaces it.
   clearProgress();
+  // Final state: the server already did the waiting — show the real result
+  // immediately (REDUCE_MOTION keeps the historic no-replay behavior).
+  var delay = REDUCE_MOTION ? 0 : 250;
   var i = 0;
   function step() {
     if (i >= lines.length) { return; }
@@ -1642,7 +1736,7 @@ function revealTryLines(lines) {
     progressRow(classifyTryLine(line), line);
     i++;
     if (i < lines.length) {
-      window.setTimeout(step, REDUCE_MOTION ? 0 : 350);
+      window.setTimeout(step, delay);
     }
   }
   if (lines.length) { step(); }
@@ -1651,6 +1745,11 @@ function revealTryLines(lines) {
 document.getElementById("d-cancel").addEventListener("click", function () {
   document.getElementById("net-dialog").close();
 });
+// Esc/Cancel mid-try stops the client-side tick AND wipes the speculative
+// "trying N of N…" row (a held/never-resolved fetch would otherwise leave it
+// stale). The in-flight POST still finishes server-side; its handler is a
+// content-free no-op on the closed dialog (progress reveal lands hidden).
+document.getElementById("net-dialog").addEventListener("close", clearProgress);
 document.getElementById("d-ssid-input").addEventListener("input", function () {
   DIALOG_SSID = this.value.trim();
   document.getElementById("d-title").textContent =
@@ -1683,9 +1782,11 @@ document.getElementById("d-try").addEventListener("click", function () {
   clearProgress();
   dMsg("d-msg", "trying saved passwords…", "");
   netDlgBusy(true);
+  startTryTick(pskCandidateCount());
   api("/api/wan/psks", { ssid: DIALOG_SSID }).then(function (r) {
     return r.json();
   }).then(function (d) {
+    stopTryTick();
     // try-psks progress lives in the envelope's `log` field (travel-wan logs
     // to stderr); stdout `lines` is usually empty.
     var log = (d.log || []).filter(function (l) {
@@ -1693,6 +1794,7 @@ document.getElementById("d-try").addEventListener("click", function () {
     });
     var lines = (d.lines && d.lines.length) ? d.lines : log;
     if (!lines.length) {
+      clearProgress();
       dMsg("d-msg", d.ok ? "done" : "no saved passwords to try", d.ok ? "ok" : "warn");
     } else {
       revealTryLines(lines);
@@ -1700,7 +1802,7 @@ document.getElementById("d-try").addEventListener("click", function () {
            d.ok ? "ok" : "warn");
     }
     if (d.ok) { refreshStatus(); }
-  }).catch(function (e) { dMsg("d-msg", String(e.message || e), "warn"); })
+  }).catch(function (e) { clearProgress(); dMsg("d-msg", String(e.message || e), "warn"); })
     .then(function () { netDlgBusy(false); },
           function () { netDlgBusy(false); });
 });

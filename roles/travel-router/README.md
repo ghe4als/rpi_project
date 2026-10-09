@@ -176,9 +176,10 @@ are shown as notes — the page never joins those.
 Opening a network's dialog (from the scan list, a known network, or **Connect
 manually**) gives one place to do everything for that network: an editable
 network name (so hidden SSIDs can be typed), the password, **Connect**, and
-**Try saved passwords**. "Try saved passwords" now shows each candidate it
-tests in order (a spinner per attempt, then connected / not found) instead of a
-single lump of text.
+**Try saved passwords**. "Try saved passwords" shows live progress while it
+runs (a spinner row ticking "trying 1 of N… 2 of N…" based on the saved
+candidate count), then lists each real server-side attempt ("candidate i/N
+OK|failed") as soon as the result lands.
 
 The dialog also carries a collapsible **Saved passwords** area: **For this
 network** lists that network's saved candidates with a Remove button and an
