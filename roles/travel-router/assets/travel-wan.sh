@@ -363,6 +363,8 @@ Usage:
   travel-wan connect <SSID> [PSK]         connect the WAN wifi adapter
   travel-wan disconnect                   drop the WAN wifi adapter
   travel-wan forget <SSID>                delete a saved hotel profile
+  travel-wan wipe-stale [--dry-run] [--with-psks] [--auto] [--include-ethernet]
+                                        remove stale WiFi profiles except active/bootstrap
   travel-wan known                       list saved wifi networks (NM profiles)
   travel-wan collect <SSID> <PSK>        record a PSK candidate for try-psks
   travel-wan psks-add <SSID> <PSK>       record a PSK candidate (setup API)
@@ -504,6 +506,196 @@ cmd_forget() {
     fi
     log "forgetting profile '${ssid}' ..."
     "$SUDO" "$NMCLI" connection delete "$ssid"
+}
+
+# --- Stale-WAN cleanup (hotel-change helper) ---------------------------------
+# Protects bootstrap profiles (UUIDs recorded at install) and the currently
+# active connection; removes other remembered hotel/ethernet profiles.
+BOOTSTRAP_UUID_FILE="${TRAVELROUTER_BOOTSTRAP_UUID_FILE:-/etc/rpi-project/travel-router/bootstrap-uuids}"
+
+_bootstrap_uuids() {
+    if [[ -r "$BOOTSTRAP_UUID_FILE" ]]; then
+        while IFS= read -r r || [[ -n "$r" ]]; do
+            [[ -n "$r" ]] || continue
+            printf '%s\n' "$r"
+        done < "$BOOTSTRAP_UUID_FILE"
+    fi
+}
+
+_active_connection_uuids() {
+    "$NMCLI" -t -f UUID,TYPE connection show --active 2>/dev/null \
+      | awk -F: '$2 != "loopback" && $2 != "vpn" {print $1}'
+}
+
+_all_connection_profiles() {
+    "$NMCLI" -t -f NAME,UUID,TYPE,ACTIVE connection show 2>/dev/null
+}
+
+_psk_store_del_by_ssids() {
+    local ssids_csv="$1"
+    [[ -n "$ssids_csv" && -r "$PSK_FILE" ]] || return 0
+    local rows=() r k ssid
+    while IFS= read -r r || [[ -n "$r" ]]; do
+        [[ -n "$r" ]] || continue
+        psk_row_ok "$r" || continue
+        rows[${#rows[@]}]="$r"
+    done < "$PSK_FILE"
+    local tmp dir="."
+    case "$PSK_FILE" in */*) dir="${PSK_FILE%/*}" ;; esac
+    tmp="$dir/.known-psks.$$"
+    for r in ${rows[@]+"${rows[@]}"}; do
+        k="${r%%"$PSK_TAB"*}"
+        if [[ "$k" == "s" ]]; then
+            ssid="${r#s$PSK_TAB}"
+            ssid="${ssid%%"$PSK_TAB"*}"
+            [[ ",${ssids_csv}," == *",${ssid},"* ]] && continue
+        fi
+        printf '%s\n' "$r"
+    done > "$tmp" 2>/dev/null || { rm -f "$tmp"; log "wipe-stale: cannot write '$dir' (PSK store unchanged)"; return 1; }
+    chmod 0600 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$PSK_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log "wipe-stale: cannot replace '$PSK_FILE' (PSK store unchanged)"
+        return 1
+    fi
+    return 0
+}
+
+json_escape() {
+    local v="${1:-}"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    v=$(printf '%s' "$v" | LC_ALL=C tr -d '\001-\037')
+    printf '%s' "$v"
+}
+
+cmd_wipe_stale() {
+    local dry_run=0 with_psks=0 auto=0 include_ethernet=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run) dry_run=1 ;;
+            --with-psks) with_psks=1 ;;
+            --auto) auto=1 ;;
+            --include-ethernet) include_ethernet=1 ;;
+            *) log "wipe-stale: unknown flag '$1'"; usage; return 2 ;;
+        esac
+        shift
+    done
+
+    local protected_uuids=() protected_reasons=() active_uuids=""
+    while IFS= read -r uuid; do
+        [[ -n "$uuid" ]] || continue
+        active_uuids="${active_uuids}${active_uuids:+,}${uuid}"
+        protected_uuids[${#protected_uuids[@]}]="$uuid"
+        protected_reasons[${#protected_reasons[@]}]="active"
+    done < <(_active_connection_uuids)
+
+    while IFS= read -r uuid; do
+        [[ -n "$uuid" ]] || continue
+        [[ ",${active_uuids}," == *",${uuid},"* ]] && continue
+        protected_uuids[${#protected_uuids[@]}]="$uuid"
+        protected_reasons[${#protected_reasons[@]}]="bootstrap"
+    done < <(_bootstrap_uuids)
+
+    local all_profiles
+    all_profiles="$(_all_connection_profiles)" || true
+    if [[ -z "$all_profiles" ]]; then
+        printf '{"dry_run":%s,"protected":[],"removed":[],"psks_removed":0,"errors":[]}\n' \
+            "$([[ "$dry_run" -eq 1 ]] && echo 'true' || echo 'false')"
+        return 0
+    fi
+
+    local protected_out=() removed_out=() errors=() removed_ssids=()
+    local line pname puuid ptype
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        pname="${line%%:*}"
+        local rest="${line#*:}"
+        puuid="${rest%%:*}"
+        ptype="${rest#*:}"
+        ptype="${ptype%%:*}"
+
+        local is_protected=0 reason=""
+        for i in "${!protected_uuids[@]}"; do
+            if [[ "${protected_uuids[$i]}" == "$puuid" ]]; then
+                is_protected=1
+                reason="${protected_reasons[$i]}"
+                break
+            fi
+        done
+
+        if [[ "$is_protected" -eq 1 ]]; then
+            [[ "$auto" -eq 1 ]] || log "wipe-stale: keeping '${pname}' (${reason})"
+            protected_out[${#protected_out[@]}]="{\"name\":\"$(json_escape "$pname")\",\"uuid\":\"$(json_escape "$puuid")\",\"reason\":\"${reason}\"}"
+            continue
+        fi
+
+        [[ "$ptype" == "802-11-wireless" ]] || { [[ "$ptype" == "802-3-ethernet" && "$include_ethernet" -eq 1 ]] || continue; }
+
+        removed_ssids[${#removed_ssids[@]}]="$pname"
+        if [[ "$dry_run" -eq 1 ]]; then
+            log "wipe-stale: dry-run: would delete '${pname}' (${puuid})"
+            removed_out[${#removed_out[@]}]="{\"name\":\"$(json_escape "$pname")\",\"uuid\":\"$(json_escape "$puuid")\"}"
+        else
+            log "wipe-stale: deleting '${pname}' (${puuid}) ..."
+            if "$SUDO" "$NMCLI" connection delete "$puuid" 2>/dev/null; then
+                removed_out[${#removed_out[@]}]="{\"name\":\"$(json_escape "$pname")\",\"uuid\":\"$(json_escape "$puuid")\"}"
+            else
+                errors[${#errors[@]}]="\"$(json_escape "failed to delete '${pname}'")\""
+            fi
+        fi
+    done <<< "$all_profiles"
+
+    local psks_removed=0
+    if [[ "$with_psks" -eq 1 && ${#removed_ssids[@]} -gt 0 ]]; then
+        local ssids_csv=""
+        for s in ${removed_ssids[@]+"${removed_ssids[@]}"}; do
+            ssids_csv="${ssids_csv}${ssids_csv:+,}${s}"
+        done
+        if [[ "$dry_run" -eq 1 ]]; then
+            local would_del=0
+            while IFS= read -r r; do
+                [[ -n "$r" ]] || continue
+                psk_row_ok "$r" || continue
+                local k="${r%%"$PSK_TAB"*}"
+                if [[ "$k" == "s" ]]; then
+                    ssid="${r#s$PSK_TAB}"
+                    ssid="${ssid%%"$PSK_TAB"*}"
+                    [[ ",${ssids_csv}," == *",${ssid},"* ]] && would_del=$((would_del+1))
+                fi
+            done < "$PSK_FILE"
+            psks_removed=$would_del
+            log "wipe-stale: dry-run: would remove ${would_del} saved PSK row(s)"
+        else
+            local before=0 after=0
+            [[ -r "$PSK_FILE" ]] && before=$(grep -c '^s	' "$PSK_FILE" 2>/dev/null || echo 0)
+            if _psk_store_del_by_ssids "$ssids_csv"; then
+                [[ -r "$PSK_FILE" ]] && after=$(grep -c '^s	' "$PSK_FILE" 2>/dev/null || echo 0)
+                psks_removed=$((before-after))
+                log "wipe-stale: removed ${psks_removed} saved PSK row(s)"
+            else
+                errors[${#errors[@]}]="\"failed to prune saved PSKs\""
+            fi
+        fi
+    fi
+
+    local dry_json="false"
+    [[ "$dry_run" -eq 1 ]] && dry_json="true"
+    local prot_json=""
+    for o in ${protected_out[@]+"${protected_out[@]}"}; do
+        prot_json="${prot_json}${prot_json:+,}${o}"
+    done
+    local rem_json=""
+    for o in ${removed_out[@]+"${removed_out[@]}"}; do
+        rem_json="${rem_json}${rem_json:+,}${o}"
+    done
+    local err_json=""
+    for e in ${errors[@]+"${errors[@]}"}; do
+        err_json="${err_json}${err_json:+,}${e}"
+    done
+    printf '{"dry_run":%s,"protected":[%s],"removed":[%s],"psks_removed":%d,"errors":[%s]}\n' \
+        "$dry_json" "$prot_json" "$rem_json" "$psks_removed" "$err_json"
+    return 0
 }
 
 cmd_collect() {
@@ -1462,6 +1654,9 @@ main() {
             ;;
         forget)
             cmd_forget "${WIFI_WAN_IF:-}" "$@"
+            ;;
+        wipe-stale)
+            cmd_wipe_stale "$@"
             ;;
         known)
             cmd_known

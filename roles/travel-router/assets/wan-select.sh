@@ -287,6 +287,10 @@ kill_switch_on() { [[ -e "$TRAVELROUTER_KILLSWITCH_FILE" ]]; }
 ssh_lockdown_on() { [[ -e "$TRAVELROUTER_SSHLOCKDOWN_FILE" ]]; }
 
 # --- (4) Render + load nftables for current WAN state ------------------------
+if ! command -v "$NFT" >/dev/null 2>&1; then
+  log "WARNING: nftables binary ($NFT) not found; firewall rules NOT loaded."
+  log "  remediation: apt-get install nftables && systemctl restart wan-select.timer"
+fi
 RENDER_TMP=$(mktemp 2>/dev/null || echo "/tmp/wan-select-nft.$$")
 # nftables.conf.tmpl carries a FULL-LINE elements marker in the blocked_macs
 # set (see the template): populated -> "        elements = { aa:bb:..,.. }",
@@ -526,7 +530,8 @@ if [[ "$PREV_LAN" != "$LAN_IP" ]]; then
     # waits on systemctl) — seen live 2026-09-23 on rpi-8e21bb: wan-select
     # stuck "activating" 19min, status down, 30s timer frozen. --no-block
     # enqueues the job and returns; the start fires when wan-select finishes.
-    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP present; try-restart --no-block travel-router-status.service"
+    log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP present; reload dnsmasq + try-restart --no-block travel-router-status.service"
+    run_or_log "$SYSTEMCTL" reload --no-block dnsmasq.service
     run_or_log systemctl try-restart --no-block travel-router-status.service
   else
     log "lan_ip changed ($PREV_LAN -> $LAN_IP): IP NOT yet attached to $LAN_IF; status service starts next 30s tick (avoids Errno 99 bind race)"

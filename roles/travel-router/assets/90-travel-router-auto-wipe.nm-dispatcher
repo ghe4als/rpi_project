@@ -1,0 +1,49 @@
+#!/bin/bash
+# NetworkManager dispatcher hook: auto-wipe stale WAN profiles after a
+# successful connection change. Controlled by a flag file written by the admin
+# page (POST /api/admin/auto-wipe); absent flag = no action.
+#
+# Reacts to 'connectivity-change' (and 'up' as a fallback) only on non-AP
+# interfaces, so plugging/unplugging a USB Ethernet adapter or joining a new
+# hotel WiFi triggers cleanup without touching the onboard AP.
+set -euo pipefail
+
+IFACE="${1:-}"
+EVENT="${2:-}"
+
+# No-op on the AP interface and during the initial 'pre-up' phase.
+case "$EVENT" in
+  up|connectivity-change) ;;
+  *) exit 0 ;;
+esac
+
+# Identify the AP interface the same way install.sh / wan-select do.
+AP_IF=""
+if [[ -d /sys/class/net ]]; then
+  for d in /sys/class/net/*; do
+    [[ -d "$d" ]] || continue
+    name=$(basename "$d")
+    if [[ -d "${d}/wireless" ]]; then
+      dev=""
+      [[ -e "${d}/device" ]] && dev=$(readlink -f "${d}/device" 2>/dev/null || true)
+      if [[ "$dev" != *usb* ]] && [[ -z "$AP_IF" ]]; then
+        AP_IF="$name"
+      fi
+    fi
+  done
+fi
+[[ -z "$AP_IF" ]] && AP_IF="wlan0"
+
+# Never wipe because the AP itself changed state.
+[[ "$IFACE" == "$AP_IF" ]] && exit 0
+
+FLAG="/etc/rpi-project/travel-router/auto-wipe-stale"
+[[ -f "$FLAG" ]] || exit 0
+
+# Run quietly; only failures reach syslog. The --auto flag suppresses the
+# routine "keeping X" chatter so the dispatcher log stays readable.
+/usr/local/bin/travel-wan wipe-stale --auto >/dev/null 2>&1 || {
+  logger -t travel-router-auto-wipe "stale profile cleanup failed for ${IFACE}"
+  exit 0
+}
+exit 0

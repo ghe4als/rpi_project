@@ -78,7 +78,10 @@ real_or_log() {
 TR_DEFAULTS_ENV="${TRAVELROUTER_DEFAULT_PSKS:-}"
 
 # --- (1) Source role.env (two-path idiom, mirrors the tailscale role) --------
-ROLE_ENV="${TRAVELROUTER_ROLE_ENV:-/run/travel-router/role.env}"
+# Runtime canonical copy lives on ext4 so credential rotation can rewrite it
+# atomically; the bootfs copy is the immutable provisioning source.
+ROLE_ENV="${TRAVELROUTER_ROLE_ENV:-/etc/rpi-project/travel-router/role.env}"
+[[ -f "$ROLE_ENV" ]] || ROLE_ENV="/run/travel-router/role.env"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/firmware/role/role.env"
 [[ -f "$ROLE_ENV" ]] || ROLE_ENV="/boot/role/role.env"
 if [[ -f "$ROLE_ENV" ]]; then
@@ -229,6 +232,15 @@ if [[ -n "${WIFI_SSID:-}" ]]; then
     nmcli connection add type wifi ifname '*' con-name "$WIFI_SSID" ssid "$WIFI_SSID" \
       connection.autoconnect yes
     log "seeded WAN bootstrap profile '${WIFI_SSID}' (open network)"
+  fi
+  # Record the bootstrap profile UUID so wipe-stale never removes it.
+  _bootstrap_uuid="$(nmcli -t -f UUID connection show "${WIFI_SSID}" 2>/dev/null || true)"
+  if [[ -n "${_bootstrap_uuid:-}" ]]; then
+    _bootstrap_file="${DRY_RUN_PREFIX}/etc/rpi-project/travel-router/bootstrap-uuids"
+    mkdir -p "${_bootstrap_file%/*}"
+    printf '%s\n' "${_bootstrap_uuid}" >> "${_bootstrap_file}"
+    chmod 0600 "${_bootstrap_file}"
+    log "recorded bootstrap WAN profile UUID -> ${_bootstrap_file}"
   fi
 else
   log "no WIFI_SSID in role.env — skipping WAN bootstrap profile (standalone AP first boot)"
@@ -430,6 +442,10 @@ else
   for unit in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service deauth-watch.service; do
     cp "$ASSETS/$unit" "${DRY_RUN_PREFIX}/etc/systemd/system/$unit"
   done
+  mkdir -p "${DRY_RUN_PREFIX}/etc/NetworkManager/dispatcher.d"
+  cp "$ASSETS/90-travel-router-auto-wipe.nm-dispatcher" \
+    "${DRY_RUN_PREFIX}/etc/NetworkManager/dispatcher.d/90-travel-router-auto-wipe"
+  chmod 0755 "${DRY_RUN_PREFIX}/etc/NetworkManager/dispatcher.d/90-travel-router-auto-wipe"
   log "dry-run: staged scripts under prefix"
 fi
 
@@ -543,6 +559,18 @@ sysctl_conf="${DRY_RUN_PREFIX}/etc/sysctl.d/90-travel-router.conf"
 cp "$ASSETS/90-travel-router.conf.sysctl" "$sysctl_conf"
 chmod 0644 "$sysctl_conf"
 real_or_log sysctl --system
+
+# Canonical runtime role.env on ext4: holds mutable config/secrets so the
+# admin page can rotate PSKs without touching the FAT bootfs source. Seed it
+# from the bootfs role.env on first boot; staged-env-refresh then prefers it.
+canon_env_dir="${DRY_RUN_PREFIX}/etc/rpi-project/travel-router"
+mkdir -p "$canon_env_dir"
+canon_env="${canon_env_dir}/role.env"
+if [[ "$DRY_RUN" -ne 1 && -n "${ROLE_ENV:-}" && -f "$ROLE_ENV" ]]; then
+  cp -f "$ROLE_ENV" "$canon_env"
+  chmod 0600 "$canon_env"
+  log "canonical runtime role.env -> ${canon_env}"
+fi
 
 # PIN delivery: the status unit reads it from a tmpfs EnvironmentFile (H05).
 # Written BEFORE the unit enable below; 0600 (secret); /run is tmpfs so it

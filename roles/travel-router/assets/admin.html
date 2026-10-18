@@ -235,6 +235,35 @@
     <p class="msg" id="known-msg"></p>
   </section>
 
+  <section id="wipe-section">
+    <h2>WAN cleanup</h2>
+    <p class="dim">Remove stale hotel/captive WiFi profiles while keeping the active connection and bootstrap AP safe.</p>
+    <p>
+      <label for="wipe-include-ethernet">
+        <input id="wipe-include-ethernet" type="checkbox">
+        Include saved Ethernet/Wired profiles
+      </label>
+    </p>
+    <p>
+      <label for="wipe-clear-psks">
+        <input id="wipe-clear-psks" type="checkbox">
+        Also clear saved passwords for removed networks
+      </label>
+    </p>
+    <p>
+      <button id="wipe-preview" type="button" class="secondary">Preview</button>
+      <button id="wipe-run" type="button">Wipe stale profiles</button>
+    </p>
+    <p>
+      <label for="wipe-auto-toggle">
+        <input id="wipe-auto-toggle" type="checkbox">
+        Auto-wipe when the router connects to a new WAN
+      </label>
+    </p>
+    <p class="msg" id="wipe-msg"></p>
+    <div id="wipe-results"></div>
+  </section>
+
   <section id="manual-section">
     <h2>Connect manually</h2>
     <label for="mc-ssid">Network name (SSID)</label>
@@ -317,6 +346,34 @@
   <section id="stealth-section">
     <h2>Stealth</h2>
     <p class="msg" id="stealth-msg"></p>
+  </section>
+
+  <section id="creds-section">
+    <h2>Credentials</h2>
+    <p class="dim">Rotate the admin-page password and the AP password. Both require the PIN.</p>
+
+    <h4>Admin password</h4>
+    <label for="cred-admin-new">New admin password (8+ chars, printable ASCII)</label>
+    <input id="cred-admin-new" type="password" autocomplete="off">
+    <label for="cred-admin-confirm">Confirm new admin password</label>
+    <input id="cred-admin-confirm" type="password" autocomplete="off">
+    <p>
+      <button id="cred-admin-btn" type="button">Rotate admin password</button>
+    </p>
+    <p class="dmsg" id="cred-admin-msg"></p>
+
+    <h4>AP password</h4>
+    <label for="cred-ap-new">New AP password (8-63 chars, A-Z a-z 0-9 . _ -)</label>
+    <input id="cred-ap-new" type="password" autocomplete="off">
+    <label for="cred-ap-confirm">Confirm new AP password</label>
+    <input id="cred-ap-confirm" type="password" autocomplete="off">
+    <p class="notedown" id="cred-ap-warn" style="display:none">
+      Rotating the AP password disconnects all connected clients. Rejoin with the new password.
+    </p>
+    <p>
+      <button id="cred-ap-btn" type="button">Rotate AP password</button>
+    </p>
+    <p class="dmsg" id="cred-ap-msg"></p>
   </section>
 
   <section id="ap-section">
@@ -1859,6 +1916,7 @@ function doLogin() {
         refreshStatus();
         refreshKnown();
         refreshAllFeatures();
+        refreshAutoWipe();
         refreshSsidPool();
       } else if (r.status === 429) {
         setMsg("login-msg", "too many attempts — wait a moment and retry", "warn");
@@ -1873,6 +1931,137 @@ function doLogin() {
 document.getElementById("login-btn").addEventListener("click", doLogin);
 document.getElementById("admin-psk").addEventListener("keydown", function (ev) {
   if (ev.key === "Enter") { doLogin(); }
+});
+
+// --- WAN cleanup (wipe stale profiles) ---------------------------------------
+function renderWipeResults(summary) {
+  var wrap = document.getElementById("wipe-results");
+  while (wrap.firstChild) { wrap.removeChild(wrap.firstChild); }
+  if (!summary) { return; }
+  function list(title, rows, cls) {
+    if (!rows || !rows.length) { return; }
+    var h = document.createElement("h4");
+    h.textContent = title;
+    wrap.appendChild(h);
+    rows.forEach(function (row) {
+      var item = document.createElement("div");
+      item.className = "netcard";
+      var name = document.createElement("div");
+      name.className = "ssid";
+      name.textContent = row.name || "(unknown)";
+      item.appendChild(name);
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      var reason = document.createElement("span");
+      reason.className = "badge " + cls;
+      reason.textContent = row.reason || cls;
+      meta.appendChild(reason);
+      if (row.uuid) {
+        var uuid = document.createElement("span");
+        uuid.textContent = row.uuid;
+        meta.appendChild(uuid);
+      }
+      item.appendChild(meta);
+      wrap.appendChild(item);
+    });
+  }
+  list("Protected", summary.protected, "auto");
+  list("Removed", summary.removed, "known");
+  if (summary.errors && summary.errors.length) {
+    list("Errors", summary.errors.map(function (e) { return { name: e, reason: "error" }; }), "ent");
+  }
+}
+
+function doWipe(dryRun) {
+  var pin = currentPin();
+  if (!pin) { setMsg("wipe-msg", "PIN required — enter it in the PIN section", "warn"); return; }
+  var includeEth = document.getElementById("wipe-include-ethernet").checked;
+  var withPsks = document.getElementById("wipe-clear-psks").checked;
+  busy(true);
+  setMsg("wipe-msg", dryRun ? "previewing…" : "wiping…");
+  api("/api/admin/wipe-stale", { pin: pin, dry_run: dryRun, with_psks: withPsks, include_ethernet: includeEth }).then(function (r) {
+    if (r.status === 403) { return handleErr("Wipe denied")(r); }
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok !== true) {
+      var log = (d && d.log && d.log.join(" ")) || "";
+      throw new Error(log || "wipe failed");
+    }
+    var summary = d.summary || {};
+    renderWipeResults(summary);
+    var removed = summary.removed || [];
+    var verb = dryRun ? "would remove " : "removed ";
+    setMsg("wipe-msg", verb + removed.length + " profile" + (removed.length === 1 ? "" : "s"), removed.length ? "ok" : "");
+    if (!dryRun) { refreshKnown(); }
+  }).catch(function (e) {
+    renderWipeResults(null);
+    setMsg("wipe-msg", String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+}
+
+function refreshAutoWipe() {
+  return sessionFetch("/api/admin/auto-wipe", { cache: "no-store" })
+    .then(function (r) {
+      if (r.status !== 200) { return null; }
+      return r.json();
+    })
+    .then(function (d) {
+      if (d) { document.getElementById("wipe-auto-toggle").checked = !!d.auto_wipe; }
+    })
+    .catch(function () {
+      setMsg("wipe-msg", "auto-wipe state unavailable", "warn");
+    });
+}
+
+document.getElementById("wipe-preview").addEventListener("click", function () { doWipe(true); });
+document.getElementById("wipe-run").addEventListener("click", function () { doWipe(false); });
+document.getElementById("wipe-auto-toggle").addEventListener("change", function () {
+  flagToggle("/api/admin/auto-wipe", "wipe-msg", "wipe-auto-toggle", "Auto-wipe");
+});
+
+// --- Credential rotation (admin PSK + AP PSK) ------------------------------
+function rotateCred(endpoint, msgId, newId, confirmId, label) {
+  var pin = currentPin();
+  if (!pin) { setMsg(msgId, "PIN required — enter it in the PIN section", "warn"); return; }
+  var newVal = document.getElementById(newId).value;
+  var confirm = document.getElementById(confirmId).value;
+  if (!newVal) { setMsg(msgId, "enter a new " + label, "warn"); return; }
+  if (newVal !== confirm) { setMsg(msgId, "new " + label + " and confirmation do not match", "warn"); return; }
+  busy(true);
+  setMsg(msgId, "rotating " + label + "…");
+  api(endpoint, { pin: pin, new_psk: newVal }).then(function (r) {
+    if (r.status === 403) { return handleErr(label + " denied")(r); }
+    if (r.status === 400) {
+      return r.json().then(function (d) {
+        throw new Error(d.detail || (label + " rejected"));
+      });
+    }
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok !== true) {
+      var log = (d && d.log && d.log.join(" ")) || "";
+      throw new Error(log || (label + " rotation failed"));
+    }
+    document.getElementById(newId).value = "";
+    document.getElementById(confirmId).value = "";
+    if (endpoint === "/api/admin/rotate-admin-psk") {
+      setMsg(msgId, label + " rotated — log in again with the new password", "ok");
+      try { localStorage.removeItem("admin-session"); } catch (e) {}
+    } else {
+      setMsg(msgId, label + " rotated — reconnect clients with the new password", "ok");
+    }
+  }).catch(function (e) {
+    setMsg(msgId, String(e.message || e), "warn");
+  }).then(function () { busy(false); }, function () { busy(false); });
+}
+
+document.getElementById("cred-admin-btn").addEventListener("click", function () {
+  rotateCred("/api/admin/rotate-admin-psk", "cred-admin-msg",
+             "cred-admin-new", "cred-admin-confirm", "Admin password");
+});
+document.getElementById("cred-ap-btn").addEventListener("click", function () {
+  rotateCred("/api/admin/rotate-ap-psk", "cred-ap-msg",
+             "cred-ap-new", "cred-ap-confirm", "AP password");
 });
 
 // --- Security-feature wiring (security plan todo 11) -------------------------
@@ -1918,6 +2107,7 @@ function refreshAllFeatures() {
   refreshSshlockdown();
   refreshStealth();
   refreshDeauth();
+  refreshAutoWipe();
 }
 
 (function initSession() {
@@ -1934,6 +2124,7 @@ function refreshAllFeatures() {
     refreshStatus();
     refreshKnown();
     refreshAllFeatures();
+    refreshAutoWipe();
     refreshSsidPool();
   }).catch(function () {
     showLogin(true);

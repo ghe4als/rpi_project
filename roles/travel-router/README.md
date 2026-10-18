@@ -131,9 +131,27 @@ the only management surface.)
   `POST
   /api/admin/apconfig/preview` (session + PIN; mints credentials, touches
   nothing), then apply via `POST /api/wan/apconfig`: the new hostapd
-  config is parse-probed on a throwaway copy (the live radio is never
-  touched by an invalid config) and the previous config is auto-restored
-  if the AP fails to come up after the restart.
+  config is validated by a parse-probe on a throwaway copy (the live radio
+  is never touched), and the previous config is auto-restored if the AP
+  fails to come up after the restart.
+- **WAN cleanup / stale-profile wipe** (default: manual; optional auto-wipe).
+  Saved hotel/captive WiFi profiles accumulate in NetworkManager and can
+  confuse future connections. The admin page's **WAN cleanup** section
+  previews and removes stale 802-11-wireless profiles, keeping the active
+  connection and the bootstrap `WIFI_SSID` profile safe. Optionally enable
+  **Auto-wipe when the router connects to a new WAN** to run cleanup
+  automatically on every successful WAN change. CLI equivalent:
+  `travel-wan wipe-stale [--dry-run] [--with-psks] [--include-ethernet]`.
+- **Credential rotation** (no default-off state — explicit admin action).
+  The admin page's **Credentials** section rotates the admin-page password
+  (`TRAVELROUTER_ADMIN_PSK`) and the travel AP password
+  (`TRAVELROUTER_AP_PSK`) without re-flashing. Both require the PIN. The
+  new values are written to the runtime role.env and mirrored back to
+  `/boot/firmware/role/role.env` so they survive a reflash. Rotating the
+  admin PSK invalidates all sessions, including the current one. Rotating
+  the AP PSK re-renders hostapd, restarts the AP, and drops connected
+  clients — rejoin with the new password. SSH recovery works via
+  `/boot/firmware/role/role.env` if you ever need to roll back.
 
 ### First-boot simulation (provisioning WiFi becomes the first WAN)
 
@@ -419,9 +437,11 @@ Both events need a route to `NATS_URL`; with no USB adapter plugged in
    inbound connections arriving from the wired/WAN side — SSH included —
    are dropped by default. SSH is reachable only from the travel AP side,
    and only while SSH lockdown (above) is off; locked out of the AP side
-   entirely, re-provision. Forgot the PIN? Re-provision, or edit
-   `/boot/firmware/role/role.env` on the bootfs partition and restart
-   `travel-router-status.service`. A FAILED role-setup stays enabled and
+    entirely, re-provision. Forgot the PIN? Re-provision, or edit
+    `/etc/rpi-project/travel-router/role.env` (runtime canonical copy) or
+    `/boot/firmware/role/role.env` on the bootfs partition and restart
+    `travel-router-status.service`. Credential rotation keeps both files in
+    sync, so either path works for recovery. A FAILED role-setup stays enabled and
    retries on the next boot. If first-boot home WiFi was unreachable, apt
    fails BEFORE the AP interface is unmanaged, so the home-WiFi client
    config survives — fix `.env` and re-provision, or plug USB Ethernet.

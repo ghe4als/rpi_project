@@ -12,7 +12,10 @@ set -u
 ENV_DIR="${TRAVELROUTER_ENV_DIR:-/run/travel-router/role-env}"
 ENV_FILE="$ENV_DIR/travel-router-setup.env"
 
-role_env="${TRAVELROUTER_ROLE_ENV:-/run/travel-router/role.env}"
+# Canonical runtime role.env lives on ext4 so credential rotation can rewrite
+# it atomically. Fall back to the bootfs copy for first-boot / recovery.
+role_env="${TRAVELROUTER_ROLE_ENV:-/etc/rpi-project/travel-router/role.env}"
+[[ -f "$role_env" ]] || role_env="/run/travel-router/role.env"
 [[ -f "$role_env" ]] || role_env="/boot/firmware/role/role.env"
 [[ -f "$role_env" ]] || role_env="/boot/role/role.env"
 if [[ ! -f "$role_env" ]]; then

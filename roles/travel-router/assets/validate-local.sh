@@ -77,6 +77,10 @@ grep -q "travel-router installed" "$TMP/run1.log" && ok "banner present" || bad 
 for u in wan-select.service wan-select.timer hostapd-travel.service travel-router-status.service; do
   [[ -f "$pfx/etc/systemd/system/$u" ]] && ok "unit staged: $u" || bad "unit MISSING: $u"
 done
+[[ -f "$pfx/etc/NetworkManager/dispatcher.d/90-travel-router-auto-wipe" ]] \
+  && ok "NM dispatcher hook staged" || bad "NM dispatcher hook NOT staged"
+[[ $(stat -f%Lp "$pfx/etc/NetworkManager/dispatcher.d/90-travel-router-auto-wipe" 2>/dev/null || stat -c%a "$pfx/etc/NetworkManager/dispatcher.d/90-travel-router-auto-wipe" 2>/dev/null) == "755" ]] \
+  && ok "dispatcher hook mode 0755" || bad "dispatcher hook mode != 0755"
 [[ $(stat -f%Lp "$pfx/usr/local/lib/travel-router/wan-select.sh" 2>/dev/null || stat -c%a "$pfx/usr/local/lib/travel-router/wan-select.sh" 2>/dev/null) == "755" ]] \
   && ok "wan-select.sh staged 0755" || bad "wan-select.sh staged mode != 0755"
 [[ -f "$pfx/usr/local/lib/travel-router/nftables.conf.tmpl" ]] \

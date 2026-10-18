@@ -125,6 +125,20 @@ BLOCKED_DOMAINS_FILE = os.environ.get(
 DNS_LOCAL_FILE = os.environ.get(
     "TRAVELROUTER_DNS_LOCAL_FILE",
     "/etc/rpi-project/travel-router/dns-local")
+# Credential rotation writes the canonical runtime role.env on ext4 (atomic
+# rewrite), then mirrors it back to the FAT bootfs source so new credentials
+# survive a reflash. The bootfs path is the same one install.sh reads first-boot.
+CANON_ROLE_ENV = os.environ.get(
+    "TRAVELROUTER_CANON_ROLE_ENV",
+    "/etc/rpi-project/travel-router/role.env")
+BOOT_ROLE_ENV = os.environ.get(
+    "TRAVELROUTER_BOOT_ROLE_ENV",
+    "/boot/firmware/role/role.env")
+# Auto-wipe stale WAN profiles on hotel-change flag. PRESENT = dispatcher
+# hook runs wipe-stale --auto on connectivity-change; ABSENT = manual only.
+AUTO_WIPE_FLAG = os.environ.get(
+    "TRAVELROUTER_AUTO_WIPE_FLAG",
+    "/etc/rpi-project/travel-router/auto-wipe-stale")
 # Common-SSID pool (SC-wave). NEWLINE rows, install.sh-owned (this server
 # only READS it): PRESENT+non-empty = the random-SSID mint draws from the
 # pool; ABSENT/empty = the no-lookalike alphabet (the fresh-flash default).
@@ -449,6 +463,119 @@ def _blocked_domains_write(rows):
     except OSError:
         return False
     return True
+
+
+# --- Credential rotation (admin PSK + AP PSK) -------------------------------
+# Validation mirrors install.sh so rotated values pass the same checks on the
+# next boot. render-breaker chars are rejected because they would break the
+# env-file render/sed substitutions.
+PRINTABLE_RE = re.compile(r"^[ -~]+$")
+RENDER_BREAKERS = set("|\\$&\n")
+AP_PSK_RE = re.compile(r"^[A-Za-z0-9._-]+$\Z")
+
+
+def _psk_has_breaker(psk):
+    return any(ch in RENDER_BREAKERS for ch in psk)
+
+
+def _validate_admin_psk(psk):
+    if not isinstance(psk, str) or len(psk) < 8:
+        return "admin PSK must be at least 8 characters"
+    if _psk_has_breaker(psk):
+        return "admin PSK cannot contain |, \\, $, &, or newlines"
+    if not PRINTABLE_RE.match(psk):
+        return "admin PSK must be printable ASCII"
+    return None
+
+
+def _validate_ap_psk(psk):
+    if not isinstance(psk, str) or len(psk) < 8 or len(psk) > 63:
+        return "AP PSK must be 8-63 characters"
+    if _psk_has_breaker(psk):
+        return "AP PSK cannot contain |, \\, $, &, or newlines"
+    if not AP_PSK_RE.match(psk):
+        return "AP PSK may only contain A-Z a-z 0-9 . _ -"
+    return None
+
+
+def _update_role_env_key(key, value):
+    """Atomic rewrite of CANON_ROLE_ENV: replace or append KEY=value. Seeds
+    the canonical file from bootfs if it is missing so a rotation never
+    creates a partial env file. Returns False on a persist failure."""
+    try:
+        os.makedirs(os.path.dirname(CANON_ROLE_ENV), exist_ok=True)
+        lines = []
+        if os.path.exists(CANON_ROLE_ENV):
+            with open(CANON_ROLE_ENV, "r", encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        elif os.path.exists(BOOT_ROLE_ENV):
+            with open(BOOT_ROLE_ENV, "r", encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        kept = []
+        found = False
+        for line in lines:
+            if line.startswith(key + "="):
+                if not found:
+                    kept.append('%s="%s"' % (key, value))
+                    found = True
+            else:
+                kept.append(line)
+        if not found:
+            kept.append('%s="%s"' % (key, value))
+        text = "\n".join(kept) + "\n"
+        fd = os.open(CANON_ROLE_ENV + ".tmp",
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(CANON_ROLE_ENV + ".tmp", CANON_ROLE_ENV)
+        return True
+    except OSError:
+        return False
+
+
+def _mirror_role_env_to_bootfs():
+    """Mirror the canonical runtime role.env back to bootfs so rotations survive
+    a reflash. Returns False on a persist failure."""
+    try:
+        os.makedirs(os.path.dirname(BOOT_ROLE_ENV), exist_ok=True)
+        fd = os.open(BOOT_ROLE_ENV + ".tmp",
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            with open(CANON_ROLE_ENV, "r", encoding="utf-8") as src:
+                fh.write(src.read())
+        os.replace(BOOT_ROLE_ENV + ".tmp", BOOT_ROLE_ENV)
+        return True
+    except OSError:
+        return False
+
+
+def _refresh_staged_env():
+    """Re-derive the status unit's tmpfs EnvironmentFile so the running server
+    picks up a new ADMIN_PSK without a full unit restart."""
+    try:
+        subprocess.run(
+            ["/usr/local/lib/travel-router/staged-env-refresh.sh"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def _reload_hostapd(new_psk):
+    """Re-render hostapd config by re-running ap-apply with the current SSID
+    and the new PSK. The new PSK is passed positionally so ap-apply sees a
+    change and re-renders; role.env is already updated for the next boot."""
+    try:
+        proc = subprocess.run(
+            [WAN_TOOL, "ap-apply", "", new_psk],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=False, timeout=60)
+        return proc.returncode, proc.stderr.decode("utf-8", "replace").splitlines()
+    except subprocess.TimeoutExpired:
+        return -1, ["hostapd reload timed out"]
+    except Exception as exc:
+        return -1, ["hostapd reload failed: %s" % exc]
 
 
 def get_status():
@@ -1024,6 +1151,14 @@ class StatusHandler(BaseHTTPRequestHandler):
                 return
             self._send(200, json.dumps({"deauth": _deauth_alert_now() or {"active": False}}),
                        "application/json")
+        elif path == "/api/admin/auto-wipe":
+            # Admin bucket: session-gated read of the auto-wipe flag state. The
+            # flag's presence enables the NetworkManager dispatcher hook to run
+            # `wipe-stale --auto` after a successful WAN connection change.
+            if not _require_session(self):
+                return
+            self._send(200, json.dumps({"auto_wipe": os.path.exists(AUTO_WIPE_FLAG)}),
+                       "application/json")
         elif path == "/admin" or path == "/admin/":
             # Admin page shell (admin plan Todo 2): unauthenticated to LOAD.
             # Every data path is a session/PIN-gated API, so the HTML itself
@@ -1149,6 +1284,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                    "application/json", extra_headers=extra_headers)
 
     def do_POST(self):
+        global ADMIN_PSK
         path = urlparse(self.path).path
         if path == "/api/auth/login":
             # Trades the admin PSK for a stateless session token. A PSK guess
@@ -1230,8 +1366,12 @@ class StatusHandler(BaseHTTPRequestHandler):
                 or path == "/api/admin/sshlockdown"
                 or path == "/api/admin/dns"
                 or path == "/api/admin/blocked"
-                or path == "/api/admin/deauth"
-                or path == "/api/admin/apconfig/preview"):
+                 or path == "/api/admin/deauth"
+                 or path == "/api/admin/wipe-stale"
+                 or path == "/api/admin/auto-wipe"
+                 or path == "/api/admin/rotate-admin-psk"
+                 or path == "/api/admin/rotate-ap-psk"
+                 or path == "/api/admin/apconfig/preview"):
             self._send(404, b"404 not found", "text/plain")
             return
         # C1 PIN throttle: a blocked source gets 429 BEFORE the body is even
@@ -1247,8 +1387,12 @@ class StatusHandler(BaseHTTPRequestHandler):
                                "/api/admin/sshlockdown",
                                "/api/admin/dns",
                                "/api/admin/blocked",
-                               "/api/admin/deauth",
-                               "/api/admin/apconfig/preview")
+                                "/api/admin/deauth",
+                                "/api/admin/wipe-stale",
+                                "/api/admin/auto-wipe",
+                                "/api/admin/rotate-admin-psk",
+                                "/api/admin/rotate-ap-psk",
+                                "/api/admin/apconfig/preview")
         ip_key = self.client_address[0]
         now = time.time()
         with _PIN_THROTTLE_LOCK:
@@ -1596,6 +1740,99 @@ class StatusHandler(BaseHTTPRequestHandler):
                                             "deauth": {"active": False}}),
                            "application/json")
                 return
+            elif path == "/api/admin/wipe-stale":
+                dry_run = bool(body.get("dry_run"))
+                with_psks = bool(body.get("with_psks"))
+                args = ["wipe-stale"]
+                if dry_run:
+                    args.append("--dry-run")
+                if with_psks:
+                    args.append("--with-psks")
+                rc, out, err = self._run_tool(args, API_WRITE_TIMEOUT)
+                if rc is None:
+                    self._send(504, json.dumps({"error": "timeout"}),
+                               "application/json")
+                    return
+                summary = {}
+                if out:
+                    try:
+                        summary = json.loads(out[0])
+                    except (json.JSONDecodeError, IndexError):
+                        pass
+                self._send(200, json.dumps({
+                    "ok": rc == 0,
+                    "rc": rc,
+                    "summary": summary,
+                    "log": err,
+                }), "application/json")
+                return
+            elif path == "/api/admin/auto-wipe":
+                on = bool(body.get("on"))
+                try:
+                    if on:
+                        open(AUTO_WIPE_FLAG, "w").close()
+                    else:
+                        os.remove(AUTO_WIPE_FLAG)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    sys.stderr.write("[status-server] auto-wipe persist error: %s\n" % exc)
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                current = os.path.exists(AUTO_WIPE_FLAG)
+                self._send(200, json.dumps({"ok": True, "auto_wipe": current}),
+                           "application/json")
+                return
+            elif path == "/api/admin/rotate-admin-psk":
+                new_psk = body.get("new_psk")
+                err = _validate_admin_psk(new_psk)
+                if err:
+                    self._send(400, json.dumps({"error": "bad_psk", "detail": err}),
+                               "application/json")
+                    return
+                if not (_update_role_env_key("TRAVELROUTER_ADMIN_PSK", new_psk)
+                        and _mirror_role_env_to_bootfs()
+                        and _refresh_staged_env()):
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                # Update the in-process credential so the next login uses the
+                # new PSK; then rotate the salt to invalidate every outstanding
+                # session (including this one) under the old PSK.
+                os.environ["TRAVELROUTER_ADMIN_PSK"] = new_psk
+                ADMIN_PSK = new_psk
+                if not _rotate_session_salt():
+                    sys.stderr.write(
+                        "[status-server] rotate-admin-psk: env updated but "
+                        "salt rotation failed; existing sessions remain valid\n")
+                else:
+                    sys.stderr.write(
+                        "[status-server] rotate-admin-psk: admin PSK rotated, "
+                        "all sessions invalidated\n")
+                self._send(200, json.dumps({"ok": True, "sessions_invalidated": True}),
+                           "application/json")
+                return
+            elif path == "/api/admin/rotate-ap-psk":
+                new_psk = body.get("new_psk")
+                err = _validate_ap_psk(new_psk)
+                if err:
+                    self._send(400, json.dumps({"error": "bad_psk", "detail": err}),
+                               "application/json")
+                    return
+                if not (_update_role_env_key("TRAVELROUTER_AP_PSK", new_psk)
+                        and _mirror_role_env_to_bootfs()):
+                    self._send(500, json.dumps({"error": "persist"}),
+                               "application/json")
+                    return
+                rc, log_lines = _reload_hostapd(new_psk)
+                ok = rc == 0
+                self._send(200, json.dumps({
+                    "ok": ok,
+                    "rc": rc,
+                    "log": log_lines,
+                }), "application/json")
+                return
             elif path == "/api/admin/rotate-sessions":
                 # Security plan todo 7 (force-relogin): regenerate the salt
                 # file via the shared atomic write (todo 10 reuses it on AP
@@ -1682,9 +1919,45 @@ def _resolve_port():
     return port
 
 
+def _bind_with_retry(host, port, max_wait=None, initial_delay=0.25):
+    """Bind the LAN IP with a retry loop.
+
+    /run/travel-router/state.json is written and the status unit is started
+    before the LAN IP is guaranteed attached on cold boot. A transient
+    EADDRNOTAVAIL here should not crash the unit; systemd Restart=always will
+    eventually recover, but a local retry makes recovery immediate and keeps
+    the logs quiet. The retry window defaults to 30s and is tunable via
+    TRAVELROUTER_BIND_RETRY_MAX for slow hosts or radios.
+    """
+    if max_wait is None:
+        try:
+            max_wait = float(os.environ.get("TRAVELROUTER_BIND_RETRY_MAX", "30"))
+        except ValueError:
+            max_wait = 30.0
+        max_wait = max(0.0, min(max_wait, 300.0))
+    deadline = time.time() + max_wait
+    delay = initial_delay
+    last_err = None
+    while True:
+        try:
+            srv = ThreadingHTTPServer((host, port), StatusHandler)
+            return srv
+        except OSError as exc:
+            last_err = exc
+            if time.time() >= deadline:
+                break
+            if exc.errno not in (99, 98):  # EADDRNOTAVAIL / EADDRINUSE
+                raise
+            print("[status-server] bind %s:%d failed (%s), retrying in %.2fs"
+                  % (host, port, exc.strerror, delay))
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+    raise last_err
+
+
 def main():
     host, port = resolve_host_and_port()
-    httpd = ThreadingHTTPServer((host, port), StatusHandler)
+    httpd = _bind_with_retry(host, port)
     print("[status-server] listening on %s:%d" % (host, port))
     try:
         httpd.serve_forever()
